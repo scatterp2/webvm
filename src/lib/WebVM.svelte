@@ -332,6 +332,28 @@
 		}
 	}
 	onMount(initTerminal);
+
+	// Auto-connect with hardcoded auth key
+	// This will be called after initTerminal completes and cx is initialized
+	
+	let autoConnectAttempted = false;
+	
+	const AUTH_KEY = "tskey-auth-ktAfFfhKgK11CNTRL-MXoh6jmnuvSQ7XtfUYwQySr2q3wEkhfb";
+	
+	async function tryAutoConnect() {
+	if(autoConnectAttempted || !cx) return;
+	
+	autoConnectAttempted = true;
+	
+	await handleConnect();
+	}
+	
+	// Watch for cx to become available and trigger auto-connect
+	$: if(cx && !autoConnectAttempted) {
+	tryAutoConnect();
+	}
+
+
 	async function handleConnect()
 	{
 		const w = window.open("login.html", "_blank");
