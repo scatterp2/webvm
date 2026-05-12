@@ -22,6 +22,12 @@ RUN apt-get install -y libxcb-shm0
 #RUN apt-get install -y libxcb-util0
 RUN apt-get install -y aptitude
 RUN useradd -m user && echo "user:password" | chpasswd
+RUN groupadd -f sudo && \
+    useradd -m -s /bin/bash user && \
+    echo "user:password" | chpasswd && \
+    usermod -aG sudo user && \
+    echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user && \
+    chmod 0440 /etc/sudoers.d/user
 RUN echo "echo changed to echo for safety in dockerfiles debian_mini python /home/user/examples/python3/pi.py &" >> /etc/bash.bashrc
 COPY --chown=user:user ./examples /home/user/examples
 RUN chmod -R +x  /home/user/examples/lua
