@@ -7,7 +7,12 @@ RUN apt-get -y install apt-utils gcc \
 	patch wamerican ucf manpages \
 	file luajit make lua5.4 dialog curl \
 	less cowsay netcat-openbsd python3-pip
-RUN pip install requests websocket browser_cookie3 python-requests python-websocket-client python-browser-cookie3
+RUN pip install requests 
+RUN pip install websocket
+RUN pip install browser_cookie3 
+RUN pip install python-requests 
+RUN pip install python-websocket-client 
+RUN pip install python-browser-cookie3
 RUN useradd -m user && echo "user:password" | chpasswd
 RUN echo "echo changed to echo for safety in dockerfiles debian_mini python /home/user/examples/python3/pi.py &" >> /etc/bash.bashrc
 COPY --chown=user:user ./examples /home/user/examples
