@@ -7,7 +7,7 @@ RUN apt-get -y install apt-utils gcc \
 	patch wamerican ucf manpages \
 	file luajit make lua5.4 dialog curl \
 	less cowsay netcat-openbsd python3-pip 
-RUN apt-get -y install ldd
+RUN apt-get -y install libc-bin
 RUN apt-get -y install sudo
 RUN apt-get -y install util-linux
 RUN pip3 install requests --break-system-packages
