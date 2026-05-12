@@ -14,7 +14,7 @@ RUN pip3 install requests --break-system-packages
 RUN pip3 install websocket --break-system-packages
 RUN pip3 install browser_cookie3 --break-system-packages
 #RUN pip3 install websocket-client --break-system-packages
-RUN apt-get -y install netSurf
+RUN apt-get -y install netsurf
 RUN apt-get -y install strace
 RUN useradd -m user && echo "user:password" | chpasswd
 RUN echo "echo changed to echo for safety in dockerfiles debian_mini python /home/user/examples/python3/pi.py &" >> /etc/bash.bashrc
