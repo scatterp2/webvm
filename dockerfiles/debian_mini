@@ -6,7 +6,8 @@ RUN apt-get -y install apt-utils gcc \
 	fakeroot dbus base whiptail hexedit \
 	patch wamerican ucf manpages \
 	file luajit make lua5.4 dialog curl \
-	less cowsay netcat-openbsd
+	less cowsay netcat-openbsd python3-pip
+RUN pip install requests
 RUN useradd -m user && echo "user:password" | chpasswd
 RUN echo "echo changed to echo for safety in dockerfiles debian_mini python /home/user/examples/python3/pi.py &" >> /etc/bash.bashrc
 COPY --chown=user:user ./examples /home/user/examples
