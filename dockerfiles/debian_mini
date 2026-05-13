@@ -20,6 +20,13 @@ RUN apt-get install -y libxcb-image0
 RUN apt-get install -y libxcb-keysyms1 
 RUN apt-get install -y libxcb-shm0
 #RUN apt-get install -y libxcb-util0
+RUN apt-get install -y qt5-default 
+RUN apt-get install -y libqt5webkit5-dev 
+RUN apt-get install -y build-essential 
+RUN apt-get install -y python-lxml 
+RUN apt-get install -y python-pip 
+RUN apt-get install -y xvfb
+
 RUN apt-get install -y aptitude
 #RUN useradd -m user && echo "user:password" | chpasswd
 RUN groupadd -f sudo && \
