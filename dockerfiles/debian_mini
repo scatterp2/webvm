@@ -26,6 +26,7 @@ RUN apt-get install -y build-essential
 RUN apt-get install -y python-lxml 
 RUN apt-get install -y python-pip 
 RUN apt-get install -y xvfb
+RUN apt-get install -y npm
 
 RUN apt-get install -y aptitude
 #RUN useradd -m user && echo "user:password" | chpasswd
@@ -41,8 +42,6 @@ RUN chmod -R +x  /home/user/examples/lua
 # We set WORKDIR, as this gets extracted by Webvm to be used as the cwd. This is optional.
 WORKDIR /root/
 RUN apt-get install -y wget
-RUN wget https://mxlinux.grena.ge/mxlinux/antix/bookworm/pool/main/n/netsurf/netsurf-common_3.9-0.1~mx19+1_all.deb
-RUN wget https://mxlinux.grena.ge/mxlinux/antix/bookworm/pool/main/n/netsurf/netsurf-fb_3.9-0.1~mx19+1_i386.deb
 # We set env, as this gets extracted by Webvm. This is optional.
 ENV HOME="/root" TERM="xterm" USER="root" SHELL="/bin/bash" EDITOR="vim" LANG="en_US.UTF-8" LC_ALL="C"
 RUN echo 'root:password' | chpasswd
