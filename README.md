@@ -69,27 +69,25 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 ## TODO Tasks
 
 ### Repository Genesis
+**Scatterp:**
+
 - [ ] Merge legacy script https://github.com/scatterp2/testbrowser into `old/` directory, preserving its original purpose as a partial guide to Google's sign-up workflow
+- [ ] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
 
 ### WebVM Architecture & Account Creation
-**Alex (Developer):**
-- [ ] Create accounts through proxy service nested inside WebVM
-- [ ] Build SaaS website to host and market services
+**Alex:**
+- [ ] Create accounts through proxy service nested inside WebVM via playwright
+- [ ] Build SaaS website to host and market services 
 - [ ] Review WebGPU compute layer implementation in `README-addgpu.md`
-- [ ] Validate virtual `/dev/cuda` and `/dev/tensor` interface design
-- [ ] Test Tailscale networking integration with custom exit nodes
-
-**Arun (Strategist):**
-- [ ] Restrict proxy to Colombia and jurisdictions that do not require phone verification
 - [ ] Complete MeshLLM integration testing with GLIBC 2.39
-- [ ] Verify libpnp peer-to-peer networking in browser environment
-- [ ] Document performance benchmarks for WebGPU compute pipelines
-- [ ] Enlist auxiliary machines for SMS verification processing
-
-### Cookie Repository & Automation Pipeline
-- [ ] Store signed-in Google cookies in secure, version-controlled vault (encrypted)
+- [ ] Verify libpnp peer-to-peer networking in browser/colab environment
 - [ ] Configure Playwright to use cookies to trigger Jupyter notebooks
-- [ ] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
+
+**Arun:**
+- [ ] Figure out a proxy scanner and Restrict proxy creation to Colombia and jurisdictions that do not require phone verification
+- [ ] Enlist auxiliary machines for SMS verification processing
+- [ ] Store signed-in Google cookies in secure, version-controlled vault (encrypted)
+
 
 ### Endgame Architecture
 - [ ] Implement JavaScript-driven WebVM that initiates Google sign-up flow when user triggers from streaming platform
@@ -97,13 +95,14 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 - [ ] Weave user GPU into MeshLLM network via libpnp (non-IPv4) or Petals protocols
 
 ### Monetization Blueprint
-- [ ] Deploy single-cent ad network (X tokens per machine, billed at X cents)
+- [ ] Deploy single-cent ad network (X tokens per machine, billed at X cents) ie we have an llm api we charge more than it costs us
 - [ ] Develop video content generation module
 - [ ] Build AI companion system ("AI girlfriend" module) for commercial exploitation
+- [ ] Build AI companion system ("AI girlfriend" module) for cybersecurity [payload] arun
 - [ ] Secure Amazon and Google free startup credits
 
 ### Testing & Validation
-- [x] Created `test_glibc239_runner.ipynb` - fetches and runs glibc2_39 workflow from raw GitHub URL
+- [ ] Created `test_glibc239_runner.ipynb` - fetches and runs glibc2_39 workflow from raw GitHub URL
 - [ ] Implement one-click launcher that fetches raw GitHub notebook URL
 - [ ] Add end-to-end validation for WebVM + WebGPU compute stack
 
