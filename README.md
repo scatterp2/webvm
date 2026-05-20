@@ -61,7 +61,6 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 
 ## Related Files
 
-- `glibc2_39_meshllm_libpnp.ipynb` - MeshLLM/libpnp integration notebook
 - `jupyter.ipynb` - Jupyter environment configuration
 - `dockerfiles/` - Docker configurations for building custom disk images
 - `custom-disk-images/` - Directory for local `.ext2` disk images
@@ -89,7 +88,7 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 ### Cookie Repository & Automation Pipeline
 - [ ] Store signed-in Google cookies in secure, version-controlled vault (encrypted)
 - [ ] Configure Playwright to use cookies to trigger Jupyter notebooks
-- [ ] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
+- [X] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
 
 ### Endgame Architecture
 - [ ] Implement JavaScript-driven WebVM that initiates Google sign-up flow when user triggers from streaming platform
