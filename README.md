@@ -71,23 +71,23 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 - [ ] Merge legacy script https://github.com/scatterp2/testbrowser into `old/` directory, preserving its original purpose as a partial guide to Google's sign-up workflow
 
 ### WebVM Architecture & Account Creation
-**Alex (Developer):**
+**Alex:**
 - [ ] Create accounts through proxy service nested inside WebVM
 - [ ] Build SaaS website to host and market services
 - [ ] Review WebGPU compute layer implementation in `README-addgpu.md`
 - [ ] Validate virtual `/dev/cuda` and `/dev/tensor` interface design
-- [ ] Test Tailscale networking integration with custom exit nodes
+- [ ] Configure Playwright to use cookies to trigger Jupyter notebooks
 
-**Arun (Strategist):**
+**Arun:**
 - [ ] Restrict proxy to Colombia and jurisdictions that do not require phone verification
-- [ ] Complete MeshLLM integration testing with GLIBC 2.39
+- [ ] https://github.com/samyk/webscan
 - [ ] Verify libpnp peer-to-peer networking in browser environment
-- [ ] Document performance benchmarks for WebGPU compute pipelines
 - [ ] Enlist auxiliary machines for SMS verification processing
 
-### Cookie Repository & Automation Pipeline
+**Scatterp:**
+- [X] Test Tailscale networking integration with custom exit nodes
+- [X] Complete MeshLLM integration testing with GLIBC 2.39
 - [ ] Store signed-in Google cookies in secure, version-controlled vault (encrypted)
-- [ ] Configure Playwright to use cookies to trigger Jupyter notebooks
 - [X] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
 
 ### Endgame Architecture
