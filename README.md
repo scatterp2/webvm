@@ -78,13 +78,12 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 - [ ] Create accounts through proxy service nested inside WebVM
 - [ ] Build SaaS website to host and market services
 - [ ] Review WebGPU compute layer implementation in `README-addgpu.md`
-- [ ] Validate virtual `/dev/cuda` and `/dev/tensor` interface design
 - [ ] Configure Playwright to use cookies to trigger Jupyter notebooks
+- [X] Verify libpnp peer-to-peer networking in browser environment
 
 **Arun:**
 - [ ] Restrict proxy to Colombia and jurisdictions that do not require phone verification
 - [ ] https://github.com/samyk/webscan
-- [ ] Verify libpnp peer-to-peer networking in browser environment
 - [ ] Enlist auxiliary machines for SMS verification processing
 
 **Scatterp:**
@@ -92,6 +91,8 @@ See [Browser Compute OS](README-addgpu.md) for implementing WebGPU-based compute
 - [X] Complete MeshLLM integration testing with GLIBC 2.39
 - [ ] Store signed-in Google cookies in secure, version-controlled vault (encrypted)
 - [X] Merge jupyter and glibc2_39_meshllm_libpnp into single pipeline
+- [X] Validate virtual `/dev/cuda` and `/dev/tensor` interface design
+note above was validated in webvm dev channel many googlie eyes fire emojis etc they liked it! see README-addgpu.md
 
 ### Endgame Architecture
 - [ ] Implement JavaScript-driven WebVM that initiates Google sign-up flow when user triggers from streaming platform
