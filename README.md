@@ -1,3 +1,6 @@
+# Todo 
+check out new code colab_worker.ipynb libpnp stuff needs merging to jupyter.ipynb the llamacpp rpc could only stay as an option in a framework and then
+should not be default behavior 
 # Browser Compute Project
 
 A WebVM-based browser compute environment with WebGPU virtual compute capabilities.
