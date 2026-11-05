@@ -5,11 +5,12 @@ import os
 import sys
 import json
 import time
+import shutil
 import subprocess
 from pathlib import Path
 
 # ============================================================
-# CONFIGURATION — credentials hardcoded as requested
+# CONFIGURATION
 # ============================================================
 
 USERNAME = "simonday"
@@ -18,8 +19,10 @@ API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
-TOKEN_FILE = KAGGLE_DIR / "access_token"
-JSON_FILE = KAGGLE_DIR / "kaggle.json"
+
+VENV_DIR = Path("/opt/kaggle-venv")
+VENV_PYTHON = VENV_DIR / "bin/python"
+KAGGLE_BIN = VENV_DIR / "bin/kaggle"
 
 NOTEBOOK_DIR = Path("/home/user/my-notebook")
 NOTEBOOK_FILE = NOTEBOOK_DIR / "gpu-test.ipynb"
@@ -30,15 +33,20 @@ KERNEL_ID = USERNAME + "/" + KERNEL_SLUG
 NOTEBOOK_URL = "https://www.kaggle.com/code/" + KERNEL_ID
 
 
-def run(command, cwd=None, check=True):
-    print("\n$", " ".join(str(x) for x in command), flush=True)
+# ============================================================
+# COMMAND RUNNER
+# ============================================================
+
+def run(command, check=True, env=None):
+    command = [str(item) for item in command]
+    print("\n$", " ".join(command), flush=True)
 
     result = subprocess.run(
         command,
-        cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        universal_newlines=True
+        universal_newlines=True,
+        env=env
     )
 
     if result.stdout:
@@ -52,50 +60,132 @@ def run(command, cwd=None, check=True):
     return result
 
 
-def create_credentials():
-    print("[1/8] Preparing directories and credentials", flush=True)
+# ============================================================
+# STEP 1: PREPARE SYSTEM
+# ============================================================
+
+def prepare_system():
+    print("[1/8] Preparing Debian system", flush=True)
+
+    if os.geteuid() != 0:
+        raise RuntimeError("Run this script as root.")
+
+    if not shutil.which("apt-get"):
+        raise RuntimeError("This script requires Debian/Ubuntu apt-get.")
+
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+
+    run(["apt-get", "update"], env=env)
+
+    run([
+        "apt-get", "install", "-y",
+        "python3",
+        "python3-pip",
+        "python3-venv",
+        "python3-full",
+        "python3-setuptools",
+        "python3-wheel",
+        "ca-certificates"
+    ], env=env)
 
     KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
 
-    TOKEN_FILE.write_text(API_TOKEN + "\n")
 
-    JSON_FILE.write_text(json.dumps({
-        "username": USERNAME,
-        "key": LEGACY_KEY
-    }, indent=2) + "\n")
+# ============================================================
+# STEP 2: WRITE CREDENTIALS
+# ============================================================
 
-    os.chmod(str(TOKEN_FILE), 0o600)
-    os.chmod(str(JSON_FILE), 0o600)
+def prepare_credentials():
+    print("[2/8] Writing Kaggle credentials", flush=True)
+
+    token_file = KAGGLE_DIR / "access_token"
+    json_file = KAGGLE_DIR / "kaggle.json"
+
+    token_file.write_text(API_TOKEN + "\n")
+    json_file.write_text(
+        json.dumps({
+            "username": USERNAME,
+            "key": LEGACY_KEY
+        }, indent=2) + "\n"
+    )
+
+    os.chmod(str(KAGGLE_DIR), 0o700)
+    os.chmod(str(token_file), 0o600)
+    os.chmod(str(json_file), 0o600)
 
     os.environ["HOME"] = str(HOME)
     os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
-    print("Credentials written and permissions secured.")
 
+# ============================================================
+# STEP 3: CREATE PYTHON ENVIRONMENT
+# ============================================================
 
-def install_kaggle():
-    print("[2/8] Installing Kaggle CLI", flush=True)
+def prepare_python():
+    print("[3/8] Preparing Kaggle Python environment", flush=True)
 
+    # Debian disables ensurepip for its system Python.
+    # Install Debian's pip, then create the venv without
+    # attempting to bootstrap pip through ensurepip.
+    if VENV_DIR.exists() and not VENV_PYTHON.exists():
+        print("Removing incomplete virtual environment.", flush=True)
+        shutil.rmtree(str(VENV_DIR))
+
+    if not VENV_PYTHON.exists():
+        run([
+            "python3", "-m", "venv",
+            "--system-site-packages",
+            "--without-pip",
+            str(VENV_DIR)
+        ])
+
+    # Check whether pip is visible in the new environment.
+    pip_check = run([
+        str(VENV_PYTHON), "-m", "pip", "--version"
+    ], check=False)
+
+    if pip_check.returncode != 0:
+        print(
+            "Virtual environment cannot access pip; "
+            "checking Debian's pip installation.",
+            flush=True
+        )
+
+        run([
+            "apt-get", "install", "--reinstall", "-y",
+            "python3-pip"
+        ])
+
+        pip_check = run([
+            str(VENV_PYTHON), "-m", "pip", "--version"
+        ], check=False)
+
+        if pip_check.returncode != 0:
+            raise RuntimeError(
+                "pip is still unavailable inside the virtual environment. "
+                "On Debian i386, compatible Python packages may be limited."
+            )
+
+    # Install Kaggle without writing to system Python.
     run([
-        sys.executable, "-m", "pip", "install", "--upgrade", "kaggle"
+        str(VENV_PYTHON), "-m", "pip",
+        "install", "--upgrade", "--ignore-installed", "kaggle"
     ])
 
-    # Locate the installed executable.
-    result = run([
-        sys.executable, "-c",
-        "import shutil; print(shutil.which('kaggle') or '')"
-    ])
+    if not KAGGLE_BIN.exists():
+        raise RuntimeError("Kaggle CLI executable was not created.")
 
-    executable = result.stdout.strip().splitlines()
-    if not executable or not executable[-1]:
-        raise RuntimeError("Could not locate the Kaggle executable.")
+    run([str(KAGGLE_BIN), "--version"])
 
-    return executable[-1]
 
+# ============================================================
+# STEP 4: CREATE NOTEBOOK AND METADATA
+# ============================================================
 
 def write_notebook():
-    print("[3/8] Creating notebook and metadata", flush=True)
+    print("[4/8] Writing notebook and metadata", flush=True)
 
     metadata = {
         "id": KERNEL_ID,
@@ -121,7 +211,7 @@ def write_notebook():
                 "metadata": {},
                 "source": [
                     "# Automated GPU Test\n",
-                    "Checks the GPU available to this Kaggle notebook."
+                    "Checks GPU availability in a Kaggle session."
                 ]
             },
             {
@@ -131,7 +221,6 @@ def write_notebook():
                 "outputs": [],
                 "source": [
                     "import os\n",
-                    "import sys\n",
                     "import platform\n",
                     "print('Python:', platform.python_version())\n",
                     "print('CUDA_VISIBLE_DEVICES:', os.environ.get('CUDA_VISIBLE_DEVICES'))\n",
@@ -141,15 +230,16 @@ def write_notebook():
                     "    print('CUDA available:', torch.cuda.is_available())\n",
                     "    if torch.cuda.is_available():\n",
                     "        print('GPU:', torch.cuda.get_device_name(0))\n",
-                    "        print('GPU VRAM (GB):', round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2))\n",
+                    "        props = torch.cuda.get_device_properties(0)\n",
+                    "        print('GPU VRAM GB:', round(props.total_memory / (1024**3), 2))\n",
                     "        x = torch.randn((2048, 2048), device='cuda')\n",
                     "        y = x @ x\n",
                     "        torch.cuda.synchronize()\n",
                     "        print('GPU matrix test passed:', tuple(y.shape))\n",
                     "    else:\n",
                     "        print('No CUDA GPU detected.')\n",
-                    "except Exception as e:\n",
-                    "    print('GPU test error:', repr(e))\n"
+                    "except Exception as exc:\n",
+                    "    print('GPU test error:', repr(exc))\n"
                 ]
             }
         ],
@@ -168,44 +258,51 @@ def write_notebook():
     }
 
     NOTEBOOK_FILE.write_text(json.dumps(notebook, indent=2) + "\n")
-    print("Notebook:", NOTEBOOK_FILE)
-    print("Metadata:", METADATA_FILE)
 
 
-def main():
-    create_credentials()
+# ============================================================
+# KAGGLE ENVIRONMENT
+# ============================================================
 
-    kaggle = install_kaggle()
+def kaggle_environment():
+    env = os.environ.copy()
+    env["HOME"] = str(HOME)
+    env["KAGGLE_API_TOKEN"] = API_TOKEN
+    return env
 
-    print("[4/8] Checking Kaggle CLI version", flush=True)
-    run([kaggle, "--version"])
 
-    write_notebook()
+# ============================================================
+# STEPS 5-8: AUTHENTICATE, SUBMIT, MONITOR
+# ============================================================
+
+def deploy():
+    env = kaggle_environment()
 
     print("[5/8] Testing Kaggle authentication", flush=True)
-    auth = run([kaggle, "kernels", "list", "--mine"], check=False)
+
+    auth = run([
+        str(KAGGLE_BIN), "kernels", "list", "--mine"
+    ], check=False, env=env)
 
     if auth.returncode != 0:
         raise RuntimeError(
-            "Kaggle authentication failed. The hardcoded credentials "
-            "may be invalid, expired, or unsupported by this CLI version."
+            "Kaggle authentication failed. Verify that the configured "
+            "credentials are valid and accepted by the Kaggle API."
         )
 
-    print("[6/8] Submitting notebook to Kaggle", flush=True)
+    print("[6/8] Submitting notebook", flush=True)
+
     push = run([
-        kaggle, "kernels", "push", "-p", str(NOTEBOOK_DIR)
-    ], check=False)
+        str(KAGGLE_BIN), "kernels", "push",
+        "-p", str(NOTEBOOK_DIR)
+    ], check=False, env=env)
 
     if push.returncode != 0:
-        raise RuntimeError(
-            "Notebook submission failed. See the Kaggle CLI output above."
-        )
+        raise RuntimeError("Kaggle notebook submission failed.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
     print("[7/8] Monitoring execution", flush=True)
 
-    # Status support varies between Kaggle CLI/API versions.
-    # Do not treat a 403 status response as proof that the push failed.
     for attempt in range(20):
         print(
             "\nStatus check {}/20".format(attempt + 1),
@@ -213,35 +310,44 @@ def main():
         )
 
         status = run([
-            kaggle, "kernels", "status", KERNEL_ID
-        ], check=False)
+            str(KAGGLE_BIN), "kernels", "status", KERNEL_ID
+        ], check=False, env=env)
 
         output = (status.stdout or "").lower()
 
         if status.returncode == 0:
-            print("Status response received.", flush=True)
-
             if "complete" in output or "completed" in output:
-                print("[8/8] Notebook completed.", flush=True)
-                print("Open:", NOTEBOOK_URL)
+                print("[8/8] Notebook reports completion.", flush=True)
+                print(NOTEBOOK_URL)
                 return
 
             if "error" in output or "failed" in output:
-                print("Kaggle reports a possible execution failure.")
-                print("Inspect the notebook page:", NOTEBOOK_URL)
+                print("Kaggle may have reported an execution failure.")
+                print("Inspect:", NOTEBOOK_URL)
                 return
         else:
             print(
-                "Status endpoint unavailable; submission was accepted "
-                "if the push command reported success.",
+                "Status endpoint unavailable. The push may still have "
+                "succeeded; inspect the notebook URL.",
                 flush=True
             )
 
         time.sleep(30)
 
-    print("[8/8] Automated status monitoring finished.")
-    print("Inspect the notebook and execution logs here:")
-    print(NOTEBOOK_URL)
+    print("[8/8] Monitoring timed out or status was unavailable.")
+    print("Inspect notebook execution here:", NOTEBOOK_URL)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    prepare_system()
+    prepare_credentials()
+    prepare_python()
+    write_notebook()
+    deploy()
 
 
 if __name__ == "__main__":
