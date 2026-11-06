@@ -105,10 +105,19 @@ def prepare_credentials():
         os.chmod(str(json_file), 0o600)
 
     os.chmod(str(KAGGLE_DIR), 0o700)
-    if not token_file.is_file() and not json_file.is_file():
+    has_token = token_file.is_file() and bool(token_file.read_text(errors="ignore").strip())
+    has_legacy_key = False
+    if json_file.is_file():
+        try:
+            legacy = json.loads(json_file.read_text(encoding="utf-8"))
+            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))
+        except (OSError, ValueError, AttributeError):
+            has_legacy_key = False
+    if not has_token and not has_legacy_key:
         raise RuntimeError(
-            "Kaggle credentials are missing. Set KAGGLE_API_TOKEN, or provide "
-            "/root/.kaggle/access_token or /root/.kaggle/kaggle.json locally."
+            "Kaggle credentials are missing or empty. Set KAGGLE_API_TOKEN, "
+            "or provide a valid /root/.kaggle/access_token or "
+            "/root/.kaggle/kaggle.json locally."
         )
 
     os.environ["HOME"] = str(HOME)
