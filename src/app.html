@@ -31,11 +31,11 @@
 		<script src="serviceWorker.js"></script>
 		<script data-domain="webvm.io" src="https://plausible.leaningtech.com/js/script.js"></script>
 		<script>
-			// The reset file is the generation source. Prefer its explicit value so
-			// resets do not depend on the GitHub commits API being available.
+			// The reset file is the source of truth. When its version changes,
+			// derive a generation automatically and expose it in ?reset=... .
 			(() => {
-				const resetUrl = 'https://raw.githubusercontent.com/scatterp2/webvm/main/reset';
-				const markerPrefix = 'webvm-reset-triggered:';
+				const resetUrl = 'https://raw.githubusercontent.com/scatterp2/webvm/refs/heads/main/reset';
+				const lastVersionKey = 'webvm-reset-last-source-version';
 				const resetParam = 'reset';
 				let checking = false;
 
@@ -54,40 +54,51 @@
 
 						const value = (await response.text()).trim();
 						if (!value || value === '0' || value.toLowerCase() === 'off') {
-							console.info('[WebVM reset] No active reset generation.');
+							console.info('[WebVM reset] No active reset signal.');
 							return;
 						}
 
-						let generation = value;
-						// The legacy reset file contains only "1". In that mode the
-						// visible URL parameter is the generation; never call the GitHub
-						// commits API from every browser (it can rate-limit with 403).
-						if (value === '1') {
-							generation = new URL(window.location.href).searchParams.get(resetParam);
-							if (!generation) {
-								console.info('[WebVM reset] Legacy reset flag is active, but no ?reset= generation is set.');
+						let sourceVersion;
+						let generation;
+						if (value !== '1') {
+							// An explicit numeric/string generation in the file is ideal.
+							sourceVersion = 'value:' + value;
+							generation = value;
+						} else {
+							// Legacy "1" means reset is active. Last-Modified changes when
+							// the reset file is recommitted, without calling the GitHub API.
+							const lastModified = response.headers.get('Last-Modified');
+							if (!lastModified) {
+								console.warn('[WebVM reset] Reset flag is 1, but the response has no Last-Modified header; cannot identify a new reset safely.');
 								return;
 							}
+							const modifiedAt = Date.parse(lastModified);
+							if (!Number.isFinite(modifiedAt)) {
+								console.warn('[WebVM reset] Invalid Last-Modified header:', lastModified);
+								return;
+							}
+							sourceVersion = 'modified:' + String(modifiedAt);
+							generation = String(modifiedAt);
 						}
 
-						const marker = markerPrefix + generation;
+						const previousVersion = localStorage.getItem(lastVersionKey);
+						if (previousVersion === sourceVersion) {
+							console.info('[WebVM reset] Reset signal already handled for generation ' + generation + '.');
+							return;
+						}
+
+						// Persist the source version before dispatching: after the cache reset
+						// reload, this same signal must not cause another reset loop.
+						localStorage.setItem(lastVersionKey, sourceVersion);
 						const url = new URL(window.location.href);
-						const currentGeneration = url.searchParams.get(resetParam);
-						if (currentGeneration !== generation) {
-							url.searchParams.set(resetParam, generation);
-							window.history.replaceState(window.history.state, '', url.toString());
-						}
+						url.searchParams.set(resetParam, generation);
+						window.history.replaceState(window.history.state, '', url.toString());
 
-						if (sessionStorage.getItem(marker) !== '1') {
-							// Mark before navigation to prevent a reload loop. Each new
-							// generation has a different key, so later resets still fire.
-							sessionStorage.setItem(marker, '1');
-							console.info('[WebVM reset] New generation ' + generation + '; requesting a disk-cache reset.');
-							window.__webvmPendingResetGeneration = generation;
-							window.dispatchEvent(new CustomEvent('webvm-reset-request', {
-								detail: { generation }
-							}));
-						}
+						console.info('[WebVM reset] New generation ' + generation + '; requesting a disk-cache reset.');
+						window.__webvmPendingResetGeneration = generation;
+						window.dispatchEvent(new CustomEvent('webvm-reset-request', {
+							detail: { generation }
+						}));
 					} catch (error) {
 						console.warn('[WebVM reset] Check failed; will retry.', error);
 					} finally {
