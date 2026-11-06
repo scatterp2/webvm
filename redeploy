@@ -21,3 +21,5 @@ Force a new deployment attempt after reset generation 1590 did not reload the ac
 Deploy robust explicit reset generation 1592; avoid GitHub API dependency for future resets and verify the live reset script.
 Deploy live-fetch Kaggle runtime bootstrap from main; reset-generation logic already present in src/app.html.
 Reset fix: route reset generations through WebVM disk-cache reset before reload.
+
+Remove reset-trigger dependency on GitHub commits API; use visible URL reset generation.
