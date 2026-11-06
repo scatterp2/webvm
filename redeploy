@@ -27,3 +27,5 @@ Remove reset-trigger dependency on GitHub commits API; use visible URL reset gen
 Automatically derive reset generation from reset-file Last-Modified; update URL and prevent reset loops.
 
 Deploy reset-trigger fix: use explicit generation 1590 and publish current reset handler.
+
+Deploy latest reset retry fix.
