@@ -32,6 +32,8 @@ Use the **`runtime-feedback-monitor` branch** for the Kaggle experiment and log-
 
 Two concrete failures have been observed in Kaggle runs: (1) a batch run had no `/dev/nvidia*` devices and installed `torch 2.11.0+cpu` (`torch.version.cuda=None`), so it stopped before loading Qwen; (2) a later run failed before the experiment started because Kaggle could not resolve `raw.githubusercontent.com` while executing the legacy bootstrap. The submission now explicitly requests `--accelerator NvidiaTeslaT4`, sets `machine_shape`, embeds the runtime and all four prompts into the notebook before submission, and collects Kaggle logs/output on success, failure, or timeout. The next fresh run must verify GPU allocation and Hugging Face/package network access; a successful GitHub Actions workflow alone does not prove model inference succeeded.
 
+Kaggle credentials must come from environment variables or protected local credential files, never source code. If a credential was ever committed, deleting it from the current file does not remove it from Git history; revoke/rotate it.
+
 **Agent workflow:** inspect the newest logs first; identify the earliest concrete failure; make a focused fix; commit it; wait for the workflow to finish; inspect its logs again; repeat until GPU preflight passes, the model loads, all four prompts are attempted, and the outputs are captured. Do not ask the user to retrieve logs that the repository tooling can fetch itself.
 
 ---
