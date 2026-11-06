@@ -5,7 +5,6 @@ import os
 import sys
 import json
 import time
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -64,6 +63,7 @@ def run(command, check=True, env=None):
 # ============================================================
 
 def prepare_system():
+    global API_TOKEN
     print("[1/6] Checking Debian image and Kaggle credentials", flush=True)
 
     if os.geteuid() != 0:
@@ -74,13 +74,18 @@ def prepare_system():
             "The prebuilt Kaggle environment is missing. Rebuild the debian_mini image."
         )
 
+    KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
+    if not API_TOKEN:
+        token_file = KAGGLE_DIR / "access_token"
+        if token_file.exists():
+            API_TOKEN = token_file.read_text().strip()
     if not API_TOKEN:
         raise RuntimeError(
-            "KAGGLE_API_TOKEN is not set. Supply a freshly generated Kaggle API token "
-            "in the runtime environment; do not put it in pi.py or the Dockerfile."
+            "Kaggle credentials are missing. Set KAGGLE_API_TOKEN in the runtime "
+            "environment or create /root/.kaggle/access_token with a freshly generated "
+            "token. Do not put credentials in pi.py or the Dockerfile."
         )
 
-    KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(str(KAGGLE_DIR), 0o700)
     os.environ["HOME"] = str(HOME)
