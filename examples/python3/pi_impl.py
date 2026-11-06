@@ -310,10 +310,10 @@ def write_notebook():
         for chunk in textwrap.wrap(encoded_runtime, 4000)
     )
     notebook_source = (
-        "import base64 as _base64, gzip as _gzip\\n"
-        "_runtime_payload = (\\n" + payload_lines + "\\n)\\n"
-        "_runtime_source = _gzip.decompress(_base64.b64decode(_runtime_payload)).decode('utf-8')\\n"
-        "exec(compile(_runtime_source, 'kaggle_runtime.py', 'exec'), globals(), globals())\\n"
+        "import base64 as _base64, gzip as _gzip\n"
+        "_runtime_payload = (\n" + payload_lines + "\n)\n"
+        "_runtime_source = _gzip.decompress(_base64.b64decode(_runtime_payload)).decode('utf-8')\n"
+        "exec(compile(_runtime_source, 'kaggle_runtime.py', 'exec'), globals(), globals())\n"
     )
     print(
         "RUNTIME_COMPRESSED original_chars={} gzip_bytes={} base64_chars={}".format(
