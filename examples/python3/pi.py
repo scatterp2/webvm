@@ -116,55 +116,55 @@ def prepare_python():
     # Debian disables ensurepip for its system Python.
     # Install Debian's pip, then create the venv without
     # attempting to bootstrap pip through ensurepip.
-    if VENV_DIR.exists() and not VENV_PYTHON.exists():
-        print("Removing incomplete virtual environment.", flush=True)
-        shutil.rmtree(str(VENV_DIR))
+    # if VENV_DIR.exists() and not VENV_PYTHON.exists():
+        # print("Removing incomplete virtual environment.", flush=True)
+        # shutil.rmtree(str(VENV_DIR))
 
-    if not VENV_PYTHON.exists():
-        run([
-            "python3", "-m", "venv",
-            "--system-site-packages",
-            "--without-pip",
-            str(VENV_DIR)
-        ])
+    # if not VENV_PYTHON.exists():
+        # run([
+            # "python3", "-m", "venv",
+            # "--system-site-packages",
+            # "--without-pip",
+            # str(VENV_DIR)
+        # ])
 
     # Check whether pip is visible in the new environment.
-    pip_check = run([
-        str(VENV_PYTHON), "-m", "pip", "--version"
-    ], check=False)
+    # pip_check = run([
+        # str(VENV_PYTHON), "-m", "pip", "--version"
+    # ], check=False)
 
-    if pip_check.returncode != 0:
-        print(
-            "Virtual environment cannot access pip; "
-            "checking Debian's pip installation.",
-            flush=True
-        )
+    # if pip_check.returncode != 0:
+        # print(
+            # "Virtual environment cannot access pip; "
+            # "checking Debian's pip installation.",
+            # flush=True
+        # )
 
-        run([
-            "apt-get", "install", "--reinstall", "-y",
-            "python3-pip"
-        ])
+        # run([
+            # "apt-get", "install", "--reinstall", "-y",
+            # "python3-pip"
+        # ])
 
-        pip_check = run([
-            str(VENV_PYTHON), "-m", "pip", "--version"
-        ], check=False)
+        # pip_check = run([
+            # str(VENV_PYTHON), "-m", "pip", "--version"
+        # ], check=False)
 
-        if pip_check.returncode != 0:
-            raise RuntimeError(
-                "pip is still unavailable inside the virtual environment. "
-                "On Debian i386, compatible Python packages may be limited."
-            )
+        # if pip_check.returncode != 0:
+            # raise RuntimeError(
+                # "pip is still unavailable inside the virtual environment. "
+                # "On Debian i386, compatible Python packages may be limited."
+            # )
 
     # Install Kaggle without writing to system Python.
-    run([
-        str(VENV_PYTHON), "-m", "pip",
-        "install", "--upgrade", "--ignore-installed", "kaggle"
-    ])
+    # run([
+        # str(VENV_PYTHON), "-m", "pip",
+        # "install", "--upgrade", "--ignore-installed", "kaggle"
+    # ])
 
-    if not KAGGLE_BIN.exists():
-        raise RuntimeError("Kaggle CLI executable was not created.")
+    # if not KAGGLE_BIN.exists():
+        # raise RuntimeError("Kaggle CLI executable was not created.")
 
-    run([str(KAGGLE_BIN), "--version"])
+    # run([str(KAGGLE_BIN), "--version"])
 
 
 # ============================================================
@@ -332,7 +332,7 @@ def deploy():
 def main():
     prepare_system()
     prepare_credentials()
-    prepare_python()
+    # prepare_python()  # Environment and Kaggle CLI are installed in the Docker image.
     write_notebook()
     deploy()
 
