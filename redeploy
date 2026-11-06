@@ -33,3 +33,5 @@ Deploy latest reset retry fix.
 Deploy separated Kaggle launcher and implementation; include offline prompt embedding and DNS-tolerant runtime.
 
 Install live Kaggle runtime loader; subsequent kaggle_runtime.py edits will be picked up on browser reset without rebuilding the VM image.
+
+Install runtime-loaded pi_impl.py bootstrap so submitter fixes activate on browser reset without future image rebuilds.
