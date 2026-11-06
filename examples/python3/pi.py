@@ -13,9 +13,8 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = "simonday"
-LEGACY_KEY = "fc837b9fcbf01dd51978287f9437068c"
-API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
+USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday")
+API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
@@ -61,110 +60,35 @@ def run(command, check=True, env=None):
 
 
 # ============================================================
-# STEP 1: PREPARE SYSTEM
+# STEP 1: CHECK IMAGE AND CREDENTIALS
 # ============================================================
 
 def prepare_system():
-    print("[1/8] Preparing Debian system", flush=True)
+    print("[1/6] Checking Debian image and Kaggle credentials", flush=True)
 
     if os.geteuid() != 0:
         raise RuntimeError("Run this script as root.")
 
-    if not shutil.which("apt-get"):
-        raise RuntimeError("This script requires Debian/Ubuntu apt-get.")
+    if not VENV_PYTHON.exists() or not KAGGLE_BIN.exists():
+        raise RuntimeError(
+            "The prebuilt Kaggle environment is missing. Rebuild the debian_mini image."
+        )
 
-    env = os.environ.copy()
-    env["DEBIAN_FRONTEND"] = "noninteractive"
+    if not API_TOKEN:
+        raise RuntimeError(
+            "KAGGLE_API_TOKEN is not set. Supply a freshly generated Kaggle API token "
+            "in the runtime environment; do not put it in pi.py or the Dockerfile."
+        )
 
     KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# ============================================================
-# STEP 2: WRITE CREDENTIALS
-# ============================================================
-
-def prepare_credentials():
-    print("[2/8] Writing Kaggle credentials", flush=True)
-
-    token_file = KAGGLE_DIR / "access_token"
-    json_file = KAGGLE_DIR / "kaggle.json"
-
-    token_file.write_text(API_TOKEN + "\n")
-    json_file.write_text(
-        json.dumps({
-            "username": USERNAME,
-            "key": LEGACY_KEY
-        }, indent=2) + "\n"
-    )
-
     os.chmod(str(KAGGLE_DIR), 0o700)
-    os.chmod(str(token_file), 0o600)
-    os.chmod(str(json_file), 0o600)
-
     os.environ["HOME"] = str(HOME)
     os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
-
-# ============================================================
-# STEP 3: CREATE PYTHON ENVIRONMENT
-# ============================================================
-
-def prepare_python():
-    print("[3/8] Preparing Kaggle Python environment", flush=True)
-
-    # Debian disables ensurepip for its system Python.
-    # Install Debian's pip, then create the venv without
-    # attempting to bootstrap pip through ensurepip.
-    if VENV_DIR.exists() and not VENV_PYTHON.exists():
-        print("Removing incomplete virtual environment.", flush=True)
-        shutil.rmtree(str(VENV_DIR))
-
-    if not VENV_PYTHON.exists():
-        run([
-            "python3", "-m", "venv",
-            "--system-site-packages",
-            "--without-pip",
-            str(VENV_DIR)
-        ])
-
-    # Check whether pip is visible in the new environment.
-    pip_check = run([
-        str(VENV_PYTHON), "-m", "pip", "--version"
-    ], check=False)
-
-    if pip_check.returncode != 0:
-        print(
-            "Virtual environment cannot access pip; "
-            "checking Debian's pip installation.",
-            flush=True
-        )
-
-        run([
-            "apt-get", "install", "--reinstall", "-y",
-            "python3-pip"
-        ])
-
-        pip_check = run([
-            str(VENV_PYTHON), "-m", "pip", "--version"
-        ], check=False)
-
-        if pip_check.returncode != 0:
-            raise RuntimeError(
-                "pip is still unavailable inside the virtual environment. "
-                "On Debian i386, compatible Python packages may be limited."
-            )
-
-    # Install Kaggle without writing to system Python.
-    run([
-        str(VENV_PYTHON), "-m", "pip",
-        "install", "--upgrade", "--ignore-installed", "kaggle"
-    ])
-
-    if not KAGGLE_BIN.exists():
-        raise RuntimeError("Kaggle CLI executable was not created.")
-
-    run([str(KAGGLE_BIN), "--version"])
+    token_file = KAGGLE_DIR / "access_token"
+    token_file.write_text(API_TOKEN + "\\n")
+    os.chmod(str(token_file), 0o600)
 
 
 # ============================================================
@@ -172,7 +96,7 @@ def prepare_python():
 # ============================================================
 
 def write_notebook():
-    print("[4/8] Writing notebook and metadata", flush=True)
+    print("[2/6] Writing notebook and metadata", flush=True)
 
     metadata = {
         "id": KERNEL_ID,
@@ -265,7 +189,7 @@ def kaggle_environment():
 def deploy():
     env = kaggle_environment()
 
-    print("[5/8] Testing Kaggle authentication", flush=True)
+    print("[3/6] Testing Kaggle authentication", flush=True)
 
     auth = run([
         str(KAGGLE_BIN), "kernels", "list", "--mine"
@@ -277,7 +201,7 @@ def deploy():
             "credentials are valid and accepted by the Kaggle API."
         )
 
-    print("[6/8] Submitting notebook", flush=True)
+    print("[4/6] Submitting notebook", flush=True)
 
     push = run([
         str(KAGGLE_BIN), "kernels", "push",
@@ -288,7 +212,7 @@ def deploy():
         raise RuntimeError("Kaggle notebook submission failed.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
-    print("[7/8] Monitoring execution", flush=True)
+    print("[5/6] Monitoring execution", flush=True)
 
     for attempt in range(20):
         print(
@@ -304,7 +228,7 @@ def deploy():
 
         if status.returncode == 0:
             if "complete" in output or "completed" in output:
-                print("[8/8] Notebook reports completion.", flush=True)
+                print("[6/6] Notebook reports completion.", flush=True)
                 print(NOTEBOOK_URL)
                 return
 
@@ -321,7 +245,7 @@ def deploy():
 
         time.sleep(30)
 
-    print("[8/8] Monitoring timed out or status was unavailable.")
+    print("[6/6] Monitoring timed out or status was unavailable.")
     print("Inspect notebook execution here:", NOTEBOOK_URL)
 
 
@@ -331,8 +255,6 @@ def deploy():
 
 def main():
     prepare_system()
-    prepare_credentials()
-    prepare_python()
     write_notebook()
     deploy()
 
