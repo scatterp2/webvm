@@ -92,7 +92,7 @@ def prepare_system():
     os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
     token_file = KAGGLE_DIR / "access_token"
-    token_file.write_text(API_TOKEN + "\\n")
+    token_file.write_text(API_TOKEN + "\n")
     os.chmod(str(token_file), 0o600)
 
 
