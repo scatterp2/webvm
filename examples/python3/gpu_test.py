@@ -74,6 +74,78 @@ def publish(stage, details=""):
         log(f"FEEDBACK_UPLOAD_FAILED stage={stage} error={type(exc).__name__}: {exc}")
 
 
+def run_diagnostic_command(command, timeout=10):
+    """Run a harmless GPU diagnostic and capture output in the Kaggle log."""
+    try:
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=timeout, check=False,
+        )
+        output = (result.stdout or "").strip()
+        log(f"DIAGNOSTIC_COMMAND command={command!r} exit={result.returncode}")
+        if output:
+            for line in output.splitlines()[-80:]:
+                log("DIAGNOSTIC_OUTPUT " + line)
+        return result.returncode, output
+    except FileNotFoundError:
+        log(f"DIAGNOSTIC_COMMAND_NOT_FOUND command={command!r}")
+        return 127, ""
+    except Exception as exc:
+        log(f"DIAGNOSTIC_COMMAND_ERROR command={command!r} error={type(exc).__name__}: {exc}")
+        return 1, ""
+
+
+def diagnose_gpu():
+    """Capture enough evidence to separate missing GPU allocation from CPU-only torch."""
+    log("GPU_PREFLIGHT_BEGIN")
+    for name in (
+        "KAGGLE_KERNEL_RUN_TYPE", "KAGGLE_KERNEL_INTEGRATION",
+        "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
+        "CUDA_HOME", "LD_LIBRARY_PATH",
+    ):
+        log(f"GPU_ENV {name}={os.environ.get(name, '<unset>')}")
+    log(f"GPU_DEVICE_NODES /dev/nvidia*={','.join(str(p) for p in sorted(Path('/dev').glob('nvidia*'))) or '<none>'}")
+    log(f"GPU_PROC_DRIVER_EXISTS={Path('/proc/driver/nvidia').exists()}")
+    smi_code, smi_output = run_diagnostic_command(["nvidia-smi", "-q"], timeout=15)
+    run_diagnostic_command(["sh", "-lc", "ls -l /dev/nvidia* 2>&1; cat /proc/driver/nvidia/version 2>&1"], timeout=10)
+    try:
+        import torch
+        log(f"TORCH_DIAGNOSTIC version={torch.__version__}")
+        log(f"TORCH_COMPILED_CUDA={getattr(torch.version, 'cuda', None)}")
+        log(f"TORCH_CUDA_AVAILABLE={torch.cuda.is_available()}")
+        log(f"TORCH_CUDA_DEVICE_COUNT={torch.cuda.device_count()}")
+        log("TORCH_BUILD_CONFIG_BEGIN")
+        for line in torch.__config__.show().splitlines()[-40:]:
+            log("TORCH_BUILD_CONFIG " + line)
+        log("TORCH_BUILD_CONFIG_END")
+        for index in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(index)
+            log(f"GPU_DEVICE index={index} name={props.name} total_memory={props.total_memory}")
+    except Exception as exc:
+        log(f"TORCH_DIAGNOSTIC_FAILED {type(exc).__name__}: {exc}")
+        raise
+    if not torch.cuda.is_available():
+        if smi_code == 0 and smi_output:
+            reason = (
+                "NVIDIA GPU is visible to nvidia-smi, but PyTorch reports CUDA unavailable. "
+                "This strongly indicates a CPU-only or CUDA-incompatible PyTorch install."
+            )
+        elif Path("/dev/nvidia0").exists() or Path("/proc/driver/nvidia").exists():
+            reason = (
+                "NVIDIA device/driver paths exist, but nvidia-smi or PyTorch cannot use CUDA. "
+                "Check driver/runtime compatibility and the installed PyTorch build."
+            )
+        else:
+            reason = (
+                "No usable NVIDIA device/driver is visible inside the Kaggle kernel. "
+                "Check whether Kaggle actually allocated the requested GPU; kernel metadata alone is not proof."
+            )
+        log("GPU_PREFLIGHT_CLASSIFICATION " + reason)
+        raise RuntimeError("CUDA preflight failed: " + reason)
+    log("GPU_PREFLIGHT_PASSED")
+    return torch
+
+
 def install_dependencies():
     log("DEPENDENCIES_INSTALLING transformers accelerate bitsandbytes")
     publish("DEPENDENCIES_INSTALLING", "Installing transformers, accelerate, bitsandbytes")
@@ -94,14 +166,8 @@ def main():
     log(f"RUN_STARTED tag={FEEDBACK_TAG} python={platform.python_version()} platform={platform.platform()}")
     publish("RUN_STARTED", f"model={MODEL_ID}; games={','.join(GAMES)}; python={platform.python_version()}")
     try:
-        import torch
-        log(f"TORCH version={torch.__version__} cuda_available={torch.cuda.is_available()} gpu_count={torch.cuda.device_count()}")
-        for index in range(torch.cuda.device_count()):
-            log(f"GPU index={index} name={torch.cuda.get_device_name(index)}")
-        publish("GPU_CHECK", f"torch={torch.__version__}; cuda={torch.cuda.is_available()}; gpu_count={torch.cuda.device_count()}")
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable; Kaggle GPU acceleration is required.")
-
+        torch = diagnose_gpu()
+        publish("GPU_CHECK", f"torch={torch.__version__}; torch_cuda_build={getattr(torch.version, 'cuda', None)}; cuda={torch.cuda.is_available()}; gpu_count={torch.cuda.device_count()}")
         install_dependencies()
         from transformers import (
             AutoModelForImageTextToText,
