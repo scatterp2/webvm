@@ -85,23 +85,10 @@ def main():
         print("WEBVM_FEEDBACK_FATAL missing script: {}".format(SCRIPT), flush=True)
         return 2
 
-    # Kaggle's current CLI documents --accelerator as the explicit selector for
-    # the T4 x2 pool. Keep pi.py untouched and execute a sibling runtime copy
-    # with that flag added, so metadata and the actual push request agree.
-    source = SCRIPT.read_text(encoding="utf-8")
-    old_push = '''        str(KAGGLE_BIN), "kernels", "push",
-        "-p", str(NOTEBOOK_DIR)
-    ], check=False, env=env)'''
-    new_push = '''        str(KAGGLE_BIN), "kernels", "push",
-        "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
-    ], check=False, env=env)'''
-    if old_push not in source:
-        append_line("WEBVM_FEEDBACK_FATAL could not safely locate the expected Kaggle push command; refusing to alter submission")
-        publish("PI_WRAPPER_FATAL")
-        return 2
-    runtime_script = SCRIPT.with_name("pi_gpu_requested_runtime.py")
-    runtime_script.write_text(source.replace(old_push, new_push, 1), encoding="utf-8")
-    append_line("KAGGLE_ACCELERATOR_REQUEST --accelerator NvidiaTeslaT4 (GPU T4 x2); metadata machine_shape is also NvidiaTeslaT4")
+    # pi.py now requests NvidiaTeslaT4 directly in the actual push command and
+    # kernel metadata. Execute that canonical script without source-text patching.
+    append_line("KAGGLE_ACCELERATOR_REQUEST configured in pi.py: --accelerator NvidiaTeslaT4; machine_shape=NvidiaTeslaT4")
+    runtime_script = SCRIPT
 
     LOG_FILE.write_text("", encoding="utf-8")
     append_line("PI_WRAPPER_STARTED tag={} script={}".format(FEEDBACK_TAG, SCRIPT.name))
