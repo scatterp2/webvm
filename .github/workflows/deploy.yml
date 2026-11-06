@@ -252,3 +252,6 @@ jobs:
       - name: Deploy GitHub Pages site
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # The 4 GB image is published as many chunks; allow Pages more than its 10-minute default.
+          timeout: 1200000
