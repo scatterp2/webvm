@@ -13,9 +13,9 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = ''
-LEGACY_KEY = ''
-API_TOKEN = ''
+USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday").strip()
+LEGACY_KEY = os.environ.get("KAGGLE_KEY", "").strip()
+API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
@@ -90,21 +90,30 @@ def prepare_credentials():
 
     token_file = KAGGLE_DIR / "access_token"
     json_file = KAGGLE_DIR / "kaggle.json"
+    KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    token_file.write_text(API_TOKEN + "\n")
-    json_file.write_text(
-        json.dumps({
-            "username": USERNAME,
-            "key": LEGACY_KEY
-        }, indent=2) + "\n"
-    )
+    # Credentials come from the runtime environment or a local credential
+    # file. Never store live credentials in source control.
+    if API_TOKEN:
+        token_file.write_text(API_TOKEN + "\n")
+        os.chmod(str(token_file), 0o600)
+
+    if LEGACY_KEY:
+        json_file.write_text(
+            json.dumps({"username": USERNAME, "key": LEGACY_KEY}, indent=2) + "\n"
+        )
+        os.chmod(str(json_file), 0o600)
 
     os.chmod(str(KAGGLE_DIR), 0o700)
-    os.chmod(str(token_file), 0o600)
-    os.chmod(str(json_file), 0o600)
+    if not token_file.is_file() and not json_file.is_file():
+        raise RuntimeError(
+            "Kaggle credentials are missing. Set KAGGLE_API_TOKEN, or provide "
+            "/root/.kaggle/access_token or /root/.kaggle/kaggle.json locally."
+        )
 
     os.environ["HOME"] = str(HOME)
-    os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
+    if API_TOKEN:
+        os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
 
 # ============================================================
@@ -256,7 +265,8 @@ def write_notebook():
 def kaggle_environment():
     env = os.environ.copy()
     env["HOME"] = str(HOME)
-    env["KAGGLE_API_TOKEN"] = API_TOKEN
+    if API_TOKEN:
+        env["KAGGLE_API_TOKEN"] = API_TOKEN
     return env
 
 
