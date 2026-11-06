@@ -475,13 +475,40 @@ def deploy():
 
     print("booting.....", flush=True)
 
-    push = run([
-        str(KAGGLE_BIN), "kernels", "push",
-        "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
-    ], check=False, env=env)
+    # Kaggle's SaveKernel endpoint can intermittently terminate TLS with
+    # SSLV3_ALERT_BAD_RECORD_MAC. Retry only this transient transport failure;
+    # do not repeat ordinary validation/authentication failures.
+    push = None
+    for push_attempt in range(1, 4):
+        push = run([
+            str(KAGGLE_BIN), "kernels", "push",
+            "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
+        ], check=False, env=env)
 
-    if push.returncode != 0:
-        raise RuntimeError("Kaggle notebook submission failed.")
+        if push.returncode == 0:
+            break
+
+        push_output = (push.stdout or "")
+        transient_tls_failure = (
+            "SSLV3_ALERT_BAD_RECORD_MAC" in push_output
+            or "ssl alert bad record mac" in push_output.lower()
+        )
+        if not transient_tls_failure or push_attempt == 3:
+            raise RuntimeError(
+                "Kaggle notebook submission failed (attempt {} of 3).".format(push_attempt)
+            )
+
+        delay = 5 * push_attempt
+        print(
+            "KAGGLE_PUSH_TRANSIENT_TLS_FAILURE attempt={} retry_in={}s".format(
+                push_attempt, delay
+            ),
+            flush=True,
+        )
+        time.sleep(delay)
+
+    if push is None or push.returncode != 0:
+        raise RuntimeError("Kaggle notebook submission failed after retries.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
     print("booting......", flush=True)
