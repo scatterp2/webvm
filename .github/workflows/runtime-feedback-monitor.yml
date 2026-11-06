@@ -84,7 +84,7 @@ jobs:
 
           while time.monotonic() - START < WINDOW_SECONDS:
               try:
-                  listing = get_json(BASE + "?" + urlencode({"limit": 50, "offset": 0}))
+                  listing = get_json(BASE + "?" + urlencode({"limit": 10, "offset": 0}))
                   data = unwrap(listing)
                   if isinstance(data, dict):
                       items = data.get("pastes") or data.get("items") or data.get("results") or []
@@ -93,7 +93,7 @@ jobs:
                   else:
                       items = []
                   matches = 0
-                  for item in items[:50]:
+                  for item in items[:10]:
                       body = body_from(item)
                       pid = paste_id(item)
                       if body and TAG in body:
