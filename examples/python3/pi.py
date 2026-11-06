@@ -13,9 +13,9 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday")
-LEGACY_KEY = os.environ.get("KAGGLE_LEGACY_KEY", "").strip()
-API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+USERNAME = "simonday"
+LEGACY_KEY = "fc837b9fcbf01dd51978287f9437068c"
+API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
@@ -90,24 +90,12 @@ def prepare_credentials():
     token_file = KAGGLE_DIR / "access_token"
     json_file = KAGGLE_DIR / "kaggle.json"
 
-    if not API_TOKEN:
-        token_file = KAGGLE_DIR / "access_token"
-        if token_file.exists():
-            API_TOKEN = token_file.read_text().strip()
-    if not API_TOKEN:
-        raise RuntimeError("Set KAGGLE_API_TOKEN or create /root/.kaggle/access_token.")
-    if not LEGACY_KEY:
-        json_file = KAGGLE_DIR / "kaggle.json"
-        if json_file.exists():
-            try:
-                LEGACY_KEY = json.loads(json_file.read_text()).get("key", "").strip()
-            except (OSError, ValueError):
-                pass
-    if not LEGACY_KEY:
-        raise RuntimeError("Set KAGGLE_LEGACY_KEY or provide /root/.kaggle/kaggle.json.")
     token_file.write_text(API_TOKEN + "\n")
     json_file.write_text(
-        json.dumps({"username": USERNAME, "key": LEGACY_KEY}, indent=2) + "\n"
+        json.dumps({
+            "username": USERNAME,
+            "key": LEGACY_KEY
+        }, indent=2) + "\n"
     )
 
     os.chmod(str(KAGGLE_DIR), 0o700)
