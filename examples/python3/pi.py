@@ -264,6 +264,41 @@ def kaggle_environment():
 # STEPS 5-8: AUTHENTICATE, SUBMIT, MONITOR
 # ============================================================
 
+def collect_kaggle_diagnostics(env):
+    """Fetch the failed kernel's logs before any later push can replace them."""
+    output_dir = Path("/tmp/kaggle-kernel-diagnostics")
+    if output_dir.exists():
+        shutil.rmtree(str(output_dir))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("\\n[DIAGNOSTICS] Fetching Kaggle kernel output and execution log.", flush=True)
+    result = run([
+        str(KAGGLE_BIN), "kernels", "output", KERNEL_ID,
+        "-p", str(output_dir), "-o"
+    ], check=False, env=env)
+    print("[DIAGNOSTICS] kaggle kernels output exit code={}".format(result.returncode), flush=True)
+
+    diagnostic_files = []
+    for path in output_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in (".log", ".txt", ".json", ".jsonl"):
+            diagnostic_files.append(path)
+
+    if not diagnostic_files:
+        print("[DIAGNOSTICS] No readable log/text/json files were downloaded.", flush=True)
+        return
+
+    for path in sorted(diagnostic_files):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print("[DIAGNOSTICS] Could not read {}: {}".format(path.name, exc), flush=True)
+            continue
+        print("\\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(text)), flush=True)
+        # Keep logs useful and bounded for the pste feedback channel.
+        print(text[-25000:], flush=True)
+        print("===== END_KAGGLE_DIAGNOSTIC_FILE {} =====".format(path.name), flush=True)
+
+
 def deploy():
     env = kaggle_environment()
 
@@ -313,9 +348,10 @@ def deploy():
                 return
 
             if "error" in output or "failed" in output:
-                print("Kaggle may have reported an execution failure.")
-                print("Inspect:", NOTEBOOK_URL)
-                return
+                print("Kaggle reported an execution failure; collecting its output logs before exiting.", flush=True)
+                collect_kaggle_diagnostics(env)
+                print("Inspect:", NOTEBOOK_URL, flush=True)
+                raise RuntimeError("Kaggle kernel execution failed; see KAGGLE_DIAGNOSTIC_FILE output above.")
         else:
             print(
                 "Status endpoint unavailable. The push may still have "
