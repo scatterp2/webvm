@@ -503,7 +503,7 @@ def deploy():
     # SSLV3_ALERT_BAD_RECORD_MAC from this VM's network path. Retry the
     # transient error, then make one final attempt with TLS 1.2 forced.
     push = None
-    transient_tls_failure = False
+    transient_transport_failure = False
     push_command = [
         str(KAGGLE_BIN), "kernels", "push",
         "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
@@ -565,7 +565,7 @@ def deploy():
         )
         push = run(push_command, check=False, env=tls12_env)
 
-    if push is not None and push.returncode != 0 and transient_tls_failure:
+    if push is not None and push.returncode != 0 and transient_transport_failure:
         # The WebVM network path consistently corrupts TLS to api.kaggle.com.
         # Test the same public API through Kaggle's www host before giving up.
         alt_host_dir = Path("/tmp/webvm-kaggle-alt-host")
