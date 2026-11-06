@@ -34,7 +34,7 @@
 			// Refresh each WebVM tab once when the repository's reset flag is set to "1".
 			(() => {
 				const resetUrl = 'https://raw.githubusercontent.com/scatterp2/webvm/main/reset';
-				const sessionFlag = 'webvm-reset-triggered';
+				const sessionFlag = 'webvm-reset-triggered-v2';
 
 				async function checkResetFlag() {
 					try {
@@ -43,15 +43,18 @@
 
 						const value = (await response.text()).trim();
 						if (value === '1') {
+							console.info('[WebVM reset] Remote reset flag is 1.');
 							if (sessionStorage.getItem(sessionFlag) !== '1') {
 								sessionStorage.setItem(sessionFlag, '1');
+								console.info('[WebVM reset] Reloading this tab once for the current reset flag.');
 								window.location.reload();
 							}
 						} else {
 							sessionStorage.removeItem(sessionFlag);
+							console.info('[WebVM reset] Remote reset flag is 0; reset marker cleared.');
 						}
 					} catch (_) {
-						// Ignore transient network errors and retry at the next interval.
+						console.warn('[WebVM reset] Could not check the remote reset flag; will retry.', _);
 					}
 				}
 
