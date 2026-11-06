@@ -250,7 +250,8 @@ def build_embedded_runtime():
     if old_prompt_fetch not in runtime_source:
         raise RuntimeError("Could not locate prompt-fetch block in kaggle_runtime.py; refusing to submit a partial experiment.")
     runtime_source = runtime_source.replace(old_prompt_fetch, new_prompt_fetch, 1)
-    print("RUNTIME_EMBEDDED source={} characters={} prompts={}".format(
+    compile(runtime_source, str(RUNTIME_FILE) + "[embedded]", "exec")
+    print("RUNTIME_EMBEDDED source={} characters={} prompts={} syntax=ok".format(
         RUNTIME_FILE.name, len(runtime_source), ",".join(GAMES)
     ), flush=True)
     return runtime_source
