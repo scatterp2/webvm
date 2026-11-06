@@ -31,32 +31,78 @@
 		<script src="serviceWorker.js"></script>
 		<script data-domain="webvm.io" src="https://plausible.leaningtech.com/js/script.js"></script>
 		<script>
-			// Refresh each WebVM tab once when the repository's reset flag is set to "1".
+			// The reset file is the generation source. Prefer its explicit value so
+			// resets do not depend on the GitHub commits API being available.
 			(() => {
 				const resetUrl = 'https://raw.githubusercontent.com/scatterp2/webvm/main/reset';
-				const sessionFlag = 'webvm-reset-triggered';
+				const markerPrefix = 'webvm-reset-triggered:';
+				const resetParam = 'reset';
+				let checking = false;
 
 				async function checkResetFlag() {
+					if (checking) return;
+					checking = true;
 					try {
-						const response = await fetch(resetUrl + '?t=' + Date.now(), { cache: 'no-store' });
-						if (!response.ok) return;
+						const response = await fetch(resetUrl + '?t=' + Date.now(), {
+							cache: 'no-store',
+							credentials: 'omit'
+						});
+						if (!response.ok) {
+							console.warn('[WebVM reset] Reset check returned HTTP', response.status);
+							return;
+						}
 
 						const value = (await response.text()).trim();
-						if (value === '1') {
-							if (sessionStorage.getItem(sessionFlag) !== '1') {
-								sessionStorage.setItem(sessionFlag, '1');
-								window.location.reload();
-							}
-						} else {
-							sessionStorage.removeItem(sessionFlag);
+						if (!value || value === '0' || value.toLowerCase() === 'off') {
+							console.info('[WebVM reset] No active reset generation.');
+							return;
 						}
-					} catch (_) {
-						// Ignore transient network errors and retry at the next interval.
+
+						let generation = value;
+						// Backward compatibility with the old reset file, whose
+						// content was always "1" and whose generation came from GitHub.
+						if (value === '1') {
+							const versionResponse = await fetch(
+								'https://api.github.com/repos/scatterp2/webvm/commits?path=reset&per_page=1&t=' + Date.now(),
+								{ cache: 'no-store', credentials: 'omit' }
+							);
+							if (!versionResponse.ok) {
+								console.warn('[WebVM reset] Legacy reset generation lookup failed; will retry.');
+								return;
+							}
+							const commits = await versionResponse.json();
+							if (!Array.isArray(commits) || !commits.length || !commits[0].sha) {
+								console.warn('[WebVM reset] No reset-file commit found; will retry.');
+								return;
+							}
+							generation = commits[0].sha.slice(0, 4).padStart(4, '0');
+						}
+
+						const marker = markerPrefix + generation;
+						const url = new URL(window.location.href);
+						const currentGeneration = url.searchParams.get(resetParam);
+						if (currentGeneration !== generation) {
+							url.searchParams.set(resetParam, generation);
+							window.history.replaceState(window.history.state, '', url.toString());
+						}
+
+						if (sessionStorage.getItem(marker) !== '1') {
+							// Mark before navigation to prevent a reload loop. Each new
+							// generation has a different key, so later resets still fire.
+							sessionStorage.setItem(marker, '1');
+							console.info('[WebVM reset] New generation ' + generation + '; reloading tab.');
+							window.location.replace(url.toString());
+						}
+					} catch (error) {
+						console.warn('[WebVM reset] Check failed; will retry.', error);
+					} finally {
+						checking = false;
 					}
 				}
 
 				checkResetFlag();
-				window.setInterval(checkResetFlag, 30000);
+				window.setInterval(checkResetFlag, 15000);
+				window.addEventListener('pageshow', checkResetFlag);
 			})();
 		</script>
 		%sveltekit.head%
