@@ -27,6 +27,7 @@ KAGGLE_BIN = VENV_DIR / "bin/kaggle"
 NOTEBOOK_DIR = Path("/home/user/my-notebook")
 NOTEBOOK_FILE = NOTEBOOK_DIR / "gpu-test.ipynb"
 METADATA_FILE = NOTEBOOK_DIR / "kernel-metadata.json"
+GPU_TEST_FILE = Path(__file__).resolve().parent / "gpu_test.py"
 
 KERNEL_SLUG = "automated-gpu-test"
 KERNEL_ID = USERNAME + "/" + KERNEL_SLUG
@@ -206,28 +207,29 @@ def write_notebook():
                 "execution_count": None,
                 "metadata": {},
                 "outputs": [],
-                "source": [
-                    "import os\n",
-                    "import platform\n",
-                    "print('Python:', platform.python_version())\n",
-                    "print('CUDA_VISIBLE_DEVICES:', os.environ.get('CUDA_VISIBLE_DEVICES'))\n",
-                    "try:\n",
-                    "    import torch\n",
-                    "    print('PyTorch:', torch.__version__)\n",
-                    "    print('CUDA available:', torch.cuda.is_available())\n",
-                    "    if torch.cuda.is_available():\n",
-                    "        print('GPU:', torch.cuda.get_device_name(0))\n",
-                    "        props = torch.cuda.get_device_properties(0)\n",
-                    "        print('GPU VRAM GB:', round(props.total_memory / (1024**3), 2))\n",
-                    "        x = torch.randn((2048, 2048), device='cuda')\n",
-                    "        y = x @ x\n",
-                    "        torch.cuda.synchronize()\n",
-                    "        print('GPU matrix test passed:', tuple(y.shape))\n",
-                    "    else:\n",
-                    "        print('No CUDA GPU detected.')\n",
-                    "except Exception as exc:\n",
-                    "    print('GPU test error:', repr(exc))\n"
-                ]
+#                 "source": [
+#                     "import os\n",
+#                     "import platform\n",
+#                     "print('Python:', platform.python_version())\n",
+#                     "print('CUDA_VISIBLE_DEVICES:', os.environ.get('CUDA_VISIBLE_DEVICES'))\n",
+#                     "try:\n",
+#                     "    import torch\n",
+#                     "    print('PyTorch:', torch.__version__)\n",
+#                     "    print('CUDA available:', torch.cuda.is_available())\n",
+#                     "    if torch.cuda.is_available():\n",
+#                     "        print('GPU:', torch.cuda.get_device_name(0))\n",
+#                     "        props = torch.cuda.get_device_properties(0)\n",
+#                     "        print('GPU VRAM GB:', round(props.total_memory / (1024**3), 2))\n",
+#                     "        x = torch.randn((2048, 2048), device='cuda')\n",
+#                     "        y = x @ x\n",
+#                     "        torch.cuda.synchronize()\n",
+#                     "        print('GPU matrix test passed:', tuple(y.shape))\n",
+#                     "    else:\n",
+#                     "        print('No CUDA GPU detected.')\n",
+#                     "except Exception as exc:\n",
+#                     "    print('GPU test error:', repr(exc))\n"
+#                 ]
+                "source": GPU_TEST_FILE.read_text(encoding="utf-8").splitlines(keepends=True),
             }
         ],
         "metadata": {
