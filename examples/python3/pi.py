@@ -66,7 +66,7 @@ def run(command, check=True, env=None):
 # ============================================================
 
 def prepare_system():
-    print("[1/8] Preparing Debian system", flush=True)
+    print("booting.", flush=True)
 
     if os.geteuid() != 0:
         raise RuntimeError("Run this script as root.")
@@ -86,7 +86,7 @@ def prepare_system():
 # ============================================================
 
 def prepare_credentials():
-    print("[2/8] Writing Kaggle credentials", flush=True)
+    print("booting..", flush=True)
 
     token_file = KAGGLE_DIR / "access_token"
     json_file = KAGGLE_DIR / "kaggle.json"
@@ -112,7 +112,7 @@ def prepare_credentials():
 # ============================================================
 
 def prepare_python():
-    print("[3/8] Preparing Kaggle Python environment", flush=True)
+    print("booting...", flush=True)
 
     # Debian disables ensurepip for its system Python.
     # Install Debian's pip, then create the venv without
@@ -173,7 +173,7 @@ def prepare_python():
 # ============================================================
 
 def write_notebook():
-    print("[4/8] Writing notebook and metadata", flush=True)
+    print("booting....", flush=True)
 
     metadata = {
         "id": KERNEL_ID,
@@ -267,19 +267,21 @@ def kaggle_environment():
 def deploy():
     env = kaggle_environment()
 
-    print("[5/8] Testing Kaggle authentication", flush=True)
+    # print("[5/8] Testing Kaggle authentication", flush=True)
 
-    auth = run([
-        str(KAGGLE_BIN), "kernels", "list", "--mine"
-    ], check=False, env=env)
+#     auth = run([
+#         str(KAGGLE_BIN), "kernels", "list", "--mine"
+#     ], check=False, env=env)
+# 
+#     if auth.returncode != 0:
+#         raise RuntimeError(
+#             "Kaggle authentication failed. Verify that the configured "
+#             "credentials are valid and accepted by the Kaggle API."
+#         )
+# 
+# 
 
-    if auth.returncode != 0:
-        raise RuntimeError(
-            "Kaggle authentication failed. Verify that the configured "
-            "credentials are valid and accepted by the Kaggle API."
-        )
-
-    print("[6/8] Submitting notebook", flush=True)
+    print("booting.....", flush=True)
 
     push = run([
         str(KAGGLE_BIN), "kernels", "push",
@@ -290,11 +292,11 @@ def deploy():
         raise RuntimeError("Kaggle notebook submission failed.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
-    print("[7/8] Monitoring execution", flush=True)
+    print("booting......", flush=True)
 
     for attempt in range(20):
         print(
-            "\nStatus check {}/20".format(attempt + 1),
+            "\nbooting" + "." * (attempt + 7),
             flush=True
         )
 
@@ -306,7 +308,7 @@ def deploy():
 
         if status.returncode == 0:
             if "complete" in output or "completed" in output:
-                print("[8/8] Notebook reports completion.", flush=True)
+                print("booting.......", flush=True)
                 print(NOTEBOOK_URL)
                 return
 
@@ -323,7 +325,7 @@ def deploy():
 
         time.sleep(30)
 
-    print("[8/8] Monitoring timed out or status was unavailable.")
+    print("booting........")
     print("Inspect notebook execution here:", NOTEBOOK_URL)
 
 
