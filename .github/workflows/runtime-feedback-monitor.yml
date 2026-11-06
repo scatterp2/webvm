@@ -29,7 +29,7 @@ jobs:
           BASE = "https://pste.us/api/v1/pastes"
           SEEN = set()
           START = time.monotonic()
-          WINDOW_SECONDS = 15 * 60
+          WINDOW_SECONDS = 5 * 60
 
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
