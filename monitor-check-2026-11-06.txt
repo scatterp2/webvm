@@ -1,0 +1,1 @@
+Trigger a fresh runtime-feedback poll after the restored deployment.
