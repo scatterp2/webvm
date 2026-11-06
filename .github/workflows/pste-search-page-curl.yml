@@ -1,4 +1,4 @@
-name: Fetch pste.us search page with curl
+name: Fetch all matching pste.us feedback logs
 
 on:
   push:
@@ -10,66 +10,67 @@ permissions:
   contents: read
 
 jobs:
-  fetch-search-page:
+  fetch-search-results:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Fetch exact search URL with curl
-        shell: bash
-        run: |
-          set -u
-          URL='https://pste.us/recent?search=WVMQWENWS_6D91C42F&sort=date&order=desc&limit=1'
-          mkdir -p pste-fetch
-          printf 'Requested URL: %s\n' "$URL"
-          set +e
-          curl --location --silent --show-error \
-            --connect-timeout 20 --max-time 90 \
-            --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' \
-            --dump-header pste-fetch/response-headers.txt \
-            --output pste-fetch/response-body.html \
-            --write-out '\nCURL_HTTP_STATUS=%{http_code}\nCURL_EFFECTIVE_URL=%{url_effective}\nCURL_REMOTE_IP=%{remote_ip}\nCURL_TOTAL_SECONDS=%{time_total}\n' \
-            "$URL"
-          CURL_EXIT=$?
-          set -e
-          printf 'CURL_EXIT_CODE=%s\n' "$CURL_EXIT"
-          printf '\n===== RESPONSE HEADERS =====\n'
-          if [ -f pste-fetch/response-headers.txt ]; then cat pste-fetch/response-headers.txt; else echo '(no response headers received)'; fi
-          printf '\n===== RESPONSE BODY (first 300 lines) =====\n'
-          if [ -f pste-fetch/response-body.html ]; then sed -n '1,300p' pste-fetch/response-body.html; else echo '(no response body received)'; fi
-          printf '\n===== RESPONSE BODY SIZE =====\n'
-          if [ -f pste-fetch/response-body.html ]; then wc -c pste-fetch/response-body.html; fi
-          exit "$CURL_EXIT"
-      - name: Fetch raw content of the first search result
+      - name: Fetch latest 20 search results
         shell: bash
         run: |
           set -euo pipefail
-          PASTE_ID="$(python3 - <<'PY'
+          mkdir -p pste-fetch/raw
+          URL='https://pste.us/recent?search=WVMQWENWS_6D91C42F&sort=date&order=desc&limit=20'
+          curl --location --silent --show-error --fail-with-body \
+            --connect-timeout 20 --max-time 90 \
+            --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' \
+            --dump-header pste-fetch/response-headers.txt \
+            --output pste-fetch/response-body.html "$URL"
+          printf 'SEARCH_URL=%s\n' "$URL"
+          printf '\n===== SEARCH RESULTS (matching paste IDs and titles) =====\n'
+          python3 - <<'PY' | tee pste-fetch/results.txt
+          import re
+          from pathlib import Path
+          from html import unescape
+          html = Path("pste-fetch/response-body.html").read_text(encoding="utf-8", errors="replace")
+          links = re.findall(r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"[^>]*>(.*?)</a>', html, re.S)
+          if not links:
+              print("NO_PASTE_TITLE_LINKS_FOUND")
+          for paste_id, title in links:
+              title = re.sub(r"<[^>]+>", "", title)
+              print(f"{paste_id}\t{unescape(title).strip()}")
+          print(f"RESULT_COUNT={len(links)}")
+          PY
+          python3 - <<'PY'
           import re
           from pathlib import Path
           html = Path("pste-fetch/response-body.html").read_text(encoding="utf-8", errors="replace")
-          match = re.search(r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', html)
-          if not match:
-              raise SystemExit("Could not find a paste-title link in the search page")
-          print(match.group(1))
+          links = re.findall(r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', html)
+          Path("pste-fetch/ids.txt").write_text("\n".join(dict.fromkeys(links)) + ("\n" if links else ""), encoding="utf-8")
           PY
-          )"
-          printf 'FIRST_RESULT_PASTE_ID=%s\n' "$PASTE_ID"
-          RAW_URL="https://pste.us/raw/$PASTE_ID"
-          printf 'RAW_URL=%s\n' "$RAW_URL"
-          curl --location --silent --show-error --fail-with-body \
-            --connect-timeout 20 --max-time 90 \
-            --dump-header pste-fetch/raw-headers.txt \
-            --output pste-fetch/raw-content.txt \
-            "$RAW_URL"
-          printf '\n===== FIRST RESULT RAW CONTENT =====\n'
-          cat pste-fetch/raw-content.txt
-          printf '\n===== RAW CONTENT SIZE =====\n'
-          wc -c pste-fetch/raw-content.txt
-      - name: Save page and raw paste as an artifact
+      - name: Fetch each matching raw paste and print diagnostic stages
+        shell: bash
+        run: |
+          set -u
+          while IFS= read -r PASTE_ID; do
+            [ -n "$PASTE_ID" ] || continue
+            printf '\n===== RAW PASTE %s =====\n' "$PASTE_ID"
+            set +e
+            curl --location --silent --show-error --fail-with-body \
+              --connect-timeout 20 --max-time 60 \
+              --output "pste-fetch/raw/$PASTE_ID.txt" "https://pste.us/raw/$PASTE_ID"
+            RC=$?
+            set -e
+            if [ "$RC" -ne 0 ]; then
+              printf 'RAW_FETCH_FAILED id=%s curl_exit=%s\n' "$PASTE_ID" "$RC"
+              continue
+            fi
+            cat "pste-fetch/raw/$PASTE_ID.txt"
+          done < pste-fetch/ids.txt
+      - name: Save complete search and raw logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pste-search-page-response
+          name: pste-all-matching-feedback-logs
           path: pste-fetch/
           if-no-files-found: warn
           retention-days: 7
