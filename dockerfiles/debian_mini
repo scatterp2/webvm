@@ -33,6 +33,9 @@ RUN groupadd -f sudo && \
     usermod -aG sudo user && \
     echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user && \
     chmod 0440 /etc/sudoers.d/user
+
+# CheerpX mounts the browser-provided documents device here; create the mountpoint and its parent in the base image.
+RUN mkdir -p /home/user/documents && chown -R user:user /home/user/documents
 # Run pi.py manually after supplying Kaggle credentials; never bake secrets into the image.
 RUN echo "python3 /home/user/examples/python3/pi_feedback.py &" >> /etc/bash.bashrc
 COPY --chown=user:user ./examples /home/user/examples
