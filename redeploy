@@ -11,3 +11,5 @@ Reset generation marker fix: detect new reset-file ETag even when the flag remai
 Use the reset file commit SHA as the reset generation identifier.
 
 Expose the reset generation in the browser URL as ?reset=NNNN.
+
+Start an active runtime log watcher for reset generation 1589.
