@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - runtime-feedback-monitor
+  workflow_dispatch:
 
 permissions:
   contents: read
