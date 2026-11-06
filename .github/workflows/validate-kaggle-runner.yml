@@ -59,7 +59,10 @@ jobs:
                   return self.body.encode("utf-8")
 
           def fake_urlopen(request, timeout=60):
-              game = urlparse(request.full_url).path.split("/")[-2]
+              path = urlparse(request.full_url).path
+              if path.endswith("/examples/python3/kaggle_runtime.py"):
+                  return FakeResponse(Path("examples/python3/kaggle_runtime.py").read_text(encoding="utf-8"))
+              game = path.split("/")[-2]
               return FakeResponse("TEST_PROMPT_" + game.upper())
 
           with patch("urllib.request.urlopen", side_effect=fake_urlopen):
