@@ -1,0 +1,99 @@
+name: Watch active WebVM runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/watch-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Poll WebVM runtime feedback
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time, re
+          from datetime import datetime, timezone
+          from urllib.request import Request, urlopen
+          from urllib.parse import quote, urlencode
+
+          BASE = "https://pste.us/api/v1/pastes"
+          seen = set()
+          started = time.monotonic()
+
+          def get_json(url):
+              req = Request(url, headers={"Accept":"application/json","User-Agent":"webvm-active-runtime-watch/1.0"})
+              with urlopen(req, timeout=15) as r:
+                  return json.loads(r.read().decode("utf-8", "replace"))
+
+          def unwrap(v):
+              return v.get("data", v) if isinstance(v, dict) else v
+
+          def body_from(v):
+              v = unwrap(v)
+              if isinstance(v, str):
+                  return v
+              if isinstance(v, dict):
+                  for k in ("body","content","raw","text","paste"):
+                      if isinstance(v.get(k), str):
+                          return v[k]
+                  for x in v.values():
+                      if isinstance(x, (dict,list,str)):
+                          b = body_from(x)
+                          if b:
+                              return b
+              if isinstance(v, list):
+                  for x in v:
+                      b = body_from(x)
+                      if b:
+                          return b
+              return ""
+
+          def pid_of(x):
+              if isinstance(x, dict):
+                  for k in ("id","key","paste_id","pasteId","slug"):
+                      if x.get(k):
+                          return str(x[k])
+              return ""
+
+          def safe_lines(body):
+              keep = []
+              for line in body.splitlines():
+                  if re.search(r'(FATAL|ERROR|Traceback|RuntimeError|Exception|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|DIAGNOSTICS|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
+                      keep.append(line[:1000])
+              return keep[-35:]
+
+          print("WATCH_STARTED", datetime.now(timezone.utc).isoformat(), flush=True)
+          while time.monotonic() - started < 600:
+              try:
+                  data = unwrap(get_json(BASE + "?" + urlencode({"limit":50,"offset":0})))
+                  items = data if isinstance(data,list) else (data.get("pastes") or data.get("items") or data.get("results") or []) if isinstance(data,dict) else []
+                  for item in items[:50]:
+                      pid = pid_of(item)
+                      body = body_from(item)
+                      if not body and pid:
+                          try:
+                              body = body_from(get_json(BASE + "/" + quote(pid, safe="")))
+                          except Exception:
+                              continue
+                      if not body or (pid and pid in seen):
+                          continue
+                      if not re.search(r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES)', body, re.I):
+                          continue
+                      seen.add(pid or str(hash(body)))
+                      print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
+                      for line in safe_lines(body):
+                          print(line, flush=True)
+                  print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
+              except Exception as e:
+                  print("POLL_ERROR", repr(e), flush=True)
+              time.sleep(20)
+          print("WATCH_FINISHED", datetime.now(timezone.utc).isoformat(), "matched=",len(seen), flush=True)
+          PY
