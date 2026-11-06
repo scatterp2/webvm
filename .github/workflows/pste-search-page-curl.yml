@@ -27,12 +27,12 @@ jobs:
             examples/python3/gpu_test.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
-      - name: Fetch latest 34 search results
+      - name: Fetch latest 35 search results
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p pste-fetch/raw
-          URL='https://pste.us/recent?search=WVMQWENWS_6D91C42F&sort=date&order=desc&limit=34'
+          URL='https://pste.us/recent?search=WVMQWENWS_6D91C42F&sort=date&order=desc&limit=35'
           curl --location --silent --show-error --fail-with-body \
             --connect-timeout 20 --max-time 90 \
             --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' \
