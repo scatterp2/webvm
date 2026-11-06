@@ -1,5 +1,10 @@
 name: Deploy
 
+# Prevent concurrent Pages deployments from holding the deployment lock.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
 # Define when the workflow should run
 on:
   # Deploy the latest main commit automatically.
