@@ -514,12 +514,23 @@ def deploy():
             break
 
         push_output = (push.stdout or "")
-        transient_tls_failure = (
-            "SSLV3_ALERT_BAD_RECORD_MAC" in push_output
-            or "ssl alert bad record mac" in push_output.lower()
-            or "TLSV1_ALERT_BAD_RECORD_MAC" in push_output
+        transient_transport_failure = any(
+            marker in push_output.lower()
+            for marker in (
+                "sslv3_alert_bad_record_mac",
+                "ssl alert bad record mac",
+                "tlsv1_alert_bad_record_mac",
+                "connection aborted",
+                "remote end closed connection without response",
+                "remotedisconnected",
+                "connection reset by peer",
+                "connection reset",
+                "connection timed out",
+                "read timed out",
+                "newconnectionerror",
+            )
         )
-        if not transient_tls_failure:
+        if not transient_transport_failure:
             raise RuntimeError(
                 "Kaggle notebook submission failed with a non-transient error."
             )
@@ -533,7 +544,7 @@ def deploy():
             )
             time.sleep(delay)
 
-    if push is not None and push.returncode != 0 and transient_tls_failure:
+    if push is not None and push.returncode != 0 and transient_transport_failure:
         tls_config = Path("/tmp/webvm-openssl-tls12.cnf")
         tls_config.write_text(
             "openssl_conf = openssl_init\n"
