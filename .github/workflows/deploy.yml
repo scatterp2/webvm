@@ -11,9 +11,9 @@ on:
   push:
     branches:
       - main
-    # The reset flag is polled by already-open WebVM tabs; changing it must not rebuild/redeploy.
-    paths-ignore:
-      - 'reset'
+    # Build/deploy only when the explicit redeploy trigger file changes.
+    paths:
+      - 'redeploy'
 
   # Allow manual triggering of the workflow from the Actions tab
   workflow_dispatch:
@@ -179,9 +179,9 @@ jobs:
       # Result is an ext2 image for webvm.
 
       # The .txt suffix enabled HTTP compression for free
-      - name: Generate image split chunks and .meta file
+      - name: Generate image split chunks and .meta file using the original 128 KiB chunks
         run: |
-          sudo split ${{ env.IMAGE_NAME }} ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.c -a 6 -b 4M -x --additional-suffix=.txt
+          sudo split ${{ env.IMAGE_NAME }} ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.c -a 6 -b 128k -x --additional-suffix=.txt
           sudo bash -c "stat -c%s ${{ env.IMAGE_NAME }} > ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.meta"
 
       # This step updates the default config_github_terminal.js file by performing the following actions:
