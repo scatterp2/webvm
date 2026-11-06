@@ -2,6 +2,11 @@ name: Deploy
 
 # Define when the workflow should run
 on:
+  # Deploy the latest main commit automatically.
+  push:
+    branches:
+      - main
+
   # Allow manual triggering of the workflow from the Actions tab
   workflow_dispatch:
 
@@ -50,13 +55,14 @@ jobs:
           shell: bash
           run: |
             # We check whether the Dockerfile_path is valid. 
-            if [ ! -f ${{ github.event.inputs.DOCKERFILE_PATH }} ]; then
-                echo "::error title=Invalid Dockerfile path::No file found at ${{ github.event.inputs.DOCKERFILE_PATH }}"
+            DOCKERFILE_PATH="${{ inputs.DOCKERFILE_PATH || 'dockerfiles/debian_mini' }}"
+            if [ ! -f "$DOCKERFILE_PATH" ]; then
+                echo "::error title=Invalid Dockerfile path::No file found at $DOCKERFILE_PATH"
                 echo "terminate=true" >> $GITHUB_ENV
             fi
 
         - name: Github Pages config guard clause
-          if: ${{ github.event.inputs.DEPLOY_TO_GITHUB_PAGES == 'true' }}
+          if: ${{ github.event_name == 'push' || inputs.DEPLOY_TO_GITHUB_PAGES == true }}
           run: |
             # We use the Github Rest api to get information regarding pages for the Github Repository and store it into a temporary file named "pages_response".
             set +e
@@ -93,7 +99,7 @@ jobs:
 
     env:
       TAG: "ext2-webvm-base-image" # Tag of docker image.
-      IMAGE_SIZE: '${{ github.event.inputs.IMAGE_SIZE }}'
+      IMAGE_SIZE: ${{ inputs.IMAGE_SIZE || '4000M' }}
       DEPLOY_DIR: /webvm_deploy/ # Path to directory where we host the final image from.
 
     permissions: # Permissions to grant the GITHUB_TOKEN.
@@ -107,13 +113,13 @@ jobs:
       - name: Generate the image_name.
         id: image_name_gen
         run: |
-          echo "IMAGE_NAME=$(basename ${{ github.event.inputs.DOCKERFILE_PATH }})_$(date +%Y%m%d)_${{ github.run_id }}.ext2" >> $GITHUB_ENV
+          echo "IMAGE_NAME=$(basename ${{ inputs.DOCKERFILE_PATH || 'dockerfiles/debian_mini' }})_$(date +%Y%m%d)_${{ github.run_id }}.ext2" >> $GITHUB_ENV
 
       # Create directory to host the image from.
       - run: sudo mkdir -p $DEPLOY_DIR
 
       # Build the i386 Dockerfile image.
-      - run: docker build . --tag $TAG --file ${{ github.event.inputs.DOCKERFILE_PATH }} --platform=i386
+      - run: docker build . --tag $TAG --file ${{ inputs.DOCKERFILE_PATH || 'dockerfiles/debian_mini' }} --platform=i386
       
       # Run the docker image so that we can export the container.
       # Run the Docker container with the Google Public DNS nameservers: 8.8.8.8, 8.8.4.4
@@ -216,7 +222,7 @@ jobs:
           path: ${{ env.DEPLOY_DIR }} # optional, default is _site/
 
       - name: github release # To upload our final ext2 image as a github release.
-        if: ${{ github.event.inputs.GITHUB_RELEASE == 'true' }}
+        if: ${{ inputs.GITHUB_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
           target_commitish: ${{ github.sha }} # Last commit on the GITHUB_REF branch or tag
@@ -226,7 +232,7 @@ jobs:
             ${{ env.IMAGE_NAME }}
 
   deploy_to_github_pages: # Job that deploys the github-pages artifact to github-pages.
-    if: ${{ github.event.inputs.DEPLOY_TO_GITHUB_PAGES == 'true' }}
+    if: ${{ github.event_name == 'push' || inputs.DEPLOY_TO_GITHUB_PAGES == true }}
     needs: build
     environment:
       name: github-pages
