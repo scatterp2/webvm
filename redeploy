@@ -9,3 +9,5 @@ Browser reset trigger fix: invalidate stale session marker and log reset checks.
 Reset generation marker fix: detect new reset-file ETag even when the flag remains 1.
 
 Use the reset file commit SHA as the reset generation identifier.
+
+Expose the reset generation in the browser URL as ?reset=NNNN.
