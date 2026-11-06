@@ -108,7 +108,7 @@ def main():
     publish("PI_WRAPPER_STARTED")
 
     process = subprocess.Popen(
-        [sys.executable, "-u", str(SCRIPT)],
+        [sys.executable, "-u", str(runtime_script)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
