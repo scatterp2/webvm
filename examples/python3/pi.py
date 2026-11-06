@@ -393,8 +393,31 @@ def collect_kaggle_diagnostics(env, reason):
 # STEPS 5-8: AUTHENTICATE, SUBMIT, MONITOR
 # ============================================================
 
+def ensure_accelerator_cli(env):
+    """Ensure the installed Kaggle CLI supports an explicit accelerator request."""
+    run([str(KAGGLE_BIN), "--version"], check=False, env=env)
+    help_result = run([
+        str(KAGGLE_BIN), "kernels", "push", "--help"
+    ], check=False, env=env)
+    if "--accelerator" in (help_result.stdout or ""):
+        print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE", flush=True)
+        return
+
+    print("KAGGLE_CLI_ACCELERATOR_FLAG_MISSING; upgrading Kaggle CLI before submission.", flush=True)
+    run([
+        str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "kaggle"
+    ], check=True, env=env)
+    help_result = run([
+        str(KAGGLE_BIN), "kernels", "push", "--help"
+    ], check=False, env=env)
+    if "--accelerator" not in (help_result.stdout or ""):
+        raise RuntimeError("Installed Kaggle CLI still does not support --accelerator after upgrade; refusing a CPU-ambiguous submission.")
+    print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE_AFTER_UPGRADE", flush=True)
+
+
 def deploy():
     env = kaggle_environment()
+    ensure_accelerator_cli(env)
 
     # print("[5/8] Testing Kaggle authentication", flush=True)
 
