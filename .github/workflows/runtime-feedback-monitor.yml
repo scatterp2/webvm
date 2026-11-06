@@ -23,7 +23,7 @@ jobs:
           from datetime import datetime, timezone
           from urllib.error import HTTPError, URLError
           from urllib.parse import quote, urlencode
-          from urllib.request import Request, urlopen
+          import subprocess
 
           TAG = "WVMQWENWS_6D91C42F"
           BASE = "https://pste.us/api/v1/pastes"
@@ -35,12 +35,14 @@ jobs:
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
           def get_json(url):
-              request = Request(url, headers={
-                  "Accept": "application/json",
-                  "User-Agent": "webvm-runtime-feedback-monitor/1.0",
-              })
-              with urlopen(request, timeout=5) as response:
-                  return json.loads(response.read().decode("utf-8", errors="replace"))
+              # curl --max-time bounds the whole transfer; urllib's socket
+              # timeout alone can be extended indefinitely by a slow response.
+              result = subprocess.run(
+                  ["curl", "--location", "--silent", "--show-error", "--fail",
+                   "--connect-timeout", "3", "--max-time", "5", url],
+                  capture_output=True, text=True, timeout=7, check=True,
+              )
+              return json.loads(result.stdout)
 
           def unwrap(value):
               if isinstance(value, dict) and "data" in value:
@@ -118,7 +120,7 @@ jobs:
                               # A paste may be listed before its body is fully available.
                               # Do not mark it seen until the tagged feedback is actually read.
                               print(f"[{stamp()}] DETAIL_NOT_READY id={pid}; will retry", flush=True)
-                      except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+                      except (HTTPError, URLError, TimeoutError, ValueError, subprocess.SubprocessError) as exc:
                           print(f"[{stamp()}] DETAIL_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
                   print(f"[{stamp()}] POLL_OK listed={len(items)} new_matches={matches} total_matches={sum(1 for _ in SEEN)}", flush=True)
               except (HTTPError, URLError, TimeoutError, ValueError) as exc:
