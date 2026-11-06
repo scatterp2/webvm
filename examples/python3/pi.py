@@ -183,6 +183,7 @@ def write_notebook():
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": True,
+        "machine_shape": "NvidiaTeslaT4",
         "enable_internet": True,
         "dataset_sources": [],
         "competition_sources": [],
