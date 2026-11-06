@@ -115,7 +115,9 @@ jobs:
                               print("===== END_FEEDBACK_MATCH =====\n", flush=True)
                               matches += 1
                           else:
-                              SEEN.add(pid)
+                              # A paste may be listed before its body is fully available.
+                              # Do not mark it seen until the tagged feedback is actually read.
+                              print(f"[{stamp()}] DETAIL_NOT_READY id={pid}; will retry", flush=True)
                       except (HTTPError, URLError, TimeoutError, ValueError) as exc:
                           print(f"[{stamp()}] DETAIL_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
                   print(f"[{stamp()}] POLL_OK listed={len(items)} new_matches={matches} total_matches={sum(1 for _ in SEEN)}", flush=True)
