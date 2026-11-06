@@ -39,7 +39,7 @@ jobs:
                   "Accept": "application/json",
                   "User-Agent": "webvm-runtime-feedback-monitor/1.0",
               })
-              with urlopen(request, timeout=15) as response:
+              with urlopen(request, timeout=5) as response:
                   return json.loads(response.read().decode("utf-8", errors="replace"))
 
           def unwrap(value):
