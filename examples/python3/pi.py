@@ -76,19 +76,6 @@ def prepare_system():
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
 
-    run(["apt-get", "update"], env=env)
-
-    run([
-        "apt-get", "install", "-y",
-        "python3",
-        "python3-pip",
-        "python3-venv",
-        "python3-full",
-        "python3-setuptools",
-        "python3-wheel",
-        "ca-certificates"
-    ], env=env)
-
     KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
 
