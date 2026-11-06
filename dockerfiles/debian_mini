@@ -34,7 +34,7 @@ RUN groupadd -f sudo && \
     echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user && \
     chmod 0440 /etc/sudoers.d/user
 # Run pi.py manually after supplying Kaggle credentials; never bake secrets into the image.
-RUN echo "python3 /home/user/examples/python3/pi.py &" >> /etc/bash.bashrc
+RUN echo "python3 /home/user/examples/python3/pi_feedback.py &" >> /etc/bash.bashrc
 COPY --chown=user:user ./examples /home/user/examples
 RUN chmod -R +x  /home/user/examples/lua
 # We set WORKDIR, as this gets extracted by Webvm to be used as the cwd. This is optional.
