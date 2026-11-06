@@ -19,3 +19,4 @@ Start a fresh WebVM runtime and monitor Kaggle GPU diagnostics for reset generat
 Force a new deployment attempt after reset generation 1590 did not reload the active browser. Deploy the current main branch and verify the published page contains the reset-generation script and Kaggle GPU preflight diagnostics.
 
 Deploy robust explicit reset generation 1592; avoid GitHub API dependency for future resets and verify the live reset script.
+Deploy live-fetch Kaggle runtime bootstrap from main; reset-generation logic already present in src/app.html.
