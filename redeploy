@@ -1,2 +1,3 @@
 Explicit deployment trigger. Change this file to build and deploy WebVM.
 Diagnostic rebuild: restore original 128 KiB image chunks.
+Restore Kaggle runner to pre-removal configuration.
