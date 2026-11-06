@@ -1,0 +1,49 @@
+name: Fetch pste.us search page with curl
+
+on:
+  push:
+    branches:
+      - runtime-feedback-monitor
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-search-page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch exact search URL with curl
+        shell: bash
+        run: |
+          set -u
+          URL='https://pste.us/recent?search=WVMQWENWS_6D91C42F&sort=date&order=desc&limit=1'
+          mkdir -p pste-fetch
+          printf 'Requested URL: %s\n' "$URL"
+          set +e
+          curl --location --silent --show-error \
+            --connect-timeout 20 --max-time 90 \
+            --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' \
+            --dump-header pste-fetch/response-headers.txt \
+            --output pste-fetch/response-body.html \
+            --write-out '\nCURL_HTTP_STATUS=%{http_code}\nCURL_EFFECTIVE_URL=%{url_effective}\nCURL_REMOTE_IP=%{remote_ip}\nCURL_TOTAL_SECONDS=%{time_total}\n' \
+            "$URL"
+          CURL_EXIT=$?
+          set -e
+          printf 'CURL_EXIT_CODE=%s\n' "$CURL_EXIT"
+          printf '\n===== RESPONSE HEADERS =====\n'
+          if [ -f pste-fetch/response-headers.txt ]; then cat pste-fetch/response-headers.txt; else echo '(no response headers received)'; fi
+          printf '\n===== RESPONSE BODY (first 300 lines) =====\n'
+          if [ -f pste-fetch/response-body.html ]; then sed -n '1,300p' pste-fetch/response-body.html; else echo '(no response body received)'; fi
+          printf '\n===== RESPONSE BODY SIZE =====\n'
+          if [ -f pste-fetch/response-body.html ]; then wc -c pste-fetch/response-body.html; fi
+          exit "$CURL_EXIT"
+      - name: Save complete response as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pste-search-page-response
+          path: pste-fetch/
+          if-no-files-found: warn
+          retention-days: 7
