@@ -7,9 +7,9 @@
 The goal is to reproduce the experiment described by [RikiyaT/lm_understand-logs](https://github.com/RikiyaT/lm_understand-logs), using **Qwen/Qwen3.8-27B** on Kaggle and the four game prompts **Pac-Man, Pong, Breakout, and Freeway**. Capture the model's responses and execution details so they can be compared against the source experiment. This is an interpretation/replication experiment: the current code sends prompts to the model; it does **not** directly edit Qwen's learned weights or the other model's parameters.
 
 Relevant files:
-- `examples/python3/pi.py` — prepares the Kaggle notebook, requests a GPU, submits the run, checks status, and downloads the real Kaggle logs/output after completion or failure.
-- `examples/python3/gpu_test.py` — small bootstrap cell that fetches the current experiment implementation from the branch's raw GitHub URL at run time.
-- `examples/python3/kaggle_runtime.py` — experiment implementation, GPU preflight diagnostics, prompt loading, inference, and result logging.
+- `examples/python3/pi.py` — prepares the Kaggle notebook, embeds the current runtime and all four source prompts at submission time, explicitly requests a T4 GPU, submits the run, checks status, and downloads the real Kaggle logs/output after completion or failure.
+- `examples/python3/gpu_test.py` — legacy standalone bootstrap that fetches the runtime from raw GitHub. The main `pi.py` submission path no longer uses it, because the latest run showed raw-GitHub DNS resolution failing inside Kaggle.
+- `examples/python3/kaggle_runtime.py` — experiment implementation, GPU preflight diagnostics, inference, and result logging. The submission script embeds this source into the Kaggle notebook and embeds the prompts from the four source files.
 - `examples/python3/pi_feedback.py` — wraps the submission script and publishes a redacted rolling log snapshot to pste.us for remote inspection.
 - `.github/workflows/runtime-feedback-monitor.yml` — polls pste.us for the unique tag `WVMQWENWS_6D91C42F` and prints matching diagnostic logs into GitHub Actions.
 - `monitor-check-2026-11-06.txt` — reminder to inspect actual Kaggle execution output, not just heartbeat messages.
@@ -30,7 +30,7 @@ The user has confirmed that changing the reset file to generation **1592** trigg
 
 Use the **`runtime-feedback-monitor` branch** for the Kaggle experiment and log-monitoring code. Inspect the latest GitHub Actions run for **Runtime feedback monitor**, open the `poll-pste-feedback` job, and search its output for `FEEDBACK_MATCH`, `GPU_PREFLIGHT`, `MODEL_LOADING`, `INFERENCE_STARTED`, `ANSWER_RESULT`, and `RUN_FAILED`. The monitor reads pste.us entries tagged `WVMQWENWS_6D91C42F`; pste is a transport for diagnostics, not the ultimate source of truth. The submission script also fetches `kaggle kernels logs simonday/automated-gpu-test` and the kernel output files so the real Kaggle run can be diagnosed even when the Kaggle-side upload to pste fails.
 
-The latest confirmed Kaggle diagnostic before the current fix showed **no GPU allocated to the batch kernel**: no `/dev/nvidia*` devices, no `nvidia-smi`, and `torch 2.11.0+cpu` with `torch.version.cuda=None`. The experiment correctly stopped before loading Qwen. The submission now explicitly requests `--accelerator NvidiaTeslaT4` as well as setting `machine_shape` in metadata, and the script collects Kaggle logs/output on success, failure, or timeout. This change still needs a fresh run to prove that Kaggle actually allocates the GPU; a successful GitHub Actions workflow only proves that the log-polling job ran, not that model inference succeeded.
+Two concrete failures have been observed in Kaggle runs: (1) a batch run had no `/dev/nvidia*` devices and installed `torch 2.11.0+cpu` (`torch.version.cuda=None`), so it stopped before loading Qwen; (2) a later run failed before the experiment started because Kaggle could not resolve `raw.githubusercontent.com` while executing the legacy bootstrap. The submission now explicitly requests `--accelerator NvidiaTeslaT4`, sets `machine_shape`, embeds the runtime and all four prompts into the notebook before submission, and collects Kaggle logs/output on success, failure, or timeout. The next fresh run must verify GPU allocation and Hugging Face/package network access; a successful GitHub Actions workflow alone does not prove model inference succeeded.
 
 **Agent workflow:** inspect the newest logs first; identify the earliest concrete failure; make a focused fix; commit it; wait for the workflow to finish; inspect its logs again; repeat until GPU preflight passes, the model loads, all four prompts are attempted, and the outputs are captured. Do not ask the user to retrieve logs that the repository tooling can fetch itself.
 
@@ -45,7 +45,7 @@ A WebVM-based browser compute environment with WebGPU virtual compute capabiliti
 
 ## Overview
 
-This [project](https://scatterp2.github.io/webvm/#authKey=tskey-auth-ktAfFfhKgK11CNTRL-MXoh6jmnuvSQ7XtfUYwQySr2q3wEkhfb) extends [WebVM](https://webvm.io) — a serverless Linux virtual machine running in your browser via WebAssembly — with additional compute capabilities and automation tooling.
+This [project](https://scatterp2.github.io/webvm/) extends [WebVM](https://webvm.io) — a serverless Linux virtual machine running in your browser via WebAssembly — with additional compute capabilities and automation tooling.
 
 ## Documentation
 
