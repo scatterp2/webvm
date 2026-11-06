@@ -13,9 +13,9 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = "simonday"
-LEGACY_KEY = "fc837b9fcbf01dd51978287f9437068c"
-API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
+USERNAME = ''
+LEGACY_KEY = ''
+API_TOKEN = ''
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
