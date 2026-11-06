@@ -13,9 +13,9 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = "simonday"
-LEGACY_KEY = "fc837b9fcbf01dd51978287f9437068c"
-API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
+USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday").strip()
+LEGACY_KEY = os.environ.get("KAGGLE_KEY", "").strip()
+API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
@@ -27,7 +27,9 @@ KAGGLE_BIN = VENV_DIR / "bin/kaggle"
 NOTEBOOK_DIR = Path("/home/user/my-notebook")
 NOTEBOOK_FILE = NOTEBOOK_DIR / "gpu-test.ipynb"
 METADATA_FILE = NOTEBOOK_DIR / "kernel-metadata.json"
-GPU_TEST_FILE = Path(__file__).resolve().parent / "gpu_test.py"
+RUNTIME_FILE = Path(__file__).resolve().parent / "kaggle_runtime.py"
+PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
+GAMES = ["pacman", "pong", "breakout", "freeway"]
 
 KERNEL_SLUG = "automated-gpu-test"
 KERNEL_ID = USERNAME + "/" + KERNEL_SLUG
@@ -90,21 +92,39 @@ def prepare_credentials():
 
     token_file = KAGGLE_DIR / "access_token"
     json_file = KAGGLE_DIR / "kaggle.json"
+    KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    token_file.write_text(API_TOKEN + "\n")
-    json_file.write_text(
-        json.dumps({
-            "username": USERNAME,
-            "key": LEGACY_KEY
-        }, indent=2) + "\n"
-    )
+    # Credentials come from the runtime environment or a local credential
+    # file. Never store live credentials in source control.
+    if API_TOKEN:
+        token_file.write_text(API_TOKEN + "\n")
+        os.chmod(str(token_file), 0o600)
+
+    if LEGACY_KEY:
+        json_file.write_text(
+            json.dumps({"username": USERNAME, "key": LEGACY_KEY}, indent=2) + "\n"
+        )
+        os.chmod(str(json_file), 0o600)
 
     os.chmod(str(KAGGLE_DIR), 0o700)
-    os.chmod(str(token_file), 0o600)
-    os.chmod(str(json_file), 0o600)
+    has_token = token_file.is_file() and bool(token_file.read_text(errors="ignore").strip())
+    has_legacy_key = False
+    if json_file.is_file():
+        try:
+            legacy = json.loads(json_file.read_text(encoding="utf-8"))
+            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))
+        except (OSError, ValueError, AttributeError):
+            has_legacy_key = False
+    if not has_token and not has_legacy_key:
+        raise RuntimeError(
+            "Kaggle credentials are missing or empty. Set KAGGLE_API_TOKEN, "
+            "or provide a valid /root/.kaggle/access_token or "
+            "/root/.kaggle/kaggle.json locally."
+        )
 
     os.environ["HOME"] = str(HOME)
-    os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
+    if API_TOKEN:
+        os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
 
 # ============================================================
@@ -169,8 +189,73 @@ def prepare_python():
 
 
 # ============================================================
-# STEP 4: CREATE NOTEBOOK AND METADATA
+# STEP 4: EMBED RUNTIME AND PROMPTS IN THE NOTEBOOK
 # ============================================================
+
+def build_embedded_runtime():
+    """Build a self-contained notebook cell so Kaggle need not fetch code/prompts from raw GitHub."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    if not RUNTIME_FILE.is_file():
+        raise RuntimeError("Missing experiment runtime: {}".format(RUNTIME_FILE))
+
+    runtime_source = RUNTIME_FILE.read_text(encoding="utf-8")
+    prompts = {}
+    for game in GAMES:
+        prompt_url = "{}/{}/prompt.txt".format(PROMPT_ROOT, game)
+        last_error = None
+        for attempt in range(3):
+            try:
+                request = Request(
+                    prompt_url,
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "User-Agent": "webvm-qwen-experiment-submitter/1.0",
+                    },
+                )
+                with urlopen(request, timeout=60) as response:
+                    prompts[game] = response.read().decode("utf-8")
+                print("PROMPT_EMBEDDED game={} characters={}".format(game, len(prompts[game])), flush=True)
+                break
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+                print("PROMPT_FETCH_RETRY game={} attempt={} error={}: {}".format(
+                    game, attempt + 1, type(exc).__name__, exc
+                ), flush=True)
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        if game not in prompts:
+            raise RuntimeError("Could not fetch source prompt for {} after 3 attempts: {}".format(game, last_error))
+
+    root_line = 'PROMPT_ROOT = "' + PROMPT_ROOT + '"'
+    if root_line not in runtime_source:
+        raise RuntimeError("Could not locate PROMPT_ROOT in kaggle_runtime.py; refusing to submit a partial experiment.")
+    runtime_source = runtime_source.replace(
+        root_line,
+        "PROMPTS = " + json.dumps(prompts, ensure_ascii=False, separators=(",", ":")),
+        1,
+    )
+
+    old_prompt_fetch = '''            prompt_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
+            log(f"PROMPT_FETCH_START game={game} url={prompt_url}")
+            publish("PROMPT_FETCH_START", f"game={game}; url={prompt_url}")
+            import requests
+            response = requests.get(prompt_url, timeout=120)
+            response.raise_for_status()
+            prompt = response.text'''
+    new_prompt_fetch = '''            prompt = PROMPTS[game]
+            log(f"PROMPT_SOURCE_EMBEDDED game={game} characters={len(prompt)}")
+            publish("PROMPT_SOURCE_EMBEDDED", f"game={game}; characters={len(prompt)}; source=embedded_at_submission")'''
+    if old_prompt_fetch not in runtime_source:
+        raise RuntimeError("Could not locate prompt-fetch block in kaggle_runtime.py; refusing to submit a partial experiment.")
+    runtime_source = runtime_source.replace(old_prompt_fetch, new_prompt_fetch, 1)
+    compile(runtime_source, str(RUNTIME_FILE) + "[embedded]", "exec")
+    print("RUNTIME_EMBEDDED source={} characters={} prompts={} syntax=ok".format(
+        RUNTIME_FILE.name, len(runtime_source), ",".join(GAMES)
+    ), flush=True)
+    return runtime_source
+
 
 def write_notebook():
     print("booting....", flush=True)
@@ -199,8 +284,8 @@ def write_notebook():
                 "cell_type": "markdown",
                 "metadata": {},
                 "source": [
-                    "# Automated GPU Test\n",
-                    "Checks GPU availability in a Kaggle session."
+                    "# Qwen Weight-Space Interpretation Replication\n",
+                    "Runs the four source prompts against Qwen/Qwen3.8-27B. Runtime code and prompts are embedded at submission time to avoid raw-GitHub DNS dependencies in Kaggle."
                 ]
             },
             {
@@ -230,7 +315,7 @@ def write_notebook():
 #                     "except Exception as exc:\n",
 #                     "    print('GPU test error:', repr(exc))\n"
 #                 ]
-                "source": GPU_TEST_FILE.read_text(encoding="utf-8").splitlines(keepends=True),
+                "source": build_embedded_runtime().splitlines(keepends=True),
             }
         ],
         "metadata": {
@@ -257,51 +342,83 @@ def write_notebook():
 def kaggle_environment():
     env = os.environ.copy()
     env["HOME"] = str(HOME)
-    env["KAGGLE_API_TOKEN"] = API_TOKEN
+    if API_TOKEN:
+        env["KAGGLE_API_TOKEN"] = API_TOKEN
     return env
+
+
+
+
+# ============================================================
+# STEP 9: COLLECT ACTUAL KAGGLE EXECUTION LOGS
+# ============================================================
+
+def collect_kaggle_diagnostics(env, reason):
+    """Fetch the real kernel log and output files; do not rely only on pste heartbeats."""
+    print("\n===== KAGGLE_DIAGNOSTICS_BEGIN reason={} =====".format(reason), flush=True)
+
+    logs = run([
+        str(KAGGLE_BIN), "kernels", "logs", KERNEL_ID
+    ], check=False, env=env)
+    if logs.returncode != 0:
+        print("Kaggle logs command failed with exit code {}.".format(logs.returncode), flush=True)
+
+    output_dir = Path("/tmp/kaggle-automated-gpu-test-output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = run([
+        str(KAGGLE_BIN), "kernels", "output", KERNEL_ID,
+        "-p", str(output_dir), "-o"
+    ], check=False, env=env)
+    if output.returncode != 0:
+        print("Kaggle output download failed with exit code {}.".format(output.returncode), flush=True)
+
+    diagnostic_files = sorted(
+        p for p in output_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".log", ".txt", ".json"}
+    )
+    if not diagnostic_files:
+        print("No downloadable .log/.txt/.json diagnostic files were returned.", flush=True)
+    for path in diagnostic_files:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            print("\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(content)), flush=True)
+            print(content[-30000:], flush=True)
+            print("===== END_KAGGLE_DIAGNOSTIC_FILE {} =====".format(path.name), flush=True)
+        except OSError as exc:
+            print("Could not read diagnostic file {}: {}".format(path.name, exc), flush=True)
+
+    print("===== KAGGLE_DIAGNOSTICS_END =====", flush=True)
 
 
 # ============================================================
 # STEPS 5-8: AUTHENTICATE, SUBMIT, MONITOR
 # ============================================================
 
-def collect_kaggle_diagnostics(env):
-    """Fetch the failed kernel's logs before any later push can replace them."""
-    output_dir = Path("/tmp/kaggle-kernel-diagnostics")
-    if output_dir.exists():
-        shutil.rmtree(str(output_dir))
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("\\n[DIAGNOSTICS] Fetching Kaggle kernel output and execution log.", flush=True)
-    result = run([
-        str(KAGGLE_BIN), "kernels", "output", KERNEL_ID,
-        "-p", str(output_dir), "-o"
+def ensure_accelerator_cli(env):
+    """Ensure the installed Kaggle CLI supports an explicit accelerator request."""
+    run([str(KAGGLE_BIN), "--version"], check=False, env=env)
+    help_result = run([
+        str(KAGGLE_BIN), "kernels", "push", "--help"
     ], check=False, env=env)
-    print("[DIAGNOSTICS] kaggle kernels output exit code={}".format(result.returncode), flush=True)
-
-    diagnostic_files = []
-    for path in output_dir.rglob("*"):
-        if path.is_file() and path.suffix.lower() in (".log", ".txt", ".json", ".jsonl"):
-            diagnostic_files.append(path)
-
-    if not diagnostic_files:
-        print("[DIAGNOSTICS] No readable log/text/json files were downloaded.", flush=True)
+    if "--accelerator" in (help_result.stdout or ""):
+        print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE", flush=True)
         return
 
-    for path in sorted(diagnostic_files):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            print("[DIAGNOSTICS] Could not read {}: {}".format(path.name, exc), flush=True)
-            continue
-        print("\\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(text)), flush=True)
-        # Keep logs useful and bounded for the pste feedback channel.
-        print(text[-25000:], flush=True)
-        print("===== END_KAGGLE_DIAGNOSTIC_FILE {} =====".format(path.name), flush=True)
+    print("KAGGLE_CLI_ACCELERATOR_FLAG_MISSING; upgrading Kaggle CLI before submission.", flush=True)
+    run([
+        str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "kaggle"
+    ], check=True, env=env)
+    help_result = run([
+        str(KAGGLE_BIN), "kernels", "push", "--help"
+    ], check=False, env=env)
+    if "--accelerator" not in (help_result.stdout or ""):
+        raise RuntimeError("Installed Kaggle CLI still does not support --accelerator after upgrade; refusing a CPU-ambiguous submission.")
+    print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE_AFTER_UPGRADE", flush=True)
 
 
 def deploy():
     env = kaggle_environment()
+    ensure_accelerator_cli(env)
 
     # print("[5/8] Testing Kaggle authentication", flush=True)
 
@@ -321,7 +438,7 @@ def deploy():
 
     push = run([
         str(KAGGLE_BIN), "kernels", "push",
-        "-p", str(NOTEBOOK_DIR)
+        "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
     ], check=False, env=env)
 
     if push.returncode != 0:
@@ -346,13 +463,14 @@ def deploy():
             if "complete" in output or "completed" in output:
                 print("booting.......", flush=True)
                 print(NOTEBOOK_URL)
+                collect_kaggle_diagnostics(env, "completed")
                 return
 
             if "error" in output or "failed" in output:
-                print("Kaggle reported an execution failure; collecting its output logs before exiting.", flush=True)
-                collect_kaggle_diagnostics(env)
-                print("Inspect:", NOTEBOOK_URL, flush=True)
-                raise RuntimeError("Kaggle kernel execution failed; see KAGGLE_DIAGNOSTIC_FILE output above.")
+                print("Kaggle reported an execution failure.")
+                print("Inspect:", NOTEBOOK_URL)
+                collect_kaggle_diagnostics(env, "failed")
+                return
         else:
             print(
                 "Status endpoint unavailable. The push may still have "
@@ -363,7 +481,9 @@ def deploy():
         time.sleep(30)
 
     print("booting........")
+    print("Kaggle status did not reach a terminal state before the polling limit.")
     print("Inspect notebook execution here:", NOTEBOOK_URL)
+    collect_kaggle_diagnostics(env, "poll_timeout")
 
 
 # ============================================================
