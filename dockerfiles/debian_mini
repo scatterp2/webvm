@@ -41,7 +41,7 @@ RUN chmod -R +x  /home/user/examples/lua
 WORKDIR /root/
 RUN apt-get install -y wget
 RUN python3 -m venv /opt/kaggle-venv && \
-    /opt/kaggle-venv/bin/python -m pip install --no-cache-dir --upgrade pip kaggle && \
+    /opt/kaggle-venv/bin/python -m pip install --no-cache-dir --upgrade pip kaggle six && \
     /opt/kaggle-venv/bin/kaggle --version
 RUN npm install -g playwright
 # We set env, as this gets extracted by Webvm. This is optional.
