@@ -103,6 +103,39 @@ def run_diagnostic_command(command, timeout=10):
         return 1, ""
 
 
+def diagnose_network():
+    """Log whether Kaggle can resolve and reach the endpoints the run depends on."""
+    import socket
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    log("NETWORK_PREFLIGHT_BEGIN")
+    for host in ("pypi.org", "huggingface.co", "pste.us", "raw.githubusercontent.com"):
+        try:
+            addresses = sorted({item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)})
+            log(f"NETWORK_DNS_OK host={host} addresses={','.join(addresses[:6])}")
+        except Exception as exc:
+            log(f"NETWORK_DNS_FAILED host={host} error={type(exc).__name__}: {exc}")
+
+    for url in (
+        "https://pypi.org/simple/transformers/",
+        "https://huggingface.co/api/models/Qwen/Qwen3.8-27B",
+        "https://pste.us/",
+        "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_runtime.py",
+    ):
+        host = url.split("/")[2]
+        try:
+            request = Request(url, headers={"User-Agent": "webvm-kaggle-network-preflight/1.0"}, method="HEAD")
+            with urlopen(request, timeout=8) as response:
+                log(f"NETWORK_HTTP_OK host={host} status={response.status}")
+        except HTTPError as exc:
+            # A reachable endpoint returning an HTTP error still proves DNS/TCP/TLS worked.
+            log(f"NETWORK_HTTP_RESPONSE host={host} status={exc.code}")
+        except Exception as exc:
+            log(f"NETWORK_HTTP_FAILED host={host} error={type(exc).__name__}: {exc}")
+    log("NETWORK_PREFLIGHT_END")
+
+
 def diagnose_gpu():
     """Capture enough evidence to separate missing GPU allocation from CPU-only torch."""
     log("GPU_PREFLIGHT_BEGIN")
