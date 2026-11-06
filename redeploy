@@ -23,3 +23,5 @@ Deploy live-fetch Kaggle runtime bootstrap from main; reset-generation logic alr
 Reset fix: route reset generations through WebVM disk-cache reset before reload.
 
 Remove reset-trigger dependency on GitHub commits API; use visible URL reset generation.
+
+Automatically derive reset generation from reset-file Last-Modified; update URL and prevent reset loops.
