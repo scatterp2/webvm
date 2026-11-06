@@ -475,16 +475,17 @@ def deploy():
 
     print("booting.....", flush=True)
 
-    # Kaggle's SaveKernel endpoint can intermittently terminate TLS with
-    # SSLV3_ALERT_BAD_RECORD_MAC. Retry only this transient transport failure;
-    # do not repeat ordinary validation/authentication failures.
+    # Kaggle's SaveKernel endpoint intermittently terminates TLS with
+    # SSLV3_ALERT_BAD_RECORD_MAC from this VM's network path. Retry the
+    # transient error, then make one final attempt with TLS 1.2 forced.
     push = None
+    transient_tls_failure = False
+    push_command = [
+        str(KAGGLE_BIN), "kernels", "push",
+        "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
+    ]
     for push_attempt in range(1, 4):
-        push = run([
-            str(KAGGLE_BIN), "kernels", "push",
-            "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
-        ], check=False, env=env)
-
+        push = run(push_command, check=False, env=env)
         if push.returncode == 0:
             break
 
@@ -492,23 +493,45 @@ def deploy():
         transient_tls_failure = (
             "SSLV3_ALERT_BAD_RECORD_MAC" in push_output
             or "ssl alert bad record mac" in push_output.lower()
+            or "TLSV1_ALERT_BAD_RECORD_MAC" in push_output
         )
-        if not transient_tls_failure or push_attempt == 3:
+        if not transient_tls_failure:
             raise RuntimeError(
-                "Kaggle notebook submission failed (attempt {} of 3).".format(push_attempt)
+                "Kaggle notebook submission failed with a non-transient error."
             )
+        if push_attempt < 3:
+            delay = 5 * push_attempt
+            print(
+                "KAGGLE_PUSH_TRANSIENT_TLS_FAILURE attempt={} retry_in={}s".format(
+                    push_attempt, delay
+                ),
+                flush=True,
+            )
+            time.sleep(delay)
 
-        delay = 5 * push_attempt
+    if push is not None and push.returncode != 0 and transient_tls_failure:
+        tls_config = Path("/tmp/webvm-openssl-tls12.cnf")
+        tls_config.write_text(
+            "openssl_conf = openssl_init\n"
+            "[openssl_init]\n"
+            "ssl_conf = ssl_sect\n"
+            "[ssl_sect]\n"
+            "system_default = system_default_sect\n"
+            "[system_default_sect]\n"
+            "MinProtocol = TLSv1.2\n"
+            "MaxProtocol = TLSv1.2\n",
+            encoding="utf-8",
+        )
+        tls12_env = env.copy()
+        tls12_env["OPENSSL_CONF"] = str(tls_config)
         print(
-            "KAGGLE_PUSH_TRANSIENT_TLS_FAILURE attempt={} retry_in={}s".format(
-                push_attempt, delay
-            ),
+            "KAGGLE_PUSH_TLS12_FALLBACK config={} action=retry".format(tls_config),
             flush=True,
         )
-        time.sleep(delay)
+        push = run(push_command, check=False, env=tls12_env)
 
     if push is None or push.returncode != 0:
-        raise RuntimeError("Kaggle notebook submission failed after retries.")
+        raise RuntimeError("Kaggle notebook submission failed after TLS retries and fallback.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
     print("booting......", flush=True)
