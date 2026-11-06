@@ -325,13 +325,57 @@
 			setScreenSize(display);
 			cx.setActivateConsole(handleActivateConsole);
 		}
+		// Reset requests are serviced only after the virtual disk and Linux
+		// runtime are initialized, so blockCache.reset() is never skipped.
+		runtimeReady = true;
+		if (pendingResetGeneration) {
+			await performGenerationReset();
+			return;
+		}
 		// Run the command in a loop, in case the user exits
 		while (true)
 		{
 			await cx.run(configObj.cmd, configObj.args, configObj.opts);
 		}
 	}
-	onMount(initTerminal);
+	let pendingResetGeneration = null;
+	let runtimeReady = false;
+	let resetInProgress = false;
+
+	async function performGenerationReset() {
+		if (!runtimeReady || !blockCache || !pendingResetGeneration || resetInProgress)
+			return;
+		resetInProgress = true;
+		const generation = pendingResetGeneration;
+		pendingResetGeneration = null;
+		console.info('[WebVM reset] Resetting disk cache for generation ' + generation);
+		try {
+			await blockCache.reset();
+			console.info('[WebVM reset] Disk cache reset complete; reloading WebVM.');
+			location.reload();
+		} catch (error) {
+			resetInProgress = false;
+			console.error('[WebVM reset] Disk cache reset failed.', error);
+		}
+	}
+
+	function handleGenerationReset(event) {
+		const generation = event?.detail?.generation || window.__webvmPendingResetGeneration;
+		if (!generation)
+			return;
+		pendingResetGeneration = String(generation);
+		void performGenerationReset();
+	}
+
+	onMount(() => {
+		window.addEventListener('webvm-reset-request', handleGenerationReset);
+		// app.html runs in the document head, before this component mounts.
+		if (window.__webvmPendingResetGeneration) {
+			pendingResetGeneration = String(window.__webvmPendingResetGeneration);
+		}
+		void initTerminal();
+		return () => window.removeEventListener('webvm-reset-request', handleGenerationReset);
+	});
 
 	// Auto-connect with hardcoded auth key
 	// This will be called after initTerminal completes and cx is initialized
