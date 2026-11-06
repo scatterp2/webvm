@@ -207,6 +207,7 @@ def main():
     log(f"RUN_STARTED tag={FEEDBACK_TAG} python={platform.python_version()} platform={platform.platform()}")
     publish("RUN_STARTED", f"model={MODEL_ID}; games={','.join(GAMES)}; python={platform.python_version()}")
     try:
+        diagnose_network()
         torch = diagnose_gpu()
         publish("GPU_CHECK", f"torch={torch.__version__}; torch_cuda_build={getattr(torch.version, 'cuda', None)}; cuda={torch.cuda.is_available()}; gpu_count={torch.cuda.device_count()}")
         install_dependencies()
