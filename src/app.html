@@ -90,8 +90,11 @@
 							// Mark before navigation to prevent a reload loop. Each new
 							// generation has a different key, so later resets still fire.
 							sessionStorage.setItem(marker, '1');
-							console.info('[WebVM reset] New generation ' + generation + '; reloading tab.');
-							window.location.replace(url.toString());
+							console.info('[WebVM reset] New generation ' + generation + '; requesting a disk-cache reset.');
+							window.__webvmPendingResetGeneration = generation;
+							window.dispatchEvent(new CustomEvent('webvm-reset-request', {
+								detail: { generation }
+							}));
 						}
 					} catch (error) {
 						console.warn('[WebVM reset] Check failed; will retry.', error);
