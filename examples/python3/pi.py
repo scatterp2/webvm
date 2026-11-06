@@ -288,7 +288,7 @@ def kaggle_environment():
 
 def collect_kaggle_diagnostics(env, reason):
     """Fetch the real kernel log and output files; do not rely only on pste heartbeats."""
-    print("\\n===== KAGGLE_DIAGNOSTICS_BEGIN reason={} =====".format(reason), flush=True)
+    print("\n===== KAGGLE_DIAGNOSTICS_BEGIN reason={} =====".format(reason), flush=True)
 
     logs = run([
         str(KAGGLE_BIN), "kernels", "logs", KERNEL_ID
@@ -314,7 +314,7 @@ def collect_kaggle_diagnostics(env, reason):
     for path in diagnostic_files:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
-            print("\\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(content)), flush=True)
+            print("\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(content)), flush=True)
             print(content[-30000:], flush=True)
             print("===== END_KAGGLE_DIAGNOSTIC_FILE {} =====".format(path.name), flush=True)
         except OSError as exc:
