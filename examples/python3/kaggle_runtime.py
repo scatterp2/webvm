@@ -27,6 +27,7 @@ MAX_CONTEXT_TOKENS = 65536
 MAX_NEW_TOKENS = 49152
 LOG_PATH = Path("/kaggle/working/weight_space_experiment.log")
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+FEEDBACK_AVAILABLE = True
 
 
 def timestamp():
@@ -42,6 +43,9 @@ def log(message):
 
 def publish(stage, details=""):
     """Publish a public diagnostic paste. Never include credentials or env dumps."""
+    global FEEDBACK_AVAILABLE
+    if not FEEDBACK_AVAILABLE:
+        return
     content = (
         f"{FEEDBACK_TAG}\n"
         f"source=KAGGLE\n"
@@ -65,13 +69,17 @@ def publish(stage, details=""):
             },
             method="POST",
         )
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=5) as response:
             result = json.loads(response.read().decode("utf-8", errors="replace"))
         paste_url = result.get("url") or result.get("paste_url")
         paste_id = result.get("id") or result.get("key")
         log(f"FEEDBACK_UPLOAD_OK stage={stage} url={paste_url or paste_id or 'created'}")
     except Exception as exc:
         log(f"FEEDBACK_UPLOAD_FAILED stage={stage} error={type(exc).__name__}: {exc}")
+        message = str(exc).lower()
+        if "temporary failure in name resolution" in message or "name or service not known" in message:
+            FEEDBACK_AVAILABLE = False
+            log("FEEDBACK_DISABLED reason=dns_failure; continuing with Kaggle log/output collection")
 
 
 def run_diagnostic_command(command, timeout=10):
