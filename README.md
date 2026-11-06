@@ -45,7 +45,7 @@ A WebVM-based browser compute environment with WebGPU virtual compute capabiliti
 
 ## Overview
 
-This [project](https://scatterp2.github.io/webvm/#authKey=tskey-auth-ktAfFfhKgK11CNTRL-MXoh6jmnuvSQ7XtfUYwQySr2q3wEkhfb) extends [WebVM](https://webvm.io) — a serverless Linux virtual machine running in your browser via WebAssembly — with additional compute capabilities and automation tooling.
+This [project](https://scatterp2.github.io/webvm/) extends [WebVM](https://webvm.io) — a serverless Linux virtual machine running in your browser via WebAssembly — with additional compute capabilities and automation tooling.
 
 ## Documentation
 
