@@ -31,30 +31,45 @@
 		<script src="serviceWorker.js"></script>
 		<script data-domain="webvm.io" src="https://plausible.leaningtech.com/js/script.js"></script>
 		<script>
-			// Refresh each WebVM tab once when the repository's reset flag is set to "1".
+			// Reload once for each distinct version of an asserted reset flag.
 			(() => {
 				const resetUrl = 'https://raw.githubusercontent.com/scatterp2/webvm/main/reset';
-				const sessionFlag = 'webvm-reset-triggered-v2';
+				const markerPrefix = 'webvm-reset-triggered:';
 
 				async function checkResetFlag() {
 					try {
 						const response = await fetch(resetUrl + '?t=' + Date.now(), { cache: 'no-store' });
-						if (!response.ok) return;
+						if (!response.ok) {
+							console.warn('[WebVM reset] Reset check returned HTTP', response.status);
+							return;
+						}
 
 						const value = (await response.text()).trim();
-						if (value === '1') {
-							console.info('[WebVM reset] Remote reset flag is 1.');
-							if (sessionStorage.getItem(sessionFlag) !== '1') {
-								sessionStorage.setItem(sessionFlag, '1');
-								console.info('[WebVM reset] Reloading this tab once for the current reset flag.');
-								window.location.reload();
+						if (value !== '1') {
+							for (let i = sessionStorage.length - 1; i >= 0; i--) {
+								const key = sessionStorage.key(i);
+								if (key && key.startsWith(markerPrefix)) sessionStorage.removeItem(key);
 							}
-						} else {
-							sessionStorage.removeItem(sessionFlag);
-							console.info('[WebVM reset] Remote reset flag is 0; reset marker cleared.');
+							console.info('[WebVM reset] Reset flag is not 1; reset markers cleared.');
+							return;
 						}
-					} catch (_) {
-						console.warn('[WebVM reset] Could not check the remote reset flag; will retry.', _);
+
+						// A new commit to reset changes this file's ETag, even if its content is still "1".
+						// This allows a later reset to trigger without requiring the browser to observe an intervening "0".
+						const version = response.headers.get('ETag') || response.headers.get('Last-Modified');
+						if (!version) {
+							console.warn('[WebVM reset] Reset flag is 1 but no version header is available; refusing an unsafe repeated reload.');
+							return;
+						}
+
+						const marker = markerPrefix + version;
+						if (sessionStorage.getItem(marker) !== '1') {
+							sessionStorage.setItem(marker, '1');
+							console.info('[WebVM reset] New reset version detected; reloading this tab.');
+							window.location.reload();
+						}
+					} catch (error) {
+						console.warn('[WebVM reset] Could not check the remote reset flag; will retry.', error);
 					}
 				}
 
