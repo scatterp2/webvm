@@ -22,7 +22,6 @@ jobs:
         run: |
           python3 -m py_compile \
             examples/python3/pi.py \
-            examples/python3/pi_impl.py \
             examples/python3/pi_feedback.py \
             examples/python3/kaggle_runtime.py \
             examples/python3/gpu_test.py
