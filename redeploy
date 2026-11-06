@@ -3,3 +3,5 @@ Diagnostic rebuild: restore original 128 KiB image chunks.
 Restore Kaggle runner to pre-removal configuration.
 Add Kaggle error-log collection to runtime diagnostics.
 Explicitly request NvidiaTeslaT4 in Kaggle kernel metadata.
+
+Browser reset trigger fix: invalidate stale session marker and log reset checks.
