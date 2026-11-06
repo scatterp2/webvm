@@ -25,7 +25,7 @@ def timestamp():
 def redact(value):
     text = str(value)
     text = re.sub(r"(?i)KGAT_[A-Za-z0-9_-]+", "[REDACTED_KAGGLE_TOKEN]", text)
-    text = re.sub(r"\\b[0-9a-fA-F]{32}\\b", "[REDACTED_HEX_TOKEN]", text)
+    text = re.sub(r"\b[0-9a-fA-F]{32}\b", "[REDACTED_HEX_TOKEN]", text)
     text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)\S+", r"\1[REDACTED]", text)
     text = re.sub(r"(?i)(api[_ -]?token\s*[:=]\s*)\S+", r"\1[REDACTED]", text)
     text = re.sub(r'(?i)("key"\s*:\s*")[^"]+(")', r"\1[REDACTED]\2", text)
