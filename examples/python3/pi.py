@@ -280,6 +280,49 @@ def kaggle_environment():
     return env
 
 
+
+
+# ============================================================
+# STEP 9: COLLECT ACTUAL KAGGLE EXECUTION LOGS
+# ============================================================
+
+def collect_kaggle_diagnostics(env, reason):
+    """Fetch the real kernel log and output files; do not rely only on pste heartbeats."""
+    print("\\n===== KAGGLE_DIAGNOSTICS_BEGIN reason={} =====".format(reason), flush=True)
+
+    logs = run([
+        str(KAGGLE_BIN), "kernels", "logs", KERNEL_ID
+    ], check=False, env=env)
+    if logs.returncode != 0:
+        print("Kaggle logs command failed with exit code {}.".format(logs.returncode), flush=True)
+
+    output_dir = Path("/tmp/kaggle-automated-gpu-test-output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = run([
+        str(KAGGLE_BIN), "kernels", "output", KERNEL_ID,
+        "-p", str(output_dir), "-o"
+    ], check=False, env=env)
+    if output.returncode != 0:
+        print("Kaggle output download failed with exit code {}.".format(output.returncode), flush=True)
+
+    diagnostic_files = sorted(
+        p for p in output_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in {".log", ".txt", ".json"}
+    )
+    if not diagnostic_files:
+        print("No downloadable .log/.txt/.json diagnostic files were returned.", flush=True)
+    for path in diagnostic_files:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            print("\\n===== KAGGLE_DIAGNOSTIC_FILE {} bytes={} =====".format(path.name, len(content)), flush=True)
+            print(content[-30000:], flush=True)
+            print("===== END_KAGGLE_DIAGNOSTIC_FILE {} =====".format(path.name), flush=True)
+        except OSError as exc:
+            print("Could not read diagnostic file {}: {}".format(path.name, exc), flush=True)
+
+    print("===== KAGGLE_DIAGNOSTICS_END =====", flush=True)
+
+
 # ============================================================
 # STEPS 5-8: AUTHENTICATE, SUBMIT, MONITOR
 # ============================================================
@@ -305,7 +348,7 @@ def deploy():
 
     push = run([
         str(KAGGLE_BIN), "kernels", "push",
-        "-p", str(NOTEBOOK_DIR)
+        "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
     ], check=False, env=env)
 
     if push.returncode != 0:
@@ -330,11 +373,13 @@ def deploy():
             if "complete" in output or "completed" in output:
                 print("booting.......", flush=True)
                 print(NOTEBOOK_URL)
+                collect_kaggle_diagnostics(env, "completed")
                 return
 
             if "error" in output or "failed" in output:
-                print("Kaggle may have reported an execution failure.")
+                print("Kaggle reported an execution failure.")
                 print("Inspect:", NOTEBOOK_URL)
+                collect_kaggle_diagnostics(env, "failed")
                 return
         else:
             print(
@@ -346,7 +391,9 @@ def deploy():
         time.sleep(30)
 
     print("booting........")
+    print("Kaggle status did not reach a terminal state before the polling limit.")
     print("Inspect notebook execution here:", NOTEBOOK_URL)
+    collect_kaggle_diagnostics(env, "poll_timeout")
 
 
 # ============================================================
