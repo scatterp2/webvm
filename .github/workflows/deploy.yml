@@ -176,7 +176,7 @@ jobs:
       # The .txt suffix enabled HTTP compression for free
       - name: Generate image split chunks and .meta file
         run: |
-          sudo split ${{ env.IMAGE_NAME }} ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.c -a 6 -b 128k -x --additional-suffix=.txt
+          sudo split ${{ env.IMAGE_NAME }} ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.c -a 6 -b 4M -x --additional-suffix=.txt
           sudo bash -c "stat -c%s ${{ env.IMAGE_NAME }} > ${{ env.DEPLOY_DIR }}/${{ env.IMAGE_NAME }}.meta"
 
       # This step updates the default config_github_terminal.js file by performing the following actions:
@@ -253,5 +253,5 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
         with:
-          # The 4 GB image is published as many chunks; allow Pages more than its 10-minute default.
-          timeout: 1200000
+          # deploy-pages caps this at 600000 ms (10 minutes); avoid unsupported larger values.
+          timeout: 600000
