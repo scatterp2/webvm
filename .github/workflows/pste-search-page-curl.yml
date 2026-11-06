@@ -39,7 +39,33 @@ jobs:
           printf '\n===== RESPONSE BODY SIZE =====\n'
           if [ -f pste-fetch/response-body.html ]; then wc -c pste-fetch/response-body.html; fi
           exit "$CURL_EXIT"
-      - name: Save complete response as an artifact
+      - name: Fetch raw content of the first search result
+        shell: bash
+        run: |
+          set -euo pipefail
+          PASTE_ID="$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("pste-fetch/response-body.html").read_text(encoding="utf-8", errors="replace")
+          match = re.search(r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', html)
+          if not match:
+              raise SystemExit("Could not find a paste-title link in the search page")
+          print(match.group(1))
+          PY
+          )"
+          printf 'FIRST_RESULT_PASTE_ID=%s\n' "$PASTE_ID"
+          RAW_URL="https://pste.us/raw/$PASTE_ID"
+          printf 'RAW_URL=%s\n' "$RAW_URL"
+          curl --location --silent --show-error --fail-with-body \
+            --connect-timeout 20 --max-time 90 \
+            --dump-header pste-fetch/raw-headers.txt \
+            --output pste-fetch/raw-content.txt \
+            "$RAW_URL"
+          printf '\n===== FIRST RESULT RAW CONTENT =====\n'
+          cat pste-fetch/raw-content.txt
+          printf '\n===== RAW CONTENT SIZE =====\n'
+          wc -c pste-fetch/raw-content.txt
+      - name: Save page and raw paste as an artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
