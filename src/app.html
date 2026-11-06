@@ -56,9 +56,15 @@
 
 						// A new commit to reset changes this file's ETag, even if its content is still "1".
 						// This allows a later reset to trigger without requiring the browser to observe an intervening "0".
-						const version = response.headers.get('ETag') || response.headers.get('Last-Modified');
+						const versionResponse = await fetch('https://api.github.com/repos/scatterp2/webvm/commits?path=reset&per_page=1&t=' + Date.now(), { cache: 'no-store' });
+						if (!versionResponse.ok) {
+							console.warn('[WebVM reset] Could not read reset generation from GitHub API; will retry.');
+							return;
+						}
+						const commits = await versionResponse.json();
+						const version = Array.isArray(commits) && commits.length ? commits[0].sha : null;
 						if (!version) {
-							console.warn('[WebVM reset] Reset flag is 1 but no version header is available; refusing an unsafe repeated reload.');
+							console.warn('[WebVM reset] No reset-file commit found; will retry.');
 							return;
 						}
 
