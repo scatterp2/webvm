@@ -18,15 +18,14 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import json
+          import re
+          import subprocess
           import time
           from datetime import datetime, timezone
-          from urllib.error import HTTPError, URLError
-          from urllib.parse import quote, urlencode
-          import subprocess
 
           TAG = "WVMQWENWS_6D91C42F"
-          BASE = "https://pste.us/api/v1/pastes"
+          SEARCH_URL = "https://pste.us/recent?search=" + TAG + "&sort=date&order=desc&limit=10"
+          RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
           WINDOW_SECONDS = 90
@@ -34,98 +33,45 @@ jobs:
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-          def get_json(url):
-              # curl --max-time bounds the whole transfer; urllib's socket
-              # timeout alone can be extended indefinitely by a slow response.
+          def fetch_text(url, max_time=5):
               result = subprocess.run(
-                  ["curl", "--location", "--silent", "--show-error", "--fail",
-                   "--connect-timeout", "3", "--max-time", "5", url],
-                  capture_output=True, text=True, timeout=7, check=True,
+                  ["curl", "--location", "--silent", "--show-error", "--fail-with-body",
+                   "--connect-timeout", "2", "--max-time", str(max_time),
+                   "--user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+                   url],
+                  capture_output=True, text=True, timeout=max_time + 2, check=True,
               )
-              return json.loads(result.stdout)
-
-          def unwrap(value):
-              if isinstance(value, dict) and "data" in value:
-                  return value["data"]
-              return value
-
-          def body_from(value):
-              value = unwrap(value)
-              if isinstance(value, str):
-                  return value
-              if isinstance(value, dict):
-                  for key in ("body", "content", "raw", "text", "paste"):
-                      candidate = value.get(key)
-                      if isinstance(candidate, str) and TAG in candidate:
-                          return candidate
-                  for candidate in value.values():
-                      if isinstance(candidate, (dict, list, str)):
-                          found = body_from(candidate)
-                          if found and TAG in found:
-                              return found
-              elif isinstance(value, list):
-                  for candidate in value:
-                      found = body_from(candidate)
-                      if found and TAG in found:
-                          return found
-              return None
-
-          def paste_id(item):
-              if not isinstance(item, dict):
-                  return None
-              for key in ("id", "key", "paste_id", "pasteId", "slug"):
-                  value = item.get(key)
-                  if value is not None and str(value).strip():
-                      return str(value).strip()
-              return None
+              return result.stdout
 
           print(f"[{stamp()}] FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
-          print(f"[{stamp()}] Polling {BASE} for up to 15 minutes", flush=True)
+          print(f"[{stamp()}] Polling pste search page for up to {WINDOW_SECONDS}s", flush=True)
 
           while time.monotonic() - START < WINDOW_SECONDS:
+              matches = 0
               try:
-                  listing = get_json(BASE + "?" + urlencode({"limit": 10, "offset": 0}))
-                  data = unwrap(listing)
-                  if isinstance(data, dict):
-                      items = data.get("pastes") or data.get("items") or data.get("results") or []
-                  elif isinstance(data, list):
-                      items = data
-                  else:
-                      items = []
-                  matches = 0
-                  for item in items[:10]:
-                      body = body_from(item)
-                      pid = paste_id(item)
-                      if body and TAG in body:
-                          marker = pid or str(hash(body))
-                          if marker not in SEEN:
-                              SEEN.add(marker)
-                              print(f"\n===== FEEDBACK_MATCH id={pid or 'unknown'} =====", flush=True)
-                              print(body[-18000:], flush=True)
-                              print("===== END_FEEDBACK_MATCH =====\n", flush=True)
-                              matches += 1
-                          continue
-                      if not pid or pid in SEEN:
+                  page = fetch_text(SEARCH_URL, max_time=5)
+                  ids = list(dict.fromkeys(re.findall(
+                      r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', page
+                  )))
+                  for pid in ids[:5]:
+                      if pid in SEEN:
                           continue
                       try:
-                          detail = get_json(BASE + "/" + quote(pid, safe=""))
-                          body = body_from(detail)
-                          if body and TAG in body:
-                              SEEN.add(pid)
-                              print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
-                              print(body[-18000:], flush=True)
-                              print("===== END_FEEDBACK_MATCH =====\n", flush=True)
-                              matches += 1
-                          else:
-                              # A paste may be listed before its body is fully available.
-                              # Do not mark it seen until the tagged feedback is actually read.
-                              print(f"[{stamp()}] DETAIL_NOT_READY id={pid}; will retry", flush=True)
-                      except (HTTPError, URLError, TimeoutError, ValueError, subprocess.SubprocessError) as exc:
-                          print(f"[{stamp()}] DETAIL_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
-                  print(f"[{stamp()}] POLL_OK listed={len(items)} new_matches={matches} total_matches={sum(1 for _ in SEEN)}", flush=True)
-              except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-                  print(f"[{stamp()}] LIST_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
-              time.sleep(10)
+                          body = fetch_text(RAW_BASE + pid, max_time=4)
+                      except (subprocess.SubprocessError, OSError) as exc:
+                          print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
+                          continue
+                      if TAG in body:
+                          SEEN.add(pid)
+                          print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
+                          print(body[-18000:], flush=True)
+                          print("===== END_FEEDBACK_MATCH =====\n", flush=True)
+                          matches += 1
+                      else:
+                          print(f"[{stamp()}] RAW_NOT_READY id={pid}; will retry", flush=True)
+                  print(f"[{stamp()}] POLL_OK listed={len(ids)} new_matches={matches} seen={len(SEEN)}", flush=True)
+              except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                  print(f"[{stamp()}] SEARCH_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
+              time.sleep(15)
 
-          print(f"[{stamp()}] FEEDBACK_MONITOR_FINISHED checked_ids={len(SEEN)}", flush=True)
-          PY
+          print(f"[{stamp()}] FEEDBACK_MONITOR_FINISHED seen={len(SEEN)}", flush=True)
