@@ -85,12 +85,17 @@ def main():
         print("WEBVM_FEEDBACK_FATAL missing script: {}".format(SCRIPT), flush=True)
         return 2
 
+    # pi.py now requests NvidiaTeslaT4 directly in the actual push command and
+    # kernel metadata. Execute that canonical script without source-text patching.
+    runtime_script = SCRIPT
+
     LOG_FILE.write_text("", encoding="utf-8")
+    append_line("KAGGLE_ACCELERATOR_REQUEST configured in pi.py: --accelerator NvidiaTeslaT4; machine_shape=NvidiaTeslaT4")
     append_line("PI_WRAPPER_STARTED tag={} script={}".format(FEEDBACK_TAG, SCRIPT.name))
     publish("PI_WRAPPER_STARTED")
 
     process = subprocess.Popen(
-        [sys.executable, "-u", str(SCRIPT)],
+        [sys.executable, "-u", str(runtime_script)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
