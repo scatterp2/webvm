@@ -355,7 +355,19 @@
 			location.reload();
 		} catch (error) {
 			resetInProgress = false;
-			console.error('[WebVM reset] Disk cache reset failed.', error);
+			// The page-head trigger records a generation before dispatching it to
+			// prevent reload loops. If the cache reset fails, release that marker
+			// so the next 15-second poll can retry this same generation.
+			try {
+				const handledKey = 'webvm-reset-last-source-version';
+				const handledVersion = localStorage.getItem(handledKey);
+				if (handledVersion === 'value:' + generation || handledVersion === 'modified:' + generation) {
+					localStorage.removeItem(handledKey);
+				}
+			} catch (markerError) {
+				console.warn('[WebVM reset] Could not release the handled marker for retry.', markerError);
+			}
+			console.error('[WebVM reset] Disk cache reset failed; the trigger will be retried on the next poll.', error);
 		}
 	}
 
