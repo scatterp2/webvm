@@ -11,9 +11,9 @@ on:
   push:
     branches:
       - main
-    # The reset flag is polled by already-open WebVM tabs; changing it must not rebuild/redeploy.
-    paths-ignore:
-      - 'reset'
+    # Build/deploy only when the explicit redeploy trigger file changes.
+    paths:
+      - 'redeploy'
 
   # Allow manual triggering of the workflow from the Actions tab
   workflow_dispatch:
