@@ -29,3 +29,5 @@ Automatically derive reset generation from reset-file Last-Modified; update URL 
 Deploy reset-trigger fix: use explicit generation 1590 and publish current reset handler.
 
 Deploy latest reset retry fix.
+
+Deploy separated Kaggle launcher and implementation; include offline prompt embedding and DNS-tolerant runtime.
