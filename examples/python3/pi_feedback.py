@@ -87,10 +87,10 @@ def main():
 
     # pi.py now requests NvidiaTeslaT4 directly in the actual push command and
     # kernel metadata. Execute that canonical script without source-text patching.
-    append_line("KAGGLE_ACCELERATOR_REQUEST configured in pi.py: --accelerator NvidiaTeslaT4; machine_shape=NvidiaTeslaT4")
     runtime_script = SCRIPT
 
     LOG_FILE.write_text("", encoding="utf-8")
+    append_line("KAGGLE_ACCELERATOR_REQUEST configured in pi.py: --accelerator NvidiaTeslaT4; machine_shape=NvidiaTeslaT4")
     append_line("PI_WRAPPER_STARTED tag={} script={}".format(FEEDBACK_TAG, SCRIPT.name))
     publish("PI_WRAPPER_STARTED")
 
