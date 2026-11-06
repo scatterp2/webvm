@@ -14,6 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Python sources
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            examples/python3/pi.py \
+            examples/python3/pi_feedback.py \
+            examples/python3/kaggle_runtime.py \
+            examples/python3/gpu_test.py
+          echo "PYTHON_SOURCE_SYNTAX_OK"
+
       - name: Fetch latest 20 search results
         shell: bash
         run: |
