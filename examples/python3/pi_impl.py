@@ -30,6 +30,7 @@ NOTEBOOK_DIR = Path("/home/user/my-notebook")
 NOTEBOOK_FILE = NOTEBOOK_DIR / "gpu-test.ipynb"
 METADATA_FILE = NOTEBOOK_DIR / "kernel-metadata.json"
 RUNTIME_FILE = Path(__file__).resolve().parent / "kaggle_runtime.py"
+RUNTIME_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_runtime.py"
 PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
 GAMES = ["pacman", "pong", "breakout", "freeway"]
 
@@ -194,15 +195,51 @@ def prepare_python():
 # STEP 4: EMBED RUNTIME AND PROMPTS IN THE NOTEBOOK
 # ============================================================
 
-def build_embedded_runtime():
-    """Build a self-contained notebook cell so Kaggle need not fetch code/prompts from raw GitHub."""
+def fetch_runtime_source():
+    """Fetch the experiment runtime from main so runtime edits need no VM-image rebuild."""
     from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
 
-    if not RUNTIME_FILE.is_file():
-        raise RuntimeError("Missing experiment runtime: {}".format(RUNTIME_FILE))
+    last_error = None
+    for attempt in range(3):
+        try:
+            request = Request(
+                RUNTIME_URL + "?t=" + str(int(time.time() * 1000)),
+                headers={
+                    "Cache-Control": "no-cache",
+                    "User-Agent": "webvm-qwen-experiment-submitter/1.0",
+                },
+            )
+            with urlopen(request, timeout=30) as response:
+                source = response.read().decode("utf-8")
+            compile(source, RUNTIME_URL, "exec")
+            print("RUNTIME_SOURCE_FETCHED source=main characters={}".format(len(source)), flush=True)
+            return source
+        except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
+            last_error = exc
+            print("RUNTIME_SOURCE_FETCH_RETRY attempt={} error={}: {}".format(
+                attempt + 1, type(exc).__name__, exc
+            ), flush=True)
+            if attempt < 2:
+                time.sleep(2 ** attempt)
 
-    runtime_source = RUNTIME_FILE.read_text(encoding="utf-8")
+    # Keep the installed image usable during a temporary GitHub/DNS outage.
+    if not RUNTIME_FILE.is_file():
+        raise RuntimeError("Could not fetch runtime from main and no local fallback exists: {}".format(last_error))
+    source = RUNTIME_FILE.read_text(encoding="utf-8")
+    compile(source, str(RUNTIME_FILE), "exec")
+    print("RUNTIME_SOURCE_FALLBACK source=local reason={}: {}".format(
+        type(last_error).__name__ if last_error else "unknown", last_error
+    ), flush=True)
+    return source
+
+
+def build_embedded_runtime():
+    """Embed live runtime code and prompts so Kaggle does not fetch source files during execution."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    runtime_source = fetch_runtime_source()
     prompts = {}
     for game in GAMES:
         prompt_url = "{}/{}/prompt.txt".format(PROMPT_ROOT, game)
@@ -254,7 +291,7 @@ def build_embedded_runtime():
     runtime_source = runtime_source.replace(old_prompt_fetch, new_prompt_fetch, 1)
     compile(runtime_source, str(RUNTIME_FILE) + "[embedded]", "exec")
     print("RUNTIME_EMBEDDED source={} characters={} prompts={} syntax=ok".format(
-        RUNTIME_FILE.name, len(runtime_source), ",".join(GAMES)
+        "main-or-local-fallback", len(runtime_source), ",".join(GAMES)
     ), flush=True)
     return runtime_source
 
