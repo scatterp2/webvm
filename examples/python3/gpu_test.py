@@ -104,7 +104,7 @@ def main():
 
         install_dependencies()
         from transformers import (
-            AutoModelForCausalLM,
+            AutoModelForImageTextToText,
             AutoTokenizer,
             BitsAndBytesConfig,
             TextIteratorStreamer,
@@ -123,7 +123,7 @@ def main():
         log(f"MODEL_LOADING model={MODEL_ID} quantization=4bit context_target={MAX_CONTEXT_TOKENS}")
         publish("MODEL_LOADING", f"model={MODEL_ID}; quantization=4bit NF4; max_context={MAX_CONTEXT_TOKENS}; max_memory={max_memory}")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForImageTextToText.from_pretrained(
             MODEL_ID,
             trust_remote_code=True,
             device_map="auto",
