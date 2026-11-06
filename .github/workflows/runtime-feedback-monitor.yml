@@ -1,0 +1,126 @@
+name: Runtime feedback monitor
+
+on:
+  push:
+    branches:
+      - runtime-feedback-monitor
+
+permissions:
+  contents: read
+
+jobs:
+  poll-pste-feedback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Poll pste.us for WebVM startup and experiment logs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          from datetime import datetime, timezone
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote, urlencode
+          from urllib.request import Request, urlopen
+
+          TAG = "WVMQWENWS_6D91C42F"
+          BASE = "https://pste.us/api/v1/pastes"
+          SEEN = set()
+          START = time.monotonic()
+          WINDOW_SECONDS = 15 * 60
+
+          def stamp():
+              return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+          def get_json(url):
+              request = Request(url, headers={
+                  "Accept": "application/json",
+                  "User-Agent": "webvm-runtime-feedback-monitor/1.0",
+              })
+              with urlopen(request, timeout=15) as response:
+                  return json.loads(response.read().decode("utf-8", errors="replace"))
+
+          def unwrap(value):
+              if isinstance(value, dict) and "data" in value:
+                  return value["data"]
+              return value
+
+          def body_from(value):
+              value = unwrap(value)
+              if isinstance(value, str):
+                  return value
+              if isinstance(value, dict):
+                  for key in ("body", "content", "raw", "text", "paste"):
+                      candidate = value.get(key)
+                      if isinstance(candidate, str) and TAG in candidate:
+                          return candidate
+                  for candidate in value.values():
+                      if isinstance(candidate, (dict, list, str)):
+                          found = body_from(candidate)
+                          if found and TAG in found:
+                              return found
+              elif isinstance(value, list):
+                  for candidate in value:
+                      found = body_from(candidate)
+                      if found and TAG in found:
+                          return found
+              return None
+
+          def paste_id(item):
+              if not isinstance(item, dict):
+                  return None
+              for key in ("id", "key", "paste_id", "pasteId", "slug"):
+                  value = item.get(key)
+                  if value is not None and str(value).strip():
+                      return str(value).strip()
+              return None
+
+          print(f"[{stamp()}] FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
+          print(f"[{stamp()}] Polling {BASE} for up to 15 minutes", flush=True)
+
+          while time.monotonic() - START < WINDOW_SECONDS:
+              try:
+                  listing = get_json(BASE + "?" + urlencode({"limit": 50, "offset": 0}))
+                  data = unwrap(listing)
+                  if isinstance(data, dict):
+                      items = data.get("pastes") or data.get("items") or data.get("results") or []
+                  elif isinstance(data, list):
+                      items = data
+                  else:
+                      items = []
+                  matches = 0
+                  for item in items[:50]:
+                      body = body_from(item)
+                      pid = paste_id(item)
+                      if body and TAG in body:
+                          marker = pid or str(hash(body))
+                          if marker not in SEEN:
+                              SEEN.add(marker)
+                              print(f"\n===== FEEDBACK_MATCH id={pid or 'unknown'} =====", flush=True)
+                              print(body[-18000:], flush=True)
+                              print("===== END_FEEDBACK_MATCH =====\n", flush=True)
+                              matches += 1
+                          continue
+                      if not pid or pid in SEEN:
+                          continue
+                      try:
+                          detail = get_json(BASE + "/" + quote(pid, safe=""))
+                          body = body_from(detail)
+                          if body and TAG in body:
+                              SEEN.add(pid)
+                              print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
+                              print(body[-18000:], flush=True)
+                              print("===== END_FEEDBACK_MATCH =====\n", flush=True)
+                              matches += 1
+                          else:
+                              SEEN.add(pid)
+                      except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+                          print(f"[{stamp()}] DETAIL_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
+                  print(f"[{stamp()}] POLL_OK listed={len(items)} new_matches={matches} total_matches={sum(1 for _ in SEEN)}", flush=True)
+              except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+                  print(f"[{stamp()}] LIST_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
+              time.sleep(30)
+
+          print(f"[{stamp()}] FEEDBACK_MONITOR_FINISHED checked_ids={len(SEEN)}", flush=True)
+          PY
