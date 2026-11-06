@@ -560,13 +560,13 @@ def deploy():
         alt_host_dir = Path("/tmp/webvm-kaggle-alt-host")
         alt_host_dir.mkdir(parents=True, exist_ok=True)
         (alt_host_dir / "sitecustomize.py").write_text(
-            "import os\\n"
-            "try:\\n"
-            "    import kagglesdk.kaggle_env as _kaggle_env\\n"
-            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\\n"
-            "except Exception as _exc:\\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\\n",
+            "import os\n"
+            "try:\n"
+            "    import kagglesdk.kaggle_env as _kaggle_env\n"
+            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\n"
+            "except Exception as _exc:\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\n",
             encoding="utf-8",
         )
         alt_env = env.copy()
