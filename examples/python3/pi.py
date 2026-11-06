@@ -15,7 +15,7 @@ from pathlib import Path
 
 USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday").strip()
 LEGACY_KEY = os.environ.get("KAGGLE_KEY", "").strip()
-API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
