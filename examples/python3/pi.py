@@ -27,7 +27,9 @@ KAGGLE_BIN = VENV_DIR / "bin/kaggle"
 NOTEBOOK_DIR = Path("/home/user/my-notebook")
 NOTEBOOK_FILE = NOTEBOOK_DIR / "gpu-test.ipynb"
 METADATA_FILE = NOTEBOOK_DIR / "kernel-metadata.json"
-GPU_TEST_FILE = Path(__file__).resolve().parent / "gpu_test.py"
+RUNTIME_FILE = Path(__file__).resolve().parent / "kaggle_runtime.py"
+PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
+GAMES = ["pacman", "pong", "breakout", "freeway"]
 
 KERNEL_SLUG = "automated-gpu-test"
 KERNEL_ID = USERNAME + "/" + KERNEL_SLUG
@@ -187,8 +189,72 @@ def prepare_python():
 
 
 # ============================================================
-# STEP 4: CREATE NOTEBOOK AND METADATA
+# STEP 4: EMBED RUNTIME AND PROMPTS IN THE NOTEBOOK
 # ============================================================
+
+def build_embedded_runtime():
+    """Build a self-contained notebook cell so Kaggle need not fetch code/prompts from raw GitHub."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    if not RUNTIME_FILE.is_file():
+        raise RuntimeError("Missing experiment runtime: {}".format(RUNTIME_FILE))
+
+    runtime_source = RUNTIME_FILE.read_text(encoding="utf-8")
+    prompts = {}
+    for game in GAMES:
+        prompt_url = "{}/{}/prompt.txt".format(PROMPT_ROOT, game)
+        last_error = None
+        for attempt in range(3):
+            try:
+                request = Request(
+                    prompt_url,
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "User-Agent": "webvm-qwen-experiment-submitter/1.0",
+                    },
+                )
+                with urlopen(request, timeout=60) as response:
+                    prompts[game] = response.read().decode("utf-8")
+                print("PROMPT_EMBEDDED game={} characters={}".format(game, len(prompts[game])), flush=True)
+                break
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                last_error = exc
+                print("PROMPT_FETCH_RETRY game={} attempt={} error={}: {}".format(
+                    game, attempt + 1, type(exc).__name__, exc
+                ), flush=True)
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        if game not in prompts:
+            raise RuntimeError("Could not fetch source prompt for {} after 3 attempts: {}".format(game, last_error))
+
+    root_line = 'PROMPT_ROOT = "' + PROMPT_ROOT + '"'
+    if root_line not in runtime_source:
+        raise RuntimeError("Could not locate PROMPT_ROOT in kaggle_runtime.py; refusing to submit a partial experiment.")
+    runtime_source = runtime_source.replace(
+        root_line,
+        "PROMPTS = " + json.dumps(prompts, ensure_ascii=False, separators=(",", ":")),
+        1,
+    )
+
+    old_prompt_fetch = '''            prompt_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
+            log(f"PROMPT_FETCH_START game={game} url={prompt_url}")
+            publish("PROMPT_FETCH_START", f"game={game}; url={prompt_url}")
+            import requests
+            response = requests.get(prompt_url, timeout=120)
+            response.raise_for_status()
+            prompt = response.text'''
+    new_prompt_fetch = '''            prompt = PROMPTS[game]
+            log(f"PROMPT_SOURCE_EMBEDDED game={game} characters={len(prompt)}")
+            publish("PROMPT_SOURCE_EMBEDDED", f"game={game}; characters={len(prompt)}; source=embedded_at_submission")'''
+    if old_prompt_fetch not in runtime_source:
+        raise RuntimeError("Could not locate prompt-fetch block in kaggle_runtime.py; refusing to submit a partial experiment.")
+    runtime_source = runtime_source.replace(old_prompt_fetch, new_prompt_fetch, 1)
+    print("RUNTIME_EMBEDDED source={} characters={} prompts={}".format(
+        RUNTIME_FILE.name, len(runtime_source), ",".join(GAMES)
+    ), flush=True)
+    return runtime_source
+
 
 def write_notebook():
     print("booting....", flush=True)
@@ -217,8 +283,8 @@ def write_notebook():
                 "cell_type": "markdown",
                 "metadata": {},
                 "source": [
-                    "# Automated GPU Test\n",
-                    "Checks GPU availability in a Kaggle session."
+                    "# Qwen Weight-Space Interpretation Replication\n",
+                    "Runs the four source prompts against Qwen/Qwen3.8-27B. Runtime code and prompts are embedded at submission time to avoid raw-GitHub DNS dependencies in Kaggle."
                 ]
             },
             {
@@ -248,7 +314,7 @@ def write_notebook():
 #                     "except Exception as exc:\n",
 #                     "    print('GPU test error:', repr(exc))\n"
 #                 ]
-                "source": GPU_TEST_FILE.read_text(encoding="utf-8").splitlines(keepends=True),
+                "source": build_embedded_runtime().splitlines(keepends=True),
             }
         ],
         "metadata": {
