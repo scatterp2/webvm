@@ -5,3 +5,5 @@ Add Kaggle error-log collection to runtime diagnostics.
 Explicitly request NvidiaTeslaT4 in Kaggle kernel metadata.
 
 Browser reset trigger fix: invalidate stale session marker and log reset checks.
+
+Reset generation marker fix: detect new reset-file ETag even when the flag remains 1.
