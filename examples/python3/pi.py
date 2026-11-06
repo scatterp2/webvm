@@ -13,13 +13,12 @@ from pathlib import Path
 # CONFIGURATION
 # ============================================================
 
-USERNAME = os.environ.get("KAGGLE_USERNAME", "simonday").strip()
-LEGACY_KEY = os.environ.get("KAGGLE_KEY", "").strip()
-API_TOKEN = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+USERNAME = "simonday"
+LEGACY_KEY = "fc837b9fcbf01dd51978287f9437068c"
+API_TOKEN = "KGAT_2e52efc50d91a13e1b7a3eabce8ac33e"
 
 HOME = Path("/root")
 KAGGLE_DIR = HOME / ".kaggle"
-DOCUMENTS_DIR = Path("/home/user/documents")
 
 VENV_DIR = Path("/opt/kaggle-venv")
 VENV_PYTHON = VENV_DIR / "bin/python"
@@ -91,72 +90,21 @@ def prepare_credentials():
 
     token_file = KAGGLE_DIR / "access_token"
     json_file = KAGGLE_DIR / "kaggle.json"
-    KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
+
+    token_file.write_text(API_TOKEN + "\n")
+    json_file.write_text(
+        json.dumps({
+            "username": USERNAME,
+            "key": LEGACY_KEY
+        }, indent=2) + "\n"
+    )
+
     os.chmod(str(KAGGLE_DIR), 0o700)
-
-    # Environment variables take precedence. Otherwise accept credentials
-    # from the browser-mounted Documents directory so they do not need to be
-    # baked into the publicly downloadable disk image or committed to Git.
-    if API_TOKEN:
-        token_file.write_text(API_TOKEN + "\\n", encoding="utf-8")
-        os.chmod(str(token_file), 0o600)
-
-    if LEGACY_KEY:
-        json_file.write_text(
-            json.dumps({"username": USERNAME, "key": LEGACY_KEY}, indent=2) + "\\n",
-            encoding="utf-8",
-        )
-        os.chmod(str(json_file), 0o600)
-
-    token_sources = [
-        DOCUMENTS_DIR / "access_token",
-        DOCUMENTS_DIR / ".kaggle" / "access_token",
-    ]
-    json_sources = [
-        DOCUMENTS_DIR / "kaggle.json",
-        DOCUMENTS_DIR / ".kaggle" / "kaggle.json",
-    ]
-
-    def nonempty_file(path):
-        try:
-            return path.is_file() and bool(path.read_text(encoding="utf-8", errors="ignore").strip())
-        except OSError:
-            return False
-
-    if not nonempty_file(token_file):
-        for source in token_sources:
-            if nonempty_file(source):
-                token_file.write_text(source.read_text(encoding="utf-8").strip() + "\\n", encoding="utf-8")
-                os.chmod(str(token_file), 0o600)
-                break
-
-    def valid_kaggle_json(path):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-            return bool(value.get("username") and value.get("key"))
-        except (OSError, ValueError, AttributeError):
-            return False
-
-    if not valid_kaggle_json(json_file):
-        for source in json_sources:
-            if valid_kaggle_json(source):
-                json_file.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-                os.chmod(str(json_file), 0o600)
-                break
-
-    has_token = nonempty_file(token_file)
-    has_legacy_key = valid_kaggle_json(json_file)
-    if not has_token and not has_legacy_key:
-        raise RuntimeError(
-            "Kaggle credentials are missing. Set KAGGLE_API_TOKEN, or place "
-            "a valid access_token or kaggle.json in the WebVM Documents folder "
-            "(/home/user/documents) or /root/.kaggle. Do not put credentials in "
-            "the public repository or URL."
-        )
+    os.chmod(str(token_file), 0o600)
+    os.chmod(str(json_file), 0o600)
 
     os.environ["HOME"] = str(HOME)
-    if has_token:
-        os.environ["KAGGLE_API_TOKEN"] = token_file.read_text(encoding="utf-8").strip()
+    os.environ["KAGGLE_API_TOKEN"] = API_TOKEN
 
 
 # ============================================================
@@ -308,8 +256,7 @@ def write_notebook():
 def kaggle_environment():
     env = os.environ.copy()
     env["HOME"] = str(HOME)
-    if API_TOKEN:
-        env["KAGGLE_API_TOKEN"] = API_TOKEN
+    env["KAGGLE_API_TOKEN"] = API_TOKEN
     return env
 
 
