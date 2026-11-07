@@ -112,36 +112,9 @@ else:
              stderr=(_wvm_capability.stderr or "")[-1000:],
              rules=(_wvm_capability.stdout or "")[-2000:])
 
-_wvm_source_ip = _wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip()
-_wvm_rule = [
-    "iptables", "-t", "nat", "-A", "PREROUTING", "-s", _wvm_source_ip,
-    "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
-]
-# Build the exact idempotency check independently to avoid argument-index ambiguity.
-_wvm_check = [
-    "iptables", "-t", "nat", "-C", "PREROUTING", "-s", _wvm_source_ip,
-    "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
-]
-if not _wvm_source_ip:
-    _wvm_log("NAT_RULE_SKIPPED_SOURCE_IP_NOT_CONFIGURED", required_env="WEBVM_PROXY_SOURCE_IP", example="192.0.2.10 is documentation-only")
-elif not _wvm_re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", _wvm_source_ip):
-    _wvm_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=_wvm_source_ip)
-elif not _wvm_shutil.which("iptables"):
-    _wvm_log("IPTABLES_UNAVAILABLE", source_ip=_wvm_source_ip)
-else:
-    _wvm_existing = _wvm_subprocess.run(_wvm_check, capture_output=True, text=True)
-    if _wvm_existing.returncode == 0:
-        _wvm_log("NAT_RULE_ALREADY_PRESENT", source_ip=_wvm_source_ip, from_port=8888, to_port=8889)
-    else:
-        _wvm_added = _wvm_subprocess.run(_wvm_rule, capture_output=True, text=True)
-        if _wvm_added.returncode == 0:
-            _wvm_log("NAT_RULE_ADDED", source_ip=_wvm_source_ip, from_port=8888, to_port=8889,
-                     note="192.0.2.10 is the sample address unless WEBVM_PROXY_SOURCE_IP is set")
-        else:
-            _wvm_log("NAT_RULE_ADD_FAILED", source_ip=_wvm_source_ip,
-                     returncode=_wvm_added.returncode,
-                     stderr=(_wvm_added.stderr or "")[-1000:],
-                     stdout=(_wvm_added.stdout or "")[-1000:])
+_wvm_source_ip_configured = bool(_wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip())
+_wvm_log("NAT_RULE_NOT_USED", source_ip_configured=_wvm_source_ip_configured,
+         note="The TCP link uses authenticated Tailscale Serve; no PREROUTING redirect is required")
 
 try:
     with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=2):
