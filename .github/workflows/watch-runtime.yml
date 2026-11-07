@@ -74,6 +74,7 @@ jobs:
               return keep[-35:]
 
           print("WATCH_STARTED", datetime.now(timezone.utc).isoformat(), flush=True)
+          terminal_stage_seen = False
           while time.monotonic() - started < 600:
               try:
                   data = unwrap(get_json(BASE + "?" + urlencode({"limit":50,"offset":0})))
@@ -99,7 +100,12 @@ jobs:
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
                       for line in safe_lines(body):
                           print(line, flush=True)
+                      if re.search(r"stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)", body, re.I):
+                          terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
+                  if terminal_stage_seen:
+                      print("WATCH_EARLY_STOP terminal TCP link status found", flush=True)
+                      break
               except Exception as e:
                   print("POLL_ERROR", repr(e), flush=True)
               time.sleep(20)
