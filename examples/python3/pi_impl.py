@@ -168,7 +168,7 @@ __webvm_refresh_kaggle_proxy() {
 }
 case ";${PROMPT_COMMAND:-};" in
     *";__webvm_refresh_kaggle_proxy;"*) ;;
-    *) PROMPT_COMMAND="__webvm_refresh_kaggle_proxy${PROMPT_COMMAND:+;\$PROMPT_COMMAND}" ;;
+    *) PROMPT_COMMAND="__webvm_refresh_kaggle_proxy${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac
 __webvm_refresh_kaggle_proxy
 ''' 
