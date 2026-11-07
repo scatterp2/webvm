@@ -341,6 +341,22 @@ def _socks_self_test():
     return True
 
 
+def _http_connect_self_test():
+    with socket.create_connection((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), timeout=4) as sock:
+        sock.settimeout(8)
+        sock.sendall(
+            b"CONNECT example.com:443 HTTP/1.1\r\n"
+            b"Host: example.com:443\r\n"
+            b"Proxy-Connection: keep-alive\r\n\r\n"
+        )
+        response_line = _read_line(sock)
+        if not response_line.startswith("HTTP/1.1 200 "):
+            raise RuntimeError("HTTP CONNECT self-test failed: " + response_line[:100])
+        while _read_line(sock):
+            pass
+    return True
+
+
 def main():
     auth_key = _read_secret()
     if not auth_key:
@@ -402,6 +418,8 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         _socks_self_test()
         _emit("SOCKS5_SELF_TEST_PASS", local_port=LOCAL_SOCKS_PORT, target="public TCP 443")
+        _http_connect_self_test()
+        _emit("HTTP_CONNECT_SELF_TEST_PASS", local_port=LOCAL_SOCKS_PORT, target="public TCP 443")
 
         serve = cli(
             "serve",
