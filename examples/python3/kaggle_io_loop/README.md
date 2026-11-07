@@ -52,7 +52,7 @@ The RX/TX proof above is only a file/message round trip. The live transport is a
 
 1. Run WebVM once after the Stage 2 code has deployed. It creates the private `webvm-tcp-link` notebook and reports whether the Tailscale secret is missing.
 2. Open the private Kaggle notebook at `https://www.kaggle.com/code/USERNAME/webvm-tcp-link`.
-3. In the notebook's Secrets settings, add `WEBVM_TAILSCALE_AUTHKEY` with a fresh, preferably ephemeral Tailscale auth key for the same tailnet as WebVM. Do not paste the key into source code, the RX dataset, the TX response, or logs.
+3. In the notebook's Secrets settings, add `WEBVM_TAILSCALE_AUTHKEY` with a reusable ephemeral Tailscale auth key for the same tailnet as WebVM (so the node can rejoin after a Kaggle runtime restart). Do not paste the key into source code, the RX dataset, the TX response, or logs.
 4. Reload WebVM or run `pi.py` again. It reuses the running service if one is already active. The notebook reads the key directly from Kaggle Secrets and keeps the service alive.
 5. In WebVM's Networking panel, wait for `webvm-kaggle-tcp-link` and its Tailscale IPv4 address to appear. The browser writes `/data/kaggle-tcp-link.env`; new shell prompts load it and set `ALL_PROXY=socks5h://<peer-ip>:8888` if the user has not configured another proxy.
 
