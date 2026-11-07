@@ -1,4 +1,5 @@
 name: Fetch all matching pste.us feedback logs
+# Poll is intentionally re-triggered after each WebVM reset to capture the new runtime.
 
 on:
   push:
