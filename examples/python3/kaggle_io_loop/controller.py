@@ -186,10 +186,31 @@ def main():
             final_status = "ERROR"
             break
         time.sleep(max(1, args.poll_seconds))
+    output_dir.mkdir(parents=True, exist_ok=True)
     if final_status != "COMPLETE":
         log.event("EXECUTION_NOT_COMPLETE", final_status=final_status or "TIMEOUT")
-        raise RuntimeError("Kaggle kernel did not complete successfully: " + str(final_status or "timeout"))
-    output_dir.mkdir(parents=True, exist_ok=True)
+        # Preserve any available execution artifacts even on failure. This can
+        # expose a traceback or partial notebook output that would otherwise be
+        # lost when the controller exits at the status check.
+        diagnostic_dir = output_dir / "diagnostics"
+        diagnostic_dir.mkdir(parents=True, exist_ok=True)
+        diagnostic = command(log, ["kaggle", "kernels", "output", args.kernel_id, "-p",
+                                   str(diagnostic_dir), "-o"], timeout=300, check=False)
+        files = sorted(str(p.relative_to(diagnostic_dir)) for p in diagnostic_dir.rglob("*") if p.is_file())
+        log.event("FAILURE_ARTIFACTS_DOWNLOAD", exit_code=diagnostic.returncode, files=files,
+                  output_tail=safe_text(diagnostic.stdout))
+        # The CLI's output endpoint may not expose the execution traceback.
+        # Fetch the published notebook definition as a second diagnostic and
+        # record it locally, without ever treating it as successful execution.
+        pull_dir = output_dir / "kernel_source"
+        pull_dir.mkdir(parents=True, exist_ok=True)
+        pull = command(log, ["kaggle", "kernels", "pull", args.kernel_id, "-p",
+                             str(pull_dir), "-m"], timeout=120, check=False)
+        pulled = sorted(str(p.relative_to(pull_dir)) for p in pull_dir.rglob("*") if p.is_file())
+        log.event("FAILURE_KERNEL_SOURCE_PULL", exit_code=pull.returncode, files=pulled,
+                  output_tail=safe_text(pull.stdout))
+        raise RuntimeError("Kaggle kernel did not complete successfully: " + str(final_status or "timeout") +
+                           "; diagnostics=" + str(diagnostic_dir) + "; kernel_source=" + str(pull_dir))
     command(log, ["kaggle", "kernels", "output", args.kernel_id, "-p", str(output_dir),
                   "-o", "--file-pattern", "^tx_response\\.json$"], timeout=300, check=True)
     response = validate_output(output_dir / "tx_response.json", message, log)
