@@ -2,38 +2,34 @@
 
 > Keep this section current when changing the reset mechanism or Qwen experiment. These notes are intended to let an AI agent continue the work without asking the user to repeat repository context.
 
-## Current objective: reproduce the Qwen weight-space interpretation experiment
+## Current objective: prove Kaggle API-mediated notebook I/O
 
-The goal is to reproduce the experiment described by [RikiyaT/lm_understand-logs](https://github.com/RikiyaT/lm_understand-logs), using **Qwen/Qwen3.8-27B** on Kaggle and the four game prompts **Pac-Man, Pong, Breakout, and Freeway**. Capture the model's responses and execution details so they can be compared against the source experiment. This is an interpretation/replication experiment: the current code sends prompts to the model; it does **not** directly edit Qwen's learned weights or the other model's parameters.
+The active task is a small, harmless controller↔Kaggle notebook RX/TX proof. The notebook has internet disabled by design, so it must not rely on notebook-side DNS or outbound HTTP. The controller publishes an RX Dataset resource, submits a self-contained notebook that reads the mounted input and writes a TX response file, then downloads and validates that output.
 
 Relevant files:
-- `examples/python3/pi.py` — prepares the Kaggle notebook, embeds the current runtime and all four source prompts at submission time, explicitly requests a T4 GPU, submits the run, checks status, and downloads the real Kaggle logs/output after completion or failure.
-- `examples/python3/gpu_test.py` — legacy standalone bootstrap that fetches the runtime from raw GitHub. The main `pi.py` submission path no longer uses it, because the latest run showed raw-GitHub DNS resolution failing inside Kaggle.
-- `examples/python3/kaggle_runtime.py` — experiment implementation, GPU preflight diagnostics, inference, and result logging. The submission script embeds this source into the Kaggle notebook and embeds the prompts from the four source files.
-- `examples/python3/pi_feedback.py` — wraps the submission script and publishes a redacted rolling log snapshot to pste.us for remote inspection.
-- `.github/workflows/runtime-feedback-monitor.yml` — polls pste.us for the unique tag `WVMQWENWS_6D91C42F` and prints matching diagnostic logs into GitHub Actions.
-- `monitor-check-2026-11-06.txt` — reminder to inspect actual Kaggle execution output, not just heartbeat messages.
+- `examples/python3/kaggle_io_loop/controller.py` — controller-side Dataset create/version, notebook submission, status polling, output retrieval, checksum validation and JSONL request/result logging.
+- `examples/python3/kaggle_io_loop/agent.py` — self-contained notebook agent; validates the fixed input message and writes one acknowledgement output.
+- `examples/python3/kaggle_io_loop/README.md` — setup, protocol and documented API references.
+- `.github/workflows/validate-kaggle-runner.yml` — syntax checks plus offline protocol proof, requiring no Kaggle credentials or network.
+- `examples/python3/pi_impl.py` — bootstraps the IO-loop controller from the current main branch and launches the proof when the WebVM reset runs.
+
+Stage 1 proves one published input → mounted notebook input → downloaded output file. It does not yet prove that a running notebook sees a later Dataset version without restart. Treat mounted inputs as a per-run snapshot unless the live-update test demonstrates otherwise. The stream/proxy layer is explicitly out of scope.
+
+The Qwen weight-space interpretation experiment remains in `examples/python3/kaggle_runtime.py` and its prior submission path, but is not the active task until the IO loop is proven.
 
 ## How the WebVM reset is triggered and verified
 
-The reset source of truth is the plain-text `reset` file on **`main`**. Put a new generation number in that file (for example, change `1591` to `1592`) and commit it. The deployed page in `src/app.html` fetches that raw GitHub file with cache-busting every **15 seconds**, and also checks on page startup and `pageshow`. It compares the generation against `localStorage` key `webvm-reset-last-source-version`; a new generation is added to the URL as `?reset=<generation>` and dispatched as a `webvm-reset-request` event. The WebVM reset handler in `src/lib/WebVM.svelte` clears the disk cache and reloads the page.
+The reset source of truth is the plain-text `reset` file on **`main`**. Put a new generation number in that file and commit it. The deployed page in `src/app.html` fetches that raw GitHub file with cache-busting every **15 seconds**, and also checks on page startup and `pageshow`. A new generation is added to the URL as `?reset=<generation>` and dispatched as a reset event; the WebVM handler clears the disk cache and reloads.
 
-Important failure-handling rule: the page-head code records a generation before dispatching it to avoid reload loops. If the disk-cache reset then fails, the failure handler must clear that same generation marker so the next poll can retry it. Do not treat the “already handled” log as proof that the disk cache was reset; verify the complete sequence in the browser console:
-1. `New generation N; requesting a disk-cache reset.`
-2. Disk-cache reset begins.
-3. Disk-cache reset completes and the WebVM reloads.
-4. After reload, the URL includes `?reset=N` and the same generation does not cause a reset loop.
+Do not treat the “already handled” log as proof that the disk cache was reset. Verify the complete sequence in the browser console: new generation detected, reset begins, reset completes and reloads, and the URL includes the new generation after reload. If reset fails, the generation marker must be cleared so the next poll can retry.
 
-The user has confirmed that changing the reset file to generation **1592** triggered the browser restart automatically. Do not ask the user to press Reset for normal generation changes; use the committed generation number and verify the resulting logs.
+## How to inspect runtime logs and failure evidence
 
-## How to inspect runtime logs and what the latest failure showed
+The current IO-loop controller writes `/home/user/kaggle-io-loop-run/run.jsonl`. Inspect its `API_REQUEST_START`, `API_REQUEST_RESULT`, `EXECUTION_STATUS`, `OUTPUT_VALIDATION` and `LOOP_PROOF_PASS` records. The notebook writes its agent events to Kaggle execution logs and returns `tx_response.json`. Do not infer a successful loop from a successful GitHub Actions syntax test: the live Kaggle run must return a matching, checksum-valid response.
 
-Use the **`runtime-feedback-monitor` branch** for the Kaggle experiment and log-monitoring code. Inspect the latest GitHub Actions run for **Runtime feedback monitor**, open the `poll-pste-feedback` job, and search its output for `FEEDBACK_MATCH`, `GPU_PREFLIGHT`, `MODEL_LOADING`, `INFERENCE_STARTED`, `ANSWER_RESULT`, and `RUN_FAILED`. The monitor reads pste.us entries tagged `WVMQWENWS_6D91C42F`; pste is a transport for diagnostics, not the ultimate source of truth. The submission script also fetches `kaggle kernels logs simonday/automated-gpu-test` and the kernel output files so the real Kaggle run can be diagnosed even when the Kaggle-side upload to pste fails.
+The earlier Qwen run had separate failures involving Kaggle API TLS upload errors and DNS/network access from inside Kaggle. This IO-loop proof deliberately avoids requiring notebook internet, so no DNS result is expected from the notebook. Controller-side Kaggle API calls still require working controller network access and Kaggle credentials.
 
-Two concrete failures have been observed in Kaggle runs: (1) a batch run had no `/dev/nvidia*` devices and installed `torch 2.11.0+cpu` (`torch.version.cuda=None`), so it stopped before loading Qwen; (2) a later run failed before the experiment started because Kaggle could not resolve `raw.githubusercontent.com` while executing the legacy bootstrap. The submission now explicitly requests `--accelerator NvidiaTeslaT4`, sets `machine_shape`, embeds the runtime and all four prompts into the notebook before submission, and collects Kaggle logs/output on success, failure, or timeout. The next fresh run must verify GPU allocation and Hugging Face/package network access; a successful GitHub Actions workflow alone does not prove model inference succeeded.
-
-**Agent workflow:** inspect the newest logs first; identify the earliest concrete failure; make a focused fix; commit it; wait for the workflow to finish; inspect its logs again; repeat until GPU preflight passes, the model loads, all four prompts are attempted, and the outputs are captured. Do not ask the user to retrieve logs that the repository tooling can fetch itself.
-
+**Agent workflow:** inspect the newest logs; find the earliest concrete failure; make a focused fix; commit; wait for validation; then inspect the actual Kaggle execution result. Do not ask the user to retrieve logs that repository tooling can fetch itself.
 ---
 
 # Todo 
