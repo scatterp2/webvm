@@ -201,7 +201,7 @@ def fetch_runtime_source():
     from urllib.request import Request, urlopen
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(1, 11):
         try:
             request = Request(
                 RUNTIME_URL + "?t=" + str(int(time.time() * 1000)),
@@ -213,15 +213,15 @@ def fetch_runtime_source():
             with urlopen(request, timeout=30) as response:
                 source = response.read().decode("utf-8")
             compile(source, RUNTIME_URL, "exec")
-            print("RUNTIME_SOURCE_FETCHED source=main characters={}".format(len(source)), flush=True)
+            print("RUNTIME_SOURCE_FETCH_ATTEMPT attempt={}/10 result=ok characters={}".format(attempt, len(source)), flush=True)
             return source
         except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
             last_error = exc
-            print("RUNTIME_SOURCE_FETCH_RETRY attempt={} error={}: {}".format(
-                attempt + 1, type(exc).__name__, exc
+            print("RUNTIME_SOURCE_FETCH_ATTEMPT attempt={}/10 result=failed error={}: {}".format(
+                attempt, type(exc).__name__, exc
             ), flush=True)
-            if attempt < 2:
-                time.sleep(2 ** attempt)
+            if attempt < 10:
+                time.sleep(min(attempt, 5))
 
     # Keep the installed image usable during a temporary GitHub/DNS outage.
     if not RUNTIME_FILE.is_file():
