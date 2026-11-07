@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROTOCOL_VERSION = 1
+DATASET_ID = "simonday/webvm-io-loop-rx"
 DEFAULT_RX = Path("/kaggle/input/webvm-io-loop-rx/rx_message.json")
 DEFAULT_TX = Path("/kaggle/working/tx_response.json")
 
@@ -20,20 +21,64 @@ def sha256(value):
 def log(event, **fields):
     print("IO_LOOP " + json.dumps({"time": utc_now(), "event": event, **fields}, sort_keys=True), flush=True)
 
+def resolve_rx_path(rx_path):
+    if rx_path.is_file():
+        log("RX_PATH_FOUND", source="configured_path", path=str(rx_path))
+        return rx_path
+
+    input_root = Path("/kaggle/input")
+    try:
+        entries = sorted(
+            {"name": p.name, "is_dir": p.is_dir()}
+            for p in input_root.iterdir()
+        ) if input_root.is_dir() else []
+    except Exception as exc:
+        entries = [{"listing_error": type(exc).__name__, "message": str(exc)}]
+    log("RX_INPUT_ROOT_INSPECTED", root=str(input_root), exists=input_root.is_dir(), entries=entries)
+
+    candidates = sorted(input_root.glob("*/rx_message.json")) if input_root.is_dir() else []
+    if len(candidates) == 1:
+        log("RX_PATH_DISCOVERED", source="mounted_input_search", path=str(candidates[0]))
+        return candidates[0]
+    if len(candidates) > 1:
+        log("RX_PATH_AMBIGUOUS", source="mounted_input_search", paths=[str(p) for p in candidates])
+        raise RuntimeError("Multiple rx_message.json files found under /kaggle/input")
+
+    # Fallback: download through kagglehub in this notebook's own runtime.
+    # This avoids assuming that a newly published dataset version was mounted
+    # into the kernel's /kaggle/input snapshot when the kernel was submitted.
+    try:
+        import kagglehub
+        log("KAGGLEHUB_DOWNLOAD_START", dataset_id=DATASET_ID)
+        downloaded_dir = Path(kagglehub.dataset_download(DATASET_ID))
+        log("KAGGLEHUB_DOWNLOAD_COMPLETE", dataset_id=DATASET_ID, path=str(downloaded_dir))
+        downloaded_candidates = sorted(downloaded_dir.rglob("rx_message.json")) if downloaded_dir.exists() else []
+        if len(downloaded_candidates) == 1:
+            log("RX_PATH_DISCOVERED", source="kagglehub_download", path=str(downloaded_candidates[0]))
+            return downloaded_candidates[0]
+        log("KAGGLEHUB_RX_SEARCH_RESULT", path=str(downloaded_dir), candidate_count=len(downloaded_candidates),
+            candidates=[str(p) for p in downloaded_candidates[:10]])
+    except Exception as exc:
+        log("KAGGLEHUB_DOWNLOAD_FAILED", dataset_id=DATASET_ID,
+            error_type=type(exc).__name__, error=str(exc)[:1000])
+
+    raise FileNotFoundError(
+        "RX message not found. Configured path={!s}; no unique /kaggle/input/*/rx_message.json "
+        "and kagglehub fallback did not locate it. See RX_INPUT_ROOT_INSPECTED and KAGGLEHUB_* events."
+        .format(rx_path)
+    )
+
 def main():
     started = time.monotonic()
     rx_path = Path(os.environ.get("WEBVM_IO_LOOP_INPUT", str(DEFAULT_RX)))
     tx_path = Path(os.environ.get("WEBVM_IO_LOOP_OUTPUT", str(DEFAULT_TX)))
     log("AGENT_START", rx_path=str(rx_path), tx_path=str(tx_path))
-    if not rx_path.is_file() and "WEBVM_IO_LOOP_INPUT" not in os.environ:
-        # Kaggle may normalize a mounted dataset directory name; discover the
-        # unique RX file without network access rather than guessing a path.
-        candidates = sorted(Path("/kaggle/input").glob("*/rx_message.json"))
-        if len(candidates) == 1:
-            rx_path = candidates[0]
-            log("RX_PATH_DISCOVERED", path=str(rx_path))
-    if not rx_path.is_file():
-        raise FileNotFoundError("RX message not found at " + str(rx_path))
+    if "WEBVM_IO_LOOP_INPUT" in os.environ:
+        if not rx_path.is_file():
+            raise FileNotFoundError("Explicit WEBVM_IO_LOOP_INPUT path does not exist: " + str(rx_path))
+        log("RX_PATH_FOUND", source="explicit_environment", path=str(rx_path))
+    else:
+        rx_path = resolve_rx_path(rx_path)
     raw = rx_path.read_bytes()
     message = json.loads(raw.decode("utf-8"))
     required = {"version", "sequence", "request_id", "type", "payload_length", "payload", "checksum"}
@@ -54,7 +99,7 @@ def main():
     actual_checksum = sha256(signed)
     if message["checksum"] != actual_checksum:
         raise ValueError("RX checksum mismatch")
-    log("RX_VALIDATED", sequence=message["sequence"], request_id=message["request_id"],
+    log("RX_VALIDATED", source_path=str(rx_path), sequence=message["sequence"], request_id=message["request_id"],
         payload_length=payload_length, checksum=actual_checksum)
     # One message per execution in stage 1. No durable exactly-once claim across restarts.
     processed_ids = set()
