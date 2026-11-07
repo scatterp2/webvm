@@ -571,6 +571,31 @@ def deploy():
         push = run(push_command, check=False, env=tls12_env)
 
     if push is not None and push.returncode != 0:
+        # Bypass any inherited HTTP(S) proxy: a proxy that handles GETs but
+        # corrupts or closes larger POST bodies can produce TLS bad-record-MAC.
+        direct_env = env.copy()
+        for proxy_key in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "all_proxy",
+        ):
+            direct_env.pop(proxy_key, None)
+        direct_env["NO_PROXY"] = "api.kaggle.com,www.kaggle.com,kaggle.com"
+        direct_env["no_proxy"] = direct_env["NO_PROXY"]
+        direct_status = run([
+            str(KAGGLE_BIN), "kernels", "status", KERNEL_ID
+        ], check=False, env=direct_env)
+        print(
+            "KAGGLE_DIRECT_STATUS_CHECK returncode={} proxy_bypass=enabled output={}".format(
+                direct_status.returncode,
+                " ".join((direct_status.stdout or "").split())[:240],
+            ),
+            flush=True,
+        )
+        if direct_status.returncode == 0:
+            print("KAGGLE_PUSH_DIRECT_NETWORK_FALLBACK action=retry", flush=True)
+            push = run(push_command, check=False, env=direct_env)
+
+    if push is not None and push.returncode != 0:
         # Test auth and connectivity through Kaggle's web host before giving up.
         # The status call verifies that credentials work through this alternate
         # endpoint, then the same endpoint is used for SaveKernel.
