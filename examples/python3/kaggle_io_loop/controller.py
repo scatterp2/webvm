@@ -55,37 +55,10 @@ if base_url:
 else:
     _proxy_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
 
-source_ip = os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip()
-iptables = shutil.which("iptables")
-if not iptables:
-    _proxy_log("IPTABLES_CAPABILITY_PROBE", available=False)
-else:
-    cap = subprocess.run([iptables, "-t", "nat", "-S", "PREROUTING"],
-                         capture_output=True, text=True)
-    _proxy_log("IPTABLES_CAPABILITY_PROBE", available=True, returncode=cap.returncode,
-               permitted=(cap.returncode == 0), stderr=(cap.stderr or "")[-1000:],
-               rules=(cap.stdout or "")[-2000:])
-if not source_ip:
-    _proxy_log("NAT_RULE_SKIPPED_SOURCE_IP_NOT_CONFIGURED",
-               required_env="WEBVM_PROXY_SOURCE_IP",
-               note="No example source address is assumed to be real")
-elif not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", source_ip):
-    _proxy_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=source_ip)
-elif not iptables:
-    _proxy_log("NAT_RULE_SKIPPED_IPTABLES_UNAVAILABLE", source_ip=source_ip)
-else:
-    rule = [iptables, "-t", "nat", "-A", "PREROUTING", "-s", source_ip,
-            "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"]
-    check = [iptables, "-t", "nat", "-C", "PREROUTING", "-s", source_ip,
-             "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"]
-    existing = subprocess.run(check, capture_output=True, text=True)
-    if existing.returncode == 0:
-        _proxy_log("NAT_RULE_ALREADY_PRESENT", source_ip=source_ip, from_port=8888, to_port=8889)
-    else:
-        added = subprocess.run(rule, capture_output=True, text=True)
-        _proxy_log("NAT_RULE_ADDED" if added.returncode == 0 else "NAT_RULE_ADD_FAILED",
-                   source_ip=source_ip, from_port=8888, to_port=8889,
-                   returncode=added.returncode, stderr=(added.stderr or "")[-1000:])
+source_ip_configured = bool(os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip())
+_proxy_log("NAT_RULE_NOT_USED", source_ip_configured=source_ip_configured,
+           note="The TCP link uses authenticated Tailscale Serve; no PREROUTING redirect is required")
+
 try:
     with socket.create_connection(("127.0.0.1", 8889), timeout=2):
         _proxy_log("LOCAL_TARGET_LISTENER", port=8889, listening=True)
