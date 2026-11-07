@@ -791,7 +791,7 @@ def run_io_loop_proof():
     """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
     from urllib.error import HTTPError, URLError
 
-    base = "https://raw.githubusercontent.com/scatterp2/webvm/1c8590b1197b21424b19db96ab6d46027a3ce7c2/examples/python3/kaggle_io_loop/"
+    base = "https://raw.githubusercontent.com/scatterp2/webvm/7a919f76b3e207574b73cc86b14f01282090d783/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
     for filename in ("controller.py", "agent.py", "tcp_socks5.py"):
