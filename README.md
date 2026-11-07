@@ -11,7 +11,8 @@ Relevant files:
 - `examples/python3/gpu_test.py` — legacy standalone bootstrap that fetches the runtime from raw GitHub. The main `pi.py` submission path no longer uses it, because the latest run showed raw-GitHub DNS resolution failing inside Kaggle.
 - `examples/python3/kaggle_runtime.py` — experiment implementation, GPU preflight diagnostics, inference, and result logging. The submission script embeds this source into the Kaggle notebook and embeds the prompts from the four source files.
 - `examples/python3/pi_feedback.py` — wraps the submission script and publishes a redacted rolling log snapshot to pste.us for remote inspection.
-- `.github/workflows/runtime-feedback-monitor.yml` — polls pste.us for the unique tag `WVMQWENWS_6D91C42F` and prints matching diagnostic logs into GitHub Actions.
+- `.github/workflows/runtime-feedback-monitor.yml` — existing general/WebVM feedback monitor.
+- `.github/workflows/gpu-diagnostic-feedback-monitor.yml` — GPU-specific monitor for `WVMGPU_DIAG_20261107_6D91C42F`; filters GPU diagnostic markers so IO-loop feedback cannot be mistaken for a GPU run.
 - `monitor-check-2026-11-06.txt` — reminder to inspect actual Kaggle execution output, not just heartbeat messages.
 
 ## How the WebVM reset is triggered and verified
@@ -28,7 +29,7 @@ The user has confirmed that changing the reset file to generation **1592** trigg
 
 ## How to inspect runtime logs and what the latest failure showed
 
-Use the **`runtime-feedback-monitor` branch** for the Kaggle experiment and log-monitoring code. Inspect the latest GitHub Actions run for **Runtime feedback monitor**, open the `poll-pste-feedback` job, and search its output for `FEEDBACK_MATCH`, `GPU_PREFLIGHT`, `MODEL_LOADING`, `INFERENCE_STARTED`, `ANSWER_RESULT`, and `RUN_FAILED`. The monitor reads pste.us entries tagged `WVMQWENWS_6D91C42F`; pste is a transport for diagnostics, not the ultimate source of truth. The submission script also fetches `kaggle kernels logs simonday/automated-gpu-test` and the kernel output files so the real Kaggle run can be diagnosed even when the Kaggle-side upload to pste fails.
+Use the **`runtime-feedback-monitor` branch** for the Kaggle experiment and log-monitoring code. Inspect the latest GitHub Actions run for **Runtime feedback monitor**, open the `poll-pste-feedback` job, and search its output for `FEEDBACK_MATCH`, `GPU_PREFLIGHT`, `MODEL_LOADING`, `INFERENCE_STARTED`, `ANSWER_RESULT`, and `RUN_FAILED`. The monitor reads pste.us entries tagged `WVMGPU_DIAG_20261107_6D91C42F`; pste is a transport for diagnostics, not the ultimate source of truth. The submission script also fetches `kaggle kernels logs simonday/automated-gpu-test` and the kernel output files so the real Kaggle run can be diagnosed even when the Kaggle-side upload to pste fails.
 
 Two concrete failures have been observed in Kaggle runs: (1) a batch run had no `/dev/nvidia*` devices and installed `torch 2.11.0+cpu` (`torch.version.cuda=None`), so it stopped before loading Qwen; (2) a later run failed before the experiment started because Kaggle could not resolve `raw.githubusercontent.com` while executing the legacy bootstrap. The submission now explicitly requests `--accelerator NvidiaTeslaT4`, sets `machine_shape`, embeds the runtime and all four prompts into the notebook before submission, and collects Kaggle logs/output on success, failure, or timeout. The next fresh run must verify GPU allocation and Hugging Face/package network access; a successful GitHub Actions workflow alone does not prove model inference succeeded.
 
