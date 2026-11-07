@@ -328,8 +328,8 @@ def write_notebook():
             "kaggle": {
                 "accelerator": "gpu",
                 "dataSources": [],
-                "isInternetEnabled": true,
-                "isGpuEnabled": true,
+                "isInternetEnabled": True,
+                "isGpuEnabled": True,
                 "language": "python",
                 "sourceType": "notebook"
             }
