@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 TAG = "WVMQWENWS_6D91C42F"
 TAILSCALE_HOSTNAME = "webvm-kaggle-tcp-link"
@@ -146,8 +147,53 @@ def _public_destination(host, port):
     return public[0]
 
 
-class _Socks5Handler(socketserver.BaseRequestHandler):
+def _read_line(sock, limit=8192):
+    data = bytearray()
+    while len(data) < limit:
+        byte = sock.recv(1)
+        if not byte:
+            raise ConnectionError("peer closed while reading a proxy request")
+        data += byte
+        if data.endswith(b"\r\n"):
+            return bytes(data[:-2]).decode("iso-8859-1")
+    raise ValueError("proxy request line/header exceeded the limit")
+
+
+def _parse_host_port(value, default_port):
+    value = value.strip()
+    if value.startswith("["):
+        close = value.find("]")
+        if close < 0:
+            raise ValueError("invalid bracketed IPv6 destination")
+        host = value[1:close]
+        tail = value[close + 1:]
+        port = int(tail[1:]) if tail.startswith(":") else default_port
+    elif value.count(":") == 1:
+        host, port_text = value.rsplit(":", 1)
+        port = int(port_text) if port_text else default_port
+    else:
+        host, port = value, default_port
+    if not host or not 1 <= int(port) <= 65535:
+        raise ValueError("invalid destination host or port")
+    return host, int(port)
+
+
+class _TcpProxyHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        try:
+            first = self.request.recv(1, socket.MSG_PEEK)
+            if first == b"\x05":
+                self._handle_socks5()
+            else:
+                self._handle_http()
+        except Exception:
+            # Do not log destination URLs or request headers.
+            try:
+                self.request.sendall(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+
+    def _handle_socks5(self):
         client = self.request
         remote = None
         try:
@@ -178,6 +224,11 @@ class _Socks5Handler(socketserver.BaseRequestHandler):
             remote.settimeout(None)
             client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
             _bridge(client, remote)
+        except PermissionError:
+            try:
+                client.sendall(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
+            except OSError:
+                pass
         except Exception:
             try:
                 client.sendall(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
@@ -190,32 +241,77 @@ class _Socks5Handler(socketserver.BaseRequestHandler):
                 except OSError:
                     pass
 
-
-def _bridge(left, right):
-    left.settimeout(None)
-    right.settimeout(None)
-
-    def pump(source, destination):
+    def _handle_http(self):
+        client = self.request
+        remote = None
         try:
+            request_line = _read_line(client)
+            parts = request_line.split(" ", 2)
+            if len(parts) != 3:
+                client.sendall(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                return
+            method, target, version = parts
+            headers = []
+            total_header_bytes = 0
             while True:
-                data = source.recv(65536)
-                if not data:
+                line = _read_line(client)
+                total_header_bytes += len(line) + 2
+                if total_header_bytes > 65536:
+                    raise ValueError("proxy headers exceeded the limit")
+                if not line:
                     break
-                destination.sendall(data)
-        except OSError:
-            pass
-        finally:
+                if ":" not in line:
+                    raise ValueError("malformed HTTP proxy header")
+                name, value = line.split(":", 1)
+                if name.lower() not in ("proxy-connection", "proxy-authorization", "proxy-authenticate"):
+                    headers.append((name, value.strip()))
+
+            if method.upper() == "CONNECT":
+                host, port = _parse_host_port(target, 443)
+                target_ip = _public_destination(host, port)
+                remote = socket.create_connection((target_ip, port), timeout=12)
+                remote.settimeout(None)
+                client.sendall(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: WebVM-TCP-Link\r\n\r\n")
+                _bridge(client, remote)
+                return
+
+            parsed = urlsplit(target)
+            if parsed.scheme.lower() != "http" or not parsed.hostname:
+                client.sendall(b"HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n")
+                return
+            host = parsed.hostname
+            port = parsed.port or 80
+            target_ip = _public_destination(host, port)
+            remote = socket.create_connection((target_ip, port), timeout=12)
+            remote.settimeout(None)
+            path = parsed.path or "/"
+            if parsed.query:
+                path += "?" + parsed.query
+            if not any(name.lower() == "host" for name, _ in headers):
+                headers.append(("Host", host if port == 80 else "{}:{}".format(host, port)))
+            headers = [(name, value) for name, value in headers if name.lower() != "connection"]
+            headers.append(("Connection", "close"))
+            outbound = [method + " " + path + " " + version]
+            outbound.extend(name + ": " + value for name, value in headers)
+            outbound.extend(["", ""])
+            remote.sendall("\r\n".join(outbound).encode("iso-8859-1"))
+            _bridge(client, remote)
+        except PermissionError:
             try:
-                destination.shutdown(socket.SHUT_WR)
+                client.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
             except OSError:
                 pass
-
-    a = threading.Thread(target=pump, args=(left, right), daemon=True)
-    b = threading.Thread(target=pump, args=(right, left), daemon=True)
-    a.start()
-    b.start()
-    a.join()
-    b.join()
+        except Exception:
+            try:
+                client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+        finally:
+            if remote is not None:
+                try:
+                    remote.close()
+                except OSError:
+                    pass
 
 
 class _ThreadedServer(socketserver.ThreadingTCPServer):
@@ -302,7 +398,7 @@ def main():
             safe_output = (up.stdout or "").replace(auth_key, "[REDACTED]")[-1500:]
             raise RuntimeError("tailscale up failed: " + safe_output)
 
-        server = _ThreadedServer((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), _Socks5Handler)
+        server = _ThreadedServer((LOCAL_SOCKS_HOST, LOCAL_SOCKS_PORT), _TcpProxyHandler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         _socks_self_test()
         _emit("SOCKS5_SELF_TEST_PASS", local_port=LOCAL_SOCKS_PORT, target="public TCP 443")
