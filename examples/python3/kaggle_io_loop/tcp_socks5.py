@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Long-lived SOCKS5-over-Tailscale TCP bridge for the Kaggle notebook runtime.
+"""Long-lived HTTP CONNECT and SOCKS5-over-Tailscale TCP bridge for the Kaggle notebook runtime.
 
 The auth key is read only from Kaggle Secrets (WEBVM_TAILSCALE_AUTHKEY). It is
 never included in notebook source, RX/TX files, logs, or telemetry.
@@ -412,26 +412,43 @@ def main():
         _emit(
             "AUTH_KEY_MISSING",
             required_kaggle_secret="WEBVM_TAILSCALE_AUTHKEY",
-            note="Create an ephemeral Tailscale auth key and add it as a Kaggle Notebook Secret.",
+            note="Create a reusable ephemeral Tailscale auth key and add it as a Kaggle Notebook Secret.",
         )
         return
 
-    tailscale, tailscaled = _install_tailscale()
-    state_path = WORK / "tailscale.state"
-    daemon_log = (WORK / "tailscaled.log").open("ab")
-    daemon = subprocess.Popen(
-        [
-            tailscaled,
-            "--tun=userspace-networking",
-            "--state=" + str(state_path),
-            "--socket=" + SOCKET_PATH,
-            "--port=0",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=daemon_log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    daemon = None
+    daemon_log = None
+    try:
+        tailscale, tailscaled = _install_tailscale()
+        state_path = WORK / "tailscale.state"
+        daemon_log = (WORK / "tailscaled.log").open("ab")
+        daemon = subprocess.Popen(
+            [
+                tailscaled,
+                "--tun=userspace-networking",
+                "--state=" + str(state_path),
+                "--socket=" + SOCKET_PATH,
+                "--port=0",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=daemon_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        _emit("FAILED", error_type=type(exc).__name__, message=str(exc)[:1200])
+        if daemon is not None and daemon.poll() is None:
+            try:
+                daemon.terminate()
+            except OSError:
+                pass
+        if daemon_log is not None:
+            try:
+                daemon_log.close()
+            except OSError:
+                pass
+        return
+
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not Path(SOCKET_PATH).exists():
@@ -491,7 +508,7 @@ def main():
             tailscale_ip=addresses[0],
             tcp_port=TAILNET_PORT,
             local_socks5_port=LOCAL_SOCKS_PORT,
-            transport="TCP over Tailscale; SOCKS5 CONNECT",
+            transport="TCP over Tailscale; HTTP CONNECT and SOCKS5",
         )
 
         while daemon.poll() is None:
