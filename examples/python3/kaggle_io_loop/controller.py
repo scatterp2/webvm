@@ -26,7 +26,7 @@ pids = [12] + [
 for pid in pids:
     try:
         with open("/proc/{}/cmdline".format(pid), "rb") as f:
-            args = [x.decode(errors="replace") for x in f.read().split(b"\\0") if x]
+            args = [x.decode(errors="replace") for x in f.read().split(b"\0") if x]
     except (OSError, PermissionError):
         continue
     if not any("jupyter" in x.lower() or "notebook" in x.lower() for x in args):
