@@ -634,8 +634,42 @@ def deploy():
             print("KAGGLE_PUSH_ALT_HOST_FALLBACK host=www.kaggle.com/api action=retry", flush=True)
             push = run(push_command, check=False, env=alt_env)
 
+    if push is not None and push.returncode != 0:
+        # Some WebVM deployments inject an HTTPS proxy that can corrupt long
+        # TLS exchanges. Retry with proxy environment settings removed, first
+        # verifying that the direct API endpoint is reachable.
+        direct_env = env.copy()
+        proxy_names = (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "all_proxy",
+        )
+        configured_proxy_names = [name for name in proxy_names if direct_env.get(name)]
+        for name in proxy_names:
+            direct_env.pop(name, None)
+        direct_env["NO_PROXY"] = "api.kaggle.com,www.kaggle.com,.kaggle.com"
+        direct_env["no_proxy"] = direct_env["NO_PROXY"]
+        print(
+            "KAGGLE_PUSH_DIRECT_FALLBACK configured_proxy_vars={} action=probe".format(
+                ",".join(configured_proxy_names) if configured_proxy_names else "none"
+            ),
+            flush=True,
+        )
+        direct_status = run([
+            str(KAGGLE_BIN), "kernels", "status", KERNEL_ID
+        ], check=False, env=direct_env)
+        if direct_status.returncode == 0:
+            print("KAGGLE_PUSH_DIRECT_FALLBACK action=submit", flush=True)
+            push = run(push_command, check=False, env=direct_env)
+        else:
+            print(
+                "KAGGLE_PUSH_DIRECT_FALLBACK action=skip status_returncode={}".format(
+                    direct_status.returncode
+                ),
+                flush=True,
+            )
+
     if push is None or push.returncode != 0:
-        raise RuntimeError("Kaggle notebook submission failed after TLS retries and alternate-host fallback.")
+        raise RuntimeError("Kaggle notebook submission failed after TLS retries, alternate-host, and direct-network fallbacks.")
 
     print("\nNotebook URL:", NOTEBOOK_URL, flush=True)
     print("booting......", flush=True)
