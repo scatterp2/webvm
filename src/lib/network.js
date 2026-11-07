@@ -46,7 +46,7 @@ function writeKaggleProxyFile(link) {
 			"export NO_PROXY=\"localhost,127.0.0.1,::1\"",
 			"export no_proxy=\"$NO_PROXY\"",
 			""
-		].join("\\n");
+		].join("\n");
 	} else {
 		source = [
 			"# Kaggle TCP peer is offline; remove only the proxy this feature set.",
@@ -60,7 +60,7 @@ function writeKaggleProxyFile(link) {
 			"fi",
 			"unset WEBVM_KAGGLE_TCP_LINK_IP WEBVM_KAGGLE_TCP_LINK_PROXY",
 			""
-		].join("\\n");
+		].join("\n");
 	}
 	attachedDataDevice.writeFile("/kaggle-tcp-link.env", source).catch((error) => {
 		console.warn("[WebVM] Could not update Kaggle TCP proxy settings in /data.", error);
