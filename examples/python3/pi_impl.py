@@ -35,6 +35,105 @@ RUNTIME_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/p
 PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
 GAMES = ["pacman", "pong", "breakout", "freeway"]
 
+# Run inside Kaggle's notebook runtime before the experiment workload.
+# WEBVM_PROXY_SOURCE_IP can override the sample source address.
+PROXY_DIAGNOSTIC_SOURCE = r'''# WEBVM Kaggle proxy / NAT diagnostic
+import glob as _wvm_glob
+import os as _wvm_os
+import re as _wvm_re
+import shutil as _wvm_shutil
+import socket as _wvm_socket
+import subprocess as _wvm_subprocess
+
+def _wvm_log(event, **fields):
+    print("WEBVM_PROXY_DIAGNOSTIC " + __import__("json").dumps(
+        {"event": event, **fields}, sort_keys=True
+    ), flush=True)
+
+def _wvm_cmdline(pid):
+    with open("/proc/{}/cmdline".format(pid), "rb") as _f:
+        return [x.decode(errors="replace") for x in _f.read().split(b"\\0") if x]
+
+_wvm_base_url = None
+_wvm_server_pid = None
+_wvm_candidates = [12]
+_wvm_candidates += [
+    int(_p.split("/")[2]) for _p in _wvm_glob.glob("/proc/[0-9]*/cmdline")
+    if _p.split("/")[2].isdigit() and int(_p.split("/")[2]) != 12
+]
+for _wvm_pid in _wvm_candidates:
+    try:
+        _wvm_args = _wvm_cmdline(_wvm_pid)
+    except (OSError, PermissionError):
+        continue
+    _wvm_is_jupyter = any(
+        "jupyter" in _a.lower() or "notebook" in _a.lower()
+        for _a in _wvm_args
+    )
+    if not _wvm_is_jupyter:
+        continue
+    for _wvm_i, _wvm_arg in enumerate(_wvm_args):
+        if _wvm_arg.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
+            _wvm_base_url = _wvm_arg.split("=", 1)[1]
+            _wvm_server_pid = _wvm_pid
+            break
+        if _wvm_arg in ("--NotebookApp.base_url", "--ServerApp.base_url") and _wvm_i + 1 < len(_wvm_args):
+            _wvm_base_url = _wvm_args[_wvm_i + 1]
+            _wvm_server_pid = _wvm_pid
+            break
+    if _wvm_base_url:
+        break
+
+if _wvm_base_url:
+    _wvm_match = _wvm_re.search(r"/k/\\d+/([^/]+)/proxy/?$", _wvm_base_url)
+    if _wvm_match:
+        _wvm_proxy_url = "https://kkb-production.jupyter-proxy.kaggle.net?token=" + _wvm_match.group(1)
+        _wvm_log("PROXY_URL_DISCOVERED", pid=_wvm_server_pid, base_url=_wvm_base_url, proxy_url=_wvm_proxy_url)
+    else:
+        _wvm_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=_wvm_server_pid, base_url=_wvm_base_url)
+else:
+    _wvm_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
+
+_wvm_source_ip = _wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "192.0.2.10")
+_wvm_rule = [
+    "iptables", "-t", "nat", "-A", "PREROUTING", "-s", _wvm_source_ip,
+    "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
+]
+_wvm_rule_check = _wvm_rule.copy()
+_wvm_rule_check[4] = "-C"
+_wvm_rule_check.pop(5)
+# Build the exact idempotency check independently to avoid argument-index ambiguity.
+_wvm_check = [
+    "iptables", "-t", "nat", "-C", "PREROUTING", "-s", _wvm_source_ip,
+    "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
+]
+if not _wvm_re.fullmatch(r"(?:\\d{1,3}\\.){3}\\d{1,3}", _wvm_source_ip):
+    _wvm_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=_wvm_source_ip)
+elif not _wvm_shutil.which("iptables"):
+    _wvm_log("IPTABLES_UNAVAILABLE", source_ip=_wvm_source_ip)
+else:
+    _wvm_existing = _wvm_subprocess.run(_wvm_check, capture_output=True, text=True)
+    if _wvm_existing.returncode == 0:
+        _wvm_log("NAT_RULE_ALREADY_PRESENT", source_ip=_wvm_source_ip, from_port=8888, to_port=8889)
+    else:
+        _wvm_added = _wvm_subprocess.run(_wvm_rule, capture_output=True, text=True)
+        if _wvm_added.returncode == 0:
+            _wvm_log("NAT_RULE_ADDED", source_ip=_wvm_source_ip, from_port=8888, to_port=8889,
+                     note="192.0.2.10 is the sample address unless WEBVM_PROXY_SOURCE_IP is set")
+        else:
+            _wvm_log("NAT_RULE_ADD_FAILED", source_ip=_wvm_source_ip,
+                     returncode=_wvm_added.returncode,
+                     stderr=(_wvm_added.stderr or "")[-1000:],
+                     stdout=(_wvm_added.stdout or "")[-1000:])
+
+try:
+    with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=2):
+        _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=True)
+except OSError as _wvm_exc:
+    _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
+             error=type(_wvm_exc).__name__ + ": " + str(_wvm_exc))
+'''
+
 KERNEL_SLUG = "automated-gpu-test"
 KERNEL_ID = USERNAME + "/" + KERNEL_SLUG
 NOTEBOOK_URL = "https://www.kaggle.com/code/" + KERNEL_ID
@@ -252,6 +351,7 @@ def write_notebook():
     # Keep the SaveKernel request small: embed the runtime code, but fetch the
     # four large prompt files inside Kaggle through the retryable Contents API.
     runtime_source = build_embedded_runtime()
+    runtime_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + runtime_source
     print(
         "RUNTIME_INLINE characters={} prompts=runtime-fetch syntax=ok".format(
             len(runtime_source)
