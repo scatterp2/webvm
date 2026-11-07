@@ -333,7 +333,7 @@ def write_notebook():
                 "metadata": {},
                 "source": [
                     "# Qwen Weight-Space Interpretation Replication\n",
-                    "Runs the four source prompts against Qwen/Qwen3.8-27B. Runtime code and prompts are embedded at submission time to avoid raw-GitHub DNS dependencies in Kaggle."
+                    "Runs the four source prompts against Qwen/Qwen3.8-27B. Runtime code is embedded; large prompts are fetched through the GitHub Contents API with retries."
                 ]
             },
             {
