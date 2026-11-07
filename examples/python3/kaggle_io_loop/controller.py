@@ -154,9 +154,15 @@ def main():
         log.event("PREPARE_ONLY_PASS", note="Local protocol test passed; Kaggle API not called")
         return
 
+    if args.dataset_exists:
+        dataset_exists = True
+    else:
+        probe = command(log, ["kaggle", "datasets", "status", args.dataset_id], timeout=60, check=False)
+        dataset_exists = probe.returncode == 0
+        log.event("RX_DATASET_EXISTENCE_PROBE", dataset_id=args.dataset_id, exists=dataset_exists)
     publish_cmd = (["kaggle", "datasets", "version", "-p", str(dataset_dir),
                     "-m", "WebVM IO loop RX message sequence 1", "-r", "skip"]
-                   if args.dataset_exists else
+                   if dataset_exists else
                    ["kaggle", "datasets", "create", "-p", str(dataset_dir), "-r", "skip"])
     command(log, publish_cmd, timeout=300, check=True)
     log.event("RX_RESOURCE_PUBLISHED", dataset_id=args.dataset_id, message_checksum=message["checksum"])
