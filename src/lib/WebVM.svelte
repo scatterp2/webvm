@@ -389,13 +389,9 @@
 		return () => window.removeEventListener('webvm-reset-request', handleGenerationReset);
 	});
 
-	// Auto-connect with hardcoded auth key
-	// This will be called after initTerminal completes and cx is initialized
-	
+	// Auto-connect using the auth key supplied through networkInterface by the page URL hash.
 	let autoConnectAttempted = false;
-	
-	const AUTH_KEY = "tskey-auth-ktAfFfhKgK11CNTRL-MXoh6jmnuvSQ7XtfUYwQySr2q3wEkhfb";
-	
+
 	async function tryAutoConnect() {
 	if(autoConnectAttempted || !cx) return;
 	
