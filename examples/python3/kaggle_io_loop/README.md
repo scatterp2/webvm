@@ -46,7 +46,7 @@ Kaggle's current notebook documentation states 12 hours maximum execution time f
 
 ## Stage 2: live TCP bridge over Tailscale
 
-The RX/TX proof above is only a file/message round trip. The live transport is a separate, long-running private Kaggle notebook, `USERNAME/webvm-tcp-link`, which runs a TCP-only SOCKS5 proxy on local port 8889 and exposes it to the tailnet through Tailscale Serve on port 8888. No `iptables` PREROUTING rule is required.
+The RX/TX proof above is only a file/message round trip. The live transport is a separate, long-running private Kaggle notebook, `USERNAME/webvm-tcp-link`, which runs an HTTP CONNECT + SOCKS5 proxy on local port 8889 and exposes it to the tailnet through Tailscale Serve on port 8888. No `iptables` PREROUTING rule is required.
 
 ### One-time setup
 
@@ -60,4 +60,4 @@ The notebook reports non-secret stages through the existing runtime telemetry: i
 
 ### What this link provides
 
-This is a real TCP stream path from WebVM over its Tailscale network to the Kaggle peer, then through a SOCKS5 `CONNECT` proxy to public TCP destinations. It is not the old file-based RX/TX loop, and it does not rely on a guessed source IP or NAT redirect. UDP and arbitrary layer-3 packet forwarding are not provided by this SOCKS5 mode; applications must honor the SOCKS/HTTP proxy environment variables. The service remains available only while the Kaggle notebook is running and subject to Kaggle's session limits.
+This is a real TCP stream path from WebVM over its Tailscale network to the Kaggle peer, then through either HTTP `CONNECT` or SOCKS5 `CONNECT` to public TCP destinations. It is not the old file-based RX/TX loop, and it does not rely on a guessed source IP or NAT redirect. UDP and arbitrary layer-3 packet forwarding are not provided by this SOCKS5 mode; applications must honor the proxy environment variables. HTTP clients use `HTTP_PROXY`/`HTTPS_PROXY`; SOCKS-aware clients use `ALL_PROXY`. The service remains available only while the Kaggle notebook is running and subject to Kaggle's session limits.
