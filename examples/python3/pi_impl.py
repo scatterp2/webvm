@@ -7,6 +7,7 @@ import json
 import time
 import shutil
 import subprocess
+import selectors
 from pathlib import Path
 
 # ============================================================
@@ -712,13 +713,38 @@ def run_io_loop_proof():
     ]
     print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
         USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=1200, check=False, env=env)
-    if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\\n") else "\\n", flush=True)
-    print("IO_LOOP_CONTROLLER_EXIT returncode={}".format(result.returncode), flush=True)
-    if result.returncode != 0:
-        raise RuntimeError("Kaggle API-mediated IO loop proof failed with exit code {}".format(result.returncode))
+    # Stream controller diagnostics as they happen. Capturing with subprocess.run()
+    # hides API_REQUEST_START / timeout events until the whole 20-minute process exits.
+    started = time.monotonic()
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, bufsize=1, env=env)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            if time.monotonic() - started > 1200:
+                process.kill()
+                raise subprocess.TimeoutExpired(command, 1200)
+            events = selector.select(timeout=1)
+            for key, _ in events:
+                line = key.fileobj.readline()
+                if line:
+                    print(line, end="", flush=True)
+                else:
+                    selector.unregister(key.fileobj)
+            returncode = process.poll()
+            if returncode is not None and not selector.get_map():
+                break
+        print("IO_LOOP_CONTROLLER_EXIT returncode={}".format(returncode), flush=True)
+        if returncode != 0:
+            raise RuntimeError("Kaggle API-mediated IO loop proof failed with exit code {}".format(returncode))
+    finally:
+        selector.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout:
+            process.stdout.close()
 
 
 def main():
