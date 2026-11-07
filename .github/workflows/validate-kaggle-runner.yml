@@ -97,7 +97,7 @@ jobs:
           assert response["payload"] == "ACK:" + message["payload"]
           assert len(notebook["cells"]) == 1
           assert "IO_LOOP_RESULT" in "".join(notebook["cells"][0]["source"])
-          assert metadata["enable_internet"] is False
+          assert metadata["enable_internet"] is True
           assert metadata["dataset_sources"] == ["ci-user/webvm-io-loop-rx"]
           print("KAGGLE_IO_LOOP_LOCAL_PROOF_OK")
           PY
