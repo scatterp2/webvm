@@ -324,6 +324,14 @@ def write_notebook():
             },
             "language_info": {
                 "name": "python"
+            },
+            "kaggle": {
+                "accelerator": "gpu",
+                "dataSources": [],
+                "isInternetEnabled": true,
+                "isGpuEnabled": true,
+                "language": "python",
+                "sourceType": "notebook"
             }
         },
         "nbformat": 4,
