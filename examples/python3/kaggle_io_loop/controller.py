@@ -115,6 +115,7 @@ def main():
     dataset_dir, kernel_dir, output_dir = work / "dataset", work / "kernel", work / "output"
     log = Logger(work / "run.jsonl")
     work.mkdir(parents=True, exist_ok=True)
+    round_trip_started = time.monotonic()
     log.event("RUN_BEGIN", dataset_id=args.dataset_id, kernel_id=args.kernel_id,
               timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds)
     message = make_message()
@@ -194,6 +195,8 @@ def main():
     response = validate_output(output_dir / "tx_response.json", message, log)
     log.event("LOOP_PROOF_PASS", request_id=message["request_id"], sequence=message["sequence"],
               rx_checksum=message["checksum"], tx_checksum=response["checksum"],
+              round_trip_ms=round((time.monotonic() - round_trip_started) * 1000, 3),
+              payload_bytes=message["payload_length"], output_bytes=(output_dir / "tx_response.json").stat().st_size,
               output_file=str(output_dir / "tx_response.json"))
     print("LOOP_PROOF_PASS output=" + str(output_dir / "tx_response.json") + " log=" + str(work / "run.jsonl"), flush=True)
 
