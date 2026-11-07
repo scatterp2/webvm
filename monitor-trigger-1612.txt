@@ -1,1 +1,3 @@
 Run runtime feedback polling for WebVM reset generation 1612 and the Kaggle API-mediated IO loop proof.
+
+Second monitor trigger: WebVM reset generation 1613. Look for a new IO_LOOP_CONTROLLER_START timestamp after the reset commit.
