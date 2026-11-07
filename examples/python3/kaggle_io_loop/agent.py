@@ -68,6 +68,91 @@ def resolve_rx_path(rx_path):
         .format(rx_path)
     )
 
+
+def collect_network_diagnostics():
+    """Return non-secret capability facts needed to choose a real TCP/IP transport."""
+    import glob
+    import shutil
+    import socket
+    import subprocess
+
+    report = {
+        "uid": os.geteuid() if hasattr(os, "geteuid") else None,
+        "dev_net_tun": os.path.exists("/dev/net/tun"),
+        "iptables_available": bool(shutil.which("iptables")),
+        "tailscale_available": bool(shutil.which("tailscale")),
+        "tailscaled_available": bool(shutil.which("tailscaled")),
+        "jupyter_proxy_route_found": False,
+        "jupyter_proxy_token_present": False,
+        "jupyter_proxy_kernel_id": None,
+        "port_8889_listening": False,
+        "outbound_tcp_443": {},
+    }
+    try:
+        report["ipv4_forwarding"] = Path("/proc/sys/net/ipv4/ip_forward").read_text().strip()
+    except OSError:
+        report["ipv4_forwarding"] = "unavailable"
+
+    iptables = shutil.which("iptables")
+    if iptables:
+        try:
+            probe = subprocess.run([iptables, "-t", "nat", "-S", "PREROUTING"],
+                                   capture_output=True, text=True, timeout=5)
+            report["iptables_nat_prerouting"] = {
+                "returncode": probe.returncode,
+                "permitted": probe.returncode == 0,
+                "stderr": (probe.stderr or "")[-300:],
+            }
+        except Exception as exc:
+            report["iptables_nat_prerouting"] = {"error": type(exc).__name__}
+
+    for proc_path in glob.glob("/proc/[0-9]*/cmdline"):
+        try:
+            args = [v.decode("utf-8", "replace") for v in Path(proc_path).read_bytes().split(b"\0") if v]
+        except OSError:
+            continue
+        if not any("jupyter" in value.lower() or "notebook" in value.lower() for value in args):
+            continue
+        base_url = None
+        for index, value in enumerate(args):
+            if value.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
+                base_url = value.split("=", 1)[1]
+                break
+            if value in ("--NotebookApp.base_url", "--ServerApp.base_url") and index + 1 < len(args):
+                base_url = args[index + 1]
+                break
+        if base_url:
+            match = re.search(r"/k/(\d+)/([^/]+)/proxy/?$", base_url)
+            if match:
+                report["jupyter_proxy_route_found"] = True
+                report["jupyter_proxy_token_present"] = bool(match.group(2))
+                report["jupyter_proxy_kernel_id"] = match.group(1)
+            else:
+                # Report only the route shape; never return a URL that could contain a token.
+                report["jupyter_base_url_shape"] = "present_unrecognized_format"
+            break
+
+    try:
+        with socket.create_connection(("127.0.0.1", 8889), timeout=1):
+            report["port_8889_listening"] = True
+    except OSError:
+        pass
+
+    for host in ("kkb-production.jupyter-proxy.kaggle.net", "pste.us"):
+        try:
+            addresses = sorted({item[4][0] for item in socket.getaddrinfo(
+                host, 443, type=socket.SOCK_STREAM
+            )})
+            with socket.create_connection((host, 443), timeout=3):
+                report["outbound_tcp_443"][host] = {
+                    "dns": True, "tcp": True, "address_count": len(addresses)
+                }
+        except Exception as exc:
+            report["outbound_tcp_443"][host] = {
+                "error": type(exc).__name__, "dns_or_tcp": False
+            }
+    return report
+
 def main():
     started = time.monotonic()
     rx_path = Path(os.environ.get("WEBVM_IO_LOOP_INPUT", str(DEFAULT_RX)))
@@ -109,7 +194,10 @@ def main():
     else:
         processed_ids.add(delivery_key)
         delivery_state, response_payload = "processed_once", "ACK:" + message["payload"]
+    network_diagnostics = collect_network_diagnostics()
+    log("NETWORK_DIAGNOSTICS", report=network_diagnostics)
     response_core = {
+        "network_diagnostics": network_diagnostics,
         "version": PROTOCOL_VERSION, "sequence": message["sequence"],
         "request_id": message["request_id"], "type": "ack",
         "payload_length": len(response_payload.encode("utf-8")), "payload": response_payload,
