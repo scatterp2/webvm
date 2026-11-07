@@ -94,6 +94,20 @@ if _wvm_base_url:
 else:
     _wvm_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
 
+_wvm_iptables = _wvm_shutil.which("iptables")
+if not _wvm_iptables:
+    _wvm_log("IPTABLES_CAPABILITY_PROBE", available=False)
+else:
+    _wvm_capability = _wvm_subprocess.run(
+        [_wvm_iptables, "-t", "nat", "-S", "PREROUTING"],
+        capture_output=True, text=True
+    )
+    _wvm_log("IPTABLES_CAPABILITY_PROBE", available=True,
+             returncode=_wvm_capability.returncode,
+             permitted=(_wvm_capability.returncode == 0),
+             stderr=(_wvm_capability.stderr or "")[-1000:],
+             rules=(_wvm_capability.stdout or "")[-2000:])
+
 _wvm_source_ip = _wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip()
 _wvm_rule = [
     "iptables", "-t", "nat", "-A", "PREROUTING", "-s", _wvm_source_ip,
