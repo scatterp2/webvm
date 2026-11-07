@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-FEEDBACK_TAG = "WVMQWENWS_6D91C42F"
+FEEDBACK_TAG = "WVMGPU_DIAG_20261107_6D91C42F"
 FEEDBACK_URL = "https://pste.us/api/v1/pastes"
 PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
 MODEL_ID = "Qwen/Qwen3.8-27B"
