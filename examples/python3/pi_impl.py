@@ -508,14 +508,16 @@ def deploy():
         str(KAGGLE_BIN), "kernels", "push",
         "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
     ]
+    transient_transport_failure = False
     for push_attempt in range(1, 4):
         push = run(push_command, check=False, env=env)
         if push.returncode == 0:
             break
 
-        push_output = (push.stdout or "")
+        push_output = str(getattr(push, "stdout", "") or "") + str(getattr(push, "stderr", "") or "")
+        push_output_lower = push_output.lower()
         transient_transport_failure = any(
-            marker in push_output.lower()
+            marker in push_output_lower
             for marker in (
                 "sslv3_alert_bad_record_mac",
                 "ssl alert bad record mac",
@@ -528,16 +530,22 @@ def deploy():
                 "connection timed out",
                 "read timed out",
                 "newconnectionerror",
+                "max retries exceeded",
             )
         )
+        print(
+            "KAGGLE_PUSH_FAILED attempt={} transient_transport={} output={}".format(
+                push_attempt, transient_transport_failure,
+                " ".join(push_output.split())[-500:],
+            ),
+            flush=True,
+        )
         if not transient_transport_failure:
-            raise RuntimeError(
-                "Kaggle notebook submission failed with a non-transient error."
-            )
+            break
         if push_attempt < 3:
             delay = 5 * push_attempt
             print(
-                "KAGGLE_PUSH_TRANSIENT_TLS_FAILURE attempt={} retry_in={}s".format(
+                "KAGGLE_PUSH_TRANSIENT_RETRY attempt={} retry_in={}s".format(
                     push_attempt, delay
                 ),
                 flush=True,
@@ -547,37 +555,35 @@ def deploy():
     if push is not None and push.returncode != 0 and transient_transport_failure:
         tls_config = Path("/tmp/webvm-openssl-tls12.cnf")
         tls_config.write_text(
-            "openssl_conf = openssl_init\n"
-            "[openssl_init]\n"
-            "ssl_conf = ssl_sect\n"
-            "[ssl_sect]\n"
-            "system_default = system_default_sect\n"
-            "[system_default_sect]\n"
-            "MinProtocol = TLSv1.2\n"
-            "MaxProtocol = TLSv1.2\n",
+            "openssl_conf = openssl_init\\n"
+            "[openssl_init]\\n"
+            "ssl_conf = ssl_sect\\n"
+            "[ssl_sect]\\n"
+            "system_default = system_default_sect\\n"
+            "[system_default_sect]\\n"
+            "MinProtocol = TLSv1.2\\n"
+            "MaxProtocol = TLSv1.2\\n",
             encoding="utf-8",
         )
         tls12_env = env.copy()
         tls12_env["OPENSSL_CONF"] = str(tls_config)
-        print(
-            "KAGGLE_PUSH_TLS12_FALLBACK config={} action=retry".format(tls_config),
-            flush=True,
-        )
+        print("KAGGLE_PUSH_TLS12_FALLBACK action=retry", flush=True)
         push = run(push_command, check=False, env=tls12_env)
 
-    if push is not None and push.returncode != 0 and transient_transport_failure:
-        # The WebVM network path consistently corrupts TLS to api.kaggle.com.
-        # Test the same public API through Kaggle's www host before giving up.
+    if push is not None and push.returncode != 0:
+        # Test auth and connectivity through Kaggle's web host before giving up.
+        # The status call verifies that credentials work through this alternate
+        # endpoint, then the same endpoint is used for SaveKernel.
         alt_host_dir = Path("/tmp/webvm-kaggle-alt-host")
         alt_host_dir.mkdir(parents=True, exist_ok=True)
         (alt_host_dir / "sitecustomize.py").write_text(
-            "import os\n"
-            "try:\n"
-            "    import kagglesdk.kaggle_env as _kaggle_env\n"
-            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\n"
-            "except Exception as _exc:\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\n",
+            "import os\\n"
+            "try:\\n"
+            "    import kagglesdk.kaggle_env as _kaggle_env\\n"
+            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\\n"
+            "except Exception as _exc:\\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\\n",
             encoding="utf-8",
         )
         alt_env = env.copy()
@@ -587,12 +593,12 @@ def deploy():
         alt_status = run([
             str(KAGGLE_BIN), "kernels", "status", KERNEL_ID
         ], check=False, env=alt_env)
-        alt_status_output = (alt_status.stdout or "")
+        alt_status_output = str(getattr(alt_status, "stdout", "") or "")
         print(
             "KAGGLE_ALT_HOST_STATUS_CHECK returncode={} patch_applied={} output={}".format(
                 alt_status.returncode,
                 "WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED" in alt_status_output,
-                " ".join(alt_status_output.split())[:240],
+                " ".join(alt_status_output.split())[:300],
             ),
             flush=True,
         )
@@ -600,10 +606,7 @@ def deploy():
             alt_status.returncode == 0
             and "WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED" in alt_status_output
         ):
-            print(
-                "KAGGLE_PUSH_ALT_HOST_FALLBACK host=www.kaggle.com/api action=retry",
-                flush=True,
-            )
+            print("KAGGLE_PUSH_ALT_HOST_FALLBACK host=www.kaggle.com/api action=retry", flush=True)
             push = run(push_command, check=False, env=alt_env)
 
     if push is None or push.returncode != 0:
