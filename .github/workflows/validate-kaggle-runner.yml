@@ -31,7 +31,8 @@ jobs:
             examples/python3/pi_feedback.py \
             examples/python3/gpu_test.py \
             examples/python3/kaggle_io_loop/controller.py \
-            examples/python3/kaggle_io_loop/agent.py
+            examples/python3/kaggle_io_loop/agent.py \
+            examples/python3/kaggle_io_loop/tcp_socks5.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
       - name: Test compact notebook and runtime prompt retrieval without network access
@@ -101,4 +102,27 @@ jobs:
           assert metadata["enable_internet"] is True
           assert metadata["dataset_sources"] == ["ci-user/webvm-io-loop-rx"]
           print("KAGGLE_IO_LOOP_LOCAL_PROOF_OK")
+          PY
+
+      - name: Validate generated live TCP link notebook without Kaggle credentials or network
+        run: |
+          python3 examples/python3/kaggle_io_loop/controller.py \
+            --dataset-id ci-user/webvm-io-loop-rx \
+            --kernel-id ci-user/webvm-tcp-link \
+            --prepare-only --serve-tcp-link \
+            --work-dir "$RUNNER_TEMP/tcp-link-test"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "tcp-link-test"
+          notebook = json.loads((root / "kernel" / "io_loop_proof.ipynb").read_text())
+          source = "".join(notebook["cells"][0]["source"])
+          metadata = json.loads((root / "kernel" / "kernel-metadata.json").read_text())
+          assert "WEBVM_TAILSCALE_AUTHKEY" in source
+          assert "TCP_LINK_KERNEL_SUBMITTED" not in source
+          assert "tailscale serve" in source
+          assert "tskey-auth-" not in source
+          assert metadata["id"] == "ci-user/webvm-tcp-link"
+          assert metadata["is_private"] is True
+          print("KAGGLE_TCP_LINK_NOTEBOOK_BUILD_OK")
           PY
