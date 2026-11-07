@@ -1,5 +1,5 @@
 name: Runtime feedback monitor
-# Restarted after WebVM generation 1617; capture the new RX publication verification run.
+# Restarted after WebVM generation 1618; capture kagglehub RX fallback diagnostics.
 
 on:
   push:
