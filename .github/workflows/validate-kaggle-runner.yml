@@ -124,6 +124,8 @@ jobs:
           assert not re.search(r"tskey-auth-[A-Za-z0-9_-]{20,}", source)
           assert metadata["id"] == "ci-user/webvm-tcp-link"
           assert metadata["is_private"] is True
+          assert metadata["dataset_sources"] == []
+          assert "def collect_network_diagnostics" not in source
           print("KAGGLE_TCP_LINK_NOTEBOOK_BUILD_OK")
           PY
 
