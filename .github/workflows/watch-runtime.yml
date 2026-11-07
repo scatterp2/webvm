@@ -71,7 +71,10 @@ jobs:
               keep = []
               for line in body.splitlines():
                   if re.search(r'(FATAL|ERROR|Traceback|RuntimeError|Exception|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|LOOP_PROOF_PASS|OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|API_REQUEST_EXHAUSTED|API_REQUEST_TIMEOUT|RX_PUBLICATION_VERIFIED|DIAGNOSTICS|WEBVM_PROXY_DIAGNOSTIC|PROXY_URL_DISCOVERED|NAT_RULE_|IPTABLES_CAPABILITY_PROBE|LOCAL_TARGET_LISTENER|TCP_LINK|tailscale_ip|SOCKS5|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
-                      keep.append(line[:1000])
+                      keep.append(
+                          line[:5000] if re.search(r"OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|TCP_LINK_STARTUP_STATUS", line, re.I)
+                          else line[:1000]
+                      )
               return keep[-35:]
 
           print("WATCH_STARTED", datetime.now(timezone.utc).isoformat(), flush=True)
