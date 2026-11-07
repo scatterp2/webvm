@@ -87,10 +87,14 @@ for _wvm_pid in _wvm_candidates:
 if _wvm_base_url:
     _wvm_match = _wvm_re.search(r"/k/\d+/([^/]+)/proxy/?$", _wvm_base_url)
     if _wvm_match:
-        _wvm_proxy_url = "https://kkb-production.jupyter-proxy.kaggle.net?token=" + _wvm_match.group(1)
-        _wvm_log("PROXY_URL_DISCOVERED", pid=_wvm_server_pid, base_url=_wvm_base_url, proxy_url=_wvm_proxy_url)
+        _wvm_log("PROXY_URL_DISCOVERED", pid=_wvm_server_pid,
+                 proxy_host="kkb-production.jupyter-proxy.kaggle.net",
+                 proxy_route_shape="/k/{}/<redacted>/proxy".format(
+                     _wvm_re.search(r"/k/(\d+)/", _wvm_base_url).group(1)),
+                 token_present=bool(_wvm_match.group(1)))
     else:
-        _wvm_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=_wvm_server_pid, base_url=_wvm_base_url)
+        _wvm_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=_wvm_server_pid,
+                 base_url_shape="present_unrecognized_format")
 else:
     _wvm_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
 
@@ -786,7 +790,7 @@ def run_io_loop_proof():
     """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
     from urllib.error import HTTPError, URLError
 
-    base = "https://raw.githubusercontent.com/scatterp2/webvm/0c2120f64acc5beafe0df195c5ccd626c031337a/examples/python3/kaggle_io_loop/"
+    base = "https://raw.githubusercontent.com/scatterp2/webvm/b4b6d0682ce96e4e5165db660cea0ef7ba4bdf6e/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
     for filename in ("controller.py", "agent.py"):
