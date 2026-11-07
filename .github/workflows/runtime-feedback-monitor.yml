@@ -1,4 +1,5 @@
 name: Runtime feedback monitor
+# Restarted after WebVM generation 1617; capture the new RX publication verification run.
 
 on:
   push:
