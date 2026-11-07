@@ -234,22 +234,41 @@ def diagnose_gpu():
 
 
 def install_dependencies():
-    log("DEPENDENCIES_INSTALLING transformers accelerate bitsandbytes")
-    publish("DEPENDENCIES_INSTALLING", "Installing transformers, accelerate, bitsandbytes")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-         "transformers", "accelerate", "bitsandbytes", "safetensors"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-    )
-    log(result.stdout[-12000:] if result.stdout else "(pip produced no output)")
-    if result.returncode:
-        publish("DEPENDENCIES_FAILED", result.stdout[-12000:])
-        raise RuntimeError(f"pip dependency installation exited {result.returncode}")
-    publish("DEPENDENCIES_INSTALLED", result.stdout[-4000:] if result.stdout else "pip succeeded")
+    log("DEPENDENCIES_INSTALLING transformers accelerate bitsandbytes attempts=10")
+    publish("DEPENDENCIES_INSTALLING", "Installing transformers, accelerate, bitsandbytes; max_attempts=10")
+    command = [
+        sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
+        "--retries", "10", "--timeout", "30",
+        "transformers", "accelerate", "bitsandbytes", "safetensors",
+    ]
+    last_output = ""
+    error = "unknown"
+    for attempt in range(1, 11):
+        try:
+            result = subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=900, check=False,
+            )
+            last_output = result.stdout or ""
+            log(f"DEPENDENCIES_INSTALL_ATTEMPT attempt={attempt}/10 exit={result.returncode}")
+            if last_output:
+                log(last_output[-12000:])
+            if result.returncode == 0:
+                publish("DEPENDENCIES_INSTALLED", f"attempt={attempt}; " + (last_output[-4000:] if last_output else "pip succeeded"))
+                return
+            error = f"pip exited {result.returncode}"
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            log(f"DEPENDENCIES_INSTALL_ATTEMPT attempt={attempt}/10 error={error}")
+        publish("DEPENDENCIES_INSTALL_RETRY", f"attempt={attempt}/10; error={error}; output={last_output[-3000:]}")
+        if attempt < 10:
+            time.sleep(min(attempt, 5))
+    publish("DEPENDENCIES_FAILED", f"attempts=10; last_error={error}; output={last_output[-12000:]}")
+    raise RuntimeError(f"pip dependency installation failed after 10 attempts: {error}")
 
 
 def fetch_prompt(game):
-    """Fetch a source prompt through the GitHub Contents API, with raw fallback."""
+    """Try each GitHub prompt endpoint repeatedly, logging every network attempt."""
     import base64
     import requests
 
@@ -259,40 +278,42 @@ def fetch_prompt(game):
     )
     raw_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
     last_error = None
-    log(f"PROMPT_FETCH_START game={game} source=github_contents_api")
-    publish("PROMPT_FETCH_START", f"game={game}; source=github_contents_api")
+    log(f"PROMPT_FETCH_START game={game} attempts_per_endpoint=10")
+    publish("PROMPT_FETCH_START", f"game={game}; attempts_per_endpoint=10")
 
-    for attempt in range(4):
-        source = "github_contents_api" if attempt < 3 else "raw_github_fallback"
-        url = api_url if attempt < 3 else raw_url
-        try:
-            response = requests.get(
-                url,
-                timeout=45,
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "User-Agent": "webvm-qwen-runtime/1.0",
-                },
-            )
-            response.raise_for_status()
-            if source == "github_contents_api":
-                payload = response.json()
-                if payload.get("encoding") != "base64" or not payload.get("content"):
-                    raise ValueError("GitHub Contents API did not return base64 file content")
-                prompt = base64.b64decode(payload["content"]).decode("utf-8")
-            else:
-                prompt = response.text
-            log(f"PROMPT_FETCH_OK game={game} source={source} attempt={attempt + 1} characters={len(prompt)}")
-            publish("PROMPT_FETCH_OK", f"game={game}; source={source}; attempt={attempt + 1}; characters={len(prompt)}")
-            return prompt
-        except (requests.RequestException, ValueError, KeyError, UnicodeDecodeError, AttributeError) as exc:
-            last_error = exc
-            log(f"PROMPT_FETCH_RETRY game={game} source={source} attempt={attempt + 1} error={type(exc).__name__}: {exc}")
-            publish("PROMPT_FETCH_RETRY", f"game={game}; source={source}; attempt={attempt + 1}; error={type(exc).__name__}")
-            if attempt < 3:
-                time.sleep(min(2 ** attempt, 8))
+    # Give both endpoints ten independent attempts: API first, then raw fallback.
+    for source, url in (("github_contents_api", api_url), ("raw_github_fallback", raw_url)):
+        for attempt in range(1, 11):
+            try:
+                response = requests.get(
+                    url,
+                    timeout=45,
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "webvm-qwen-runtime/1.0",
+                    },
+                )
+                response.raise_for_status()
+                if source == "github_contents_api":
+                    payload = response.json()
+                    if payload.get("encoding") != "base64" or not payload.get("content"):
+                        raise ValueError("GitHub Contents API did not return base64 file content")
+                    prompt = base64.b64decode(payload["content"]).decode("utf-8")
+                else:
+                    prompt = response.text
+                log(f"PROMPT_FETCH_ATTEMPT game={game} source={source} attempt={attempt}/10 result=ok characters={len(prompt)}")
+                publish("PROMPT_FETCH_OK", f"game={game}; source={source}; attempt={attempt}/10; characters={len(prompt)}")
+                return prompt
+            except (requests.RequestException, ValueError, KeyError, UnicodeDecodeError, AttributeError) as exc:
+                last_error = exc
+                log(f"PROMPT_FETCH_ATTEMPT game={game} source={source} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                publish("PROMPT_FETCH_RETRY", f"game={game}; source={source}; attempt={attempt}/10; error={type(exc).__name__}: {exc}")
+                if attempt < 10:
+                    time.sleep(min(attempt, 5))
+        log(f"PROMPT_FETCH_EXHAUSTED game={game} source={source} attempts=10")
+        publish("PROMPT_FETCH_EXHAUSTED", f"game={game}; source={source}; attempts=10; last_error={last_error}")
 
-    raise RuntimeError(f"Could not fetch prompt for {game} from GitHub API or raw fallback: {last_error}")
+    raise RuntimeError(f"Could not fetch prompt for {game} after 10 GitHub API attempts and 10 raw endpoint attempts: {last_error}")
 
 
 def main():
@@ -323,16 +344,50 @@ def main():
 
         log(f"MODEL_LOADING model={MODEL_ID} quantization=4bit context_target={MAX_CONTEXT_TOKENS}")
         publish("MODEL_LOADING", f"model={MODEL_ID}; quantization=4bit NF4; max_context={MAX_CONTEXT_TOKENS}; max_memory={max_memory}")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-        model = AutoModelForImageTextToText.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-            device_map="auto",
-            max_memory=max_memory,
-            quantization_config=quantization,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-        )
+        tokenizer = None
+        last_download_error = None
+        for attempt in range(1, 11):
+            try:
+                log(f"TOKENIZER_DOWNLOAD_ATTEMPT model={MODEL_ID} attempt={attempt}/10")
+                tokenizer = AutoTokenizer.from_pretrained(
+                    MODEL_ID, trust_remote_code=True, force_download=(attempt > 1)
+                )
+                log(f"TOKENIZER_DOWNLOAD_OK model={MODEL_ID} attempt={attempt}/10")
+                break
+            except Exception as exc:
+                last_download_error = exc
+                log(f"TOKENIZER_DOWNLOAD_ATTEMPT model={MODEL_ID} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                publish("TOKENIZER_DOWNLOAD_RETRY", f"model={MODEL_ID}; attempt={attempt}/10; error={type(exc).__name__}: {exc}")
+                if attempt < 10:
+                    time.sleep(min(attempt, 5))
+        if tokenizer is None:
+            raise RuntimeError(f"Tokenizer download failed after 10 attempts: {last_download_error}")
+
+        model = None
+        last_download_error = None
+        for attempt in range(1, 11):
+            try:
+                log(f"MODEL_DOWNLOAD_ATTEMPT model={MODEL_ID} attempt={attempt}/10")
+                model = AutoModelForImageTextToText.from_pretrained(
+                    MODEL_ID,
+                    trust_remote_code=True,
+                    device_map="auto",
+                    max_memory=max_memory,
+                    quantization_config=quantization,
+                    torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
+                    force_download=(attempt > 1),
+                )
+                log(f"MODEL_DOWNLOAD_OK model={MODEL_ID} attempt={attempt}/10")
+                break
+            except Exception as exc:
+                last_download_error = exc
+                log(f"MODEL_DOWNLOAD_ATTEMPT model={MODEL_ID} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                publish("MODEL_DOWNLOAD_RETRY", f"model={MODEL_ID}; attempt={attempt}/10; error={type(exc).__name__}: {exc}")
+                if attempt < 10:
+                    time.sleep(min(attempt, 5))
+        if model is None:
+            raise RuntimeError(f"Model download/load failed after 10 attempts: {last_download_error}")
         model.eval()
         model_limit = getattr(model.config, "max_position_embeddings", MAX_CONTEXT_TOKENS)
         context_limit = min(MAX_CONTEXT_TOKENS, int(model_limit))
