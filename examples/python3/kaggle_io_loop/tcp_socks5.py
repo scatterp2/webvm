@@ -29,6 +29,9 @@ TAILNET_PORT = 8888
 SOCKET_PATH = "/tmp/webvm-tailscaled.sock"
 WORK_BASE = Path("/kaggle/working") if Path("/kaggle/working").is_dir() else Path(os.environ.get("TMPDIR", "/tmp"))
 WORK = Path(os.environ.get("WEBVM_TCP_LINK_WORK_DIR", str(WORK_BASE / "webvm-tcp-link")))
+STATUS_PATH = Path(os.environ.get("WEBVM_TCP_LINK_STATUS_PATH", str(
+    (Path("/kaggle/working") if Path("/kaggle/working").is_dir() else WORK_BASE) / "tcp_link_status.json"
+)))
 WORK.mkdir(parents=True, exist_ok=True)
 
 
@@ -40,6 +43,11 @@ def _emit(stage, **fields):
     record = {"time": _now(), "stage": stage, **fields}
     line = "WEBVM_TCP_LINK " + json.dumps(record, sort_keys=True)
     print(line, flush=True)
+    if stage in ("AUTH_KEY_MISSING", "FAILED", "READY"):
+        try:
+            STATUS_PATH.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
     # The existing runtime watcher polls this telemetry endpoint. Never send
     # the auth key or target connection details through it.
     content = (
