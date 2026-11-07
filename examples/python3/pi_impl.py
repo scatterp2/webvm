@@ -364,7 +364,7 @@ def write_notebook():
     # Keep the SaveKernel request small: embed the runtime code, but fetch the
     # four large prompt files inside Kaggle through the retryable Contents API.
     runtime_source = build_embedded_runtime()
-    runtime_source = PROXY_DIAGNOSTIC_SOURCE + "\n\nexec(PROXY_DIAGNOSTIC_SOURCE, globals())\n\n" + runtime_source
+    runtime_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + runtime_source
     print(
         "RUNTIME_INLINE characters={} prompts=runtime-fetch syntax=ok".format(
             len(runtime_source)
