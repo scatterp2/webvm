@@ -8,6 +8,7 @@ import io
 import ipaddress
 import json
 import os
+import select
 import shutil
 import socket
 import socketserver
@@ -313,6 +314,44 @@ class _TcpProxyHandler(socketserver.BaseRequestHandler):
                     remote.close()
                 except OSError:
                     pass
+
+
+def _bridge(left, right):
+    """Copy a full-duplex TCP stream and preserve half-close behavior."""
+    left_open = True
+    right_open = True
+    left.settimeout(None)
+    right.settimeout(None)
+    try:
+        while left_open or right_open:
+            readers = []
+            if left_open:
+                readers.append(left)
+            if right_open:
+                readers.append(right)
+            ready, _, _ = select.select(readers, [], [])
+            for source in ready:
+                destination = right if source is left else left
+                data = source.recv(65536)
+                if data:
+                    destination.sendall(data)
+                    continue
+                if source is left:
+                    left_open = False
+                else:
+                    right_open = False
+                try:
+                    destination.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    finally:
+        for connection in (left, right):
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 class _ThreadedServer(socketserver.ThreadingTCPServer):
