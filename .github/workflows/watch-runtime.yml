@@ -88,7 +88,7 @@ jobs:
                               continue
                       if not body or (pid and pid in seen):
                           continue
-                      if not re.search(r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES)', body, re.I):
+                      if not re.search(r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC)', body, re.I):
                           continue
                       seen.add(pid or str(hash(body)))
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
