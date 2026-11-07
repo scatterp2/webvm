@@ -309,9 +309,9 @@ def main():
 
         serve = cli(
             "serve",
+            "--bg",
             "--tcp=" + str(TAILNET_PORT),
             "tcp://" + LOCAL_SOCKS_HOST + ":" + str(LOCAL_SOCKS_PORT),
-            "--bg",
         )
         if serve.returncode != 0:
             raise RuntimeError("tailscale serve TCP forwarder failed: " + (serve.stdout or "")[-1500:])
