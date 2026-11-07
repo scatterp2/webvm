@@ -24,7 +24,7 @@ def write_json(path, value):
 
 def safe_text(value):
     value = str(value or "")
-    value = re.sub(r"(?i)(token|password|secret|api[_-]?key)(\\s*[:=]\\s*)\\S+", r"\\1\\2[REDACTED]", value)
+    value = re.sub(r"(?i)(token|password|secret|api[_-]?key)(\s*[:=]\s*)\S+", r"\1\2[REDACTED]", value)
     return value[-4000:]
 
 class Logger:
@@ -172,7 +172,7 @@ def main():
         log.event("EXECUTION_STATUS", kernel_id=args.kernel_id, exit_code=status.returncode,
                   status=status_text.strip()[-1000:])
         upper = status_text.upper()
-        if "KERNELWORKERSTATUS.COMPLETE" in upper or re.search(r"\\bCOMPLETE\\b", upper):
+        if "KERNELWORKERSTATUS.COMPLETE" in upper or re.search(r"\bCOMPLETE\b", upper):
             final_status = "COMPLETE"
             break
         if "KERNELWORKERSTATUS.ERROR" in upper or "KERNELWORKERSTATUS.CANCEL" in upper:
