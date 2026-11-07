@@ -44,7 +44,7 @@ for pid in pids:
         break
 
 if base_url:
-    match = re.search(r"/k/\\d+/([^/]+)/proxy/?$", base_url)
+    match = re.search(r"/k/\d+/([^/]+)/proxy/?$", base_url)
     if match:
         _proxy_log("PROXY_URL_DISCOVERED", pid=server_pid, base_url=base_url,
                    proxy_url="https://kkb-production.jupyter-proxy.kaggle.net?token=" + match.group(1))
@@ -67,7 +67,7 @@ if not source_ip:
     _proxy_log("NAT_RULE_SKIPPED_SOURCE_IP_NOT_CONFIGURED",
                required_env="WEBVM_PROXY_SOURCE_IP",
                note="No example source address is assumed to be real")
-elif not re.fullmatch(r"(?:\\d{1,3}\\.){3}\\d{1,3}", source_ip):
+elif not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", source_ip):
     _proxy_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=source_ip)
 elif not iptables:
     _proxy_log("NAT_RULE_SKIPPED_IPTABLES_UNAVAILABLE", source_ip=source_ip)
