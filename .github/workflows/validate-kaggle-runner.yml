@@ -8,6 +8,7 @@ on:
       - 'examples/python3/pi_impl.py'
       - 'examples/python3/kaggle_runtime.py'
       - 'examples/python3/pi_feedback.py'
+      - 'examples/python3/kaggle_io_loop/**'
       - '.github/workflows/validate-kaggle-runner.yml'
   workflow_dispatch:
 
@@ -28,7 +29,9 @@ jobs:
             examples/python3/pi_impl.py \
             examples/python3/kaggle_runtime.py \
             examples/python3/pi_feedback.py \
-            examples/python3/gpu_test.py
+            examples/python3/gpu_test.py \
+            examples/python3/kaggle_io_loop/controller.py \
+            examples/python3/kaggle_io_loop/agent.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
       - name: Test compact notebook and runtime prompt retrieval without network access
@@ -70,4 +73,29 @@ jobs:
               assert notebook_path.stat().st_size < 40000, "notebook payload is not compact"
               assert metadata_path.is_file()
           print("COMPACT_NOTEBOOK_RUNTIME_FETCH_TEST_OK")
+          PY
+
+      - name: Test Kaggle IO loop RX/TX locally without Kaggle credentials or network
+        run: |
+          python3 examples/python3/kaggle_io_loop/controller.py \
+            --dataset-id ci-user/webvm-io-loop-rx \
+            --kernel-id ci-user/webvm-io-loop-proof \
+            --prepare-only \
+            --work-dir "$RUNNER_TEMP/io-loop-test"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path(__import__("os").environ["RUNNER_TEMP"]) / "io-loop-test"
+          message = json.loads((root / "dataset" / "rx_message.json").read_text())
+          response = json.loads((root / "local-tx-response.json").read_text())
+          notebook = json.loads((root / "kernel" / "io_loop_proof.ipynb").read_text())
+          metadata = json.loads((root / "kernel" / "kernel-metadata.json").read_text())
+          assert response["request_id"] == message["request_id"]
+          assert response["sequence"] == message["sequence"]
+          assert response["payload"] == "ACK:" + message["payload"]
+          assert len(notebook["cells"]) == 1
+          assert "IO_LOOP_RESULT" in "".join(notebook["cells"][0]["source"])
+          assert metadata["enable_internet"] is False
+          assert metadata["dataset_sources"] == ["ci-user/webvm-io-loop-rx"]
+          print("KAGGLE_IO_LOOP_LOCAL_PROOF_OK")
           PY
