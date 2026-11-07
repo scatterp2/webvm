@@ -32,7 +32,7 @@ This first stage intentionally sends one fixed, harmless message and downloads o
 
 A Dataset attached as dataset_sources is a run input snapshot. The documented CLI supports publishing a new Dataset version (kaggle datasets version) and downloading Dataset versions, but these commands alone do not document a way to refresh an already-running notebook's mounted /kaggle/input tree. This stage proves the controller→published resource→notebook input→output artifact→controller loop for one run; it does not prove that a running notebook sees later Dataset versions without restart. Stage 2 must test that separately and report a failure if the mount remains unchanged.
 
-Notebook internet is disabled in this proof because no outbound network access is required. No DNS result is expected from the notebook in that configuration. The controller-side Kaggle API calls still require controller network access and credentials.
+The RX/TX proof itself does not depend on notebook egress. The Stage 2 TCP service enables notebook internet because it must download Tailscale and open outbound TCP connections. Controller-side Kaggle API calls still require controller network access and credentials.
 
 ## Documented CLI references
 
