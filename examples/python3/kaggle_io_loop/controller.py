@@ -196,9 +196,23 @@ def main():
         diagnostic_dir.mkdir(parents=True, exist_ok=True)
         diagnostic = command(log, ["kaggle", "kernels", "output", args.kernel_id, "-p",
                                    str(diagnostic_dir), "-o"], timeout=300, check=False)
-        files = sorted(str(p.relative_to(diagnostic_dir)) for p in diagnostic_dir.rglob("*") if p.is_file())
+        diagnostic_files = sorted(p for p in diagnostic_dir.rglob("*") if p.is_file())
+        files = [str(p.relative_to(diagnostic_dir)) for p in diagnostic_files]
         log.event("FAILURE_ARTIFACTS_DOWNLOAD", exit_code=diagnostic.returncode, files=files,
                   output_tail=safe_text(diagnostic.stdout))
+        # The Kaggle CLI downloads the execution log as a local file. Include
+        # its actual contents in WebVM telemetry so a remote run's traceback
+        # is observable instead of reporting only the filename.
+        for artifact in diagnostic_files:
+            if artifact.suffix.lower() in (".log", ".txt", ".json", ".jsonl"):
+                try:
+                    artifact_text = artifact.read_text(encoding="utf-8", errors="replace")
+                except OSError as exc:
+                    log.event("FAILURE_ARTIFACT_READ_ERROR", file=str(artifact.relative_to(diagnostic_dir)),
+                              error=type(exc).__name__ + ": " + str(exc))
+                    continue
+                log.event("FAILURE_ARTIFACT_CONTENT", file=str(artifact.relative_to(diagnostic_dir)),
+                          bytes=artifact.stat().st_size, content=safe_text(artifact_text))
         # The CLI's output endpoint may not expose the execution traceback.
         # Fetch the published notebook definition as a second diagnostic and
         # record it locally, without ever treating it as successful execution.
