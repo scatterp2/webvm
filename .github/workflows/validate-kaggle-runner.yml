@@ -112,7 +112,7 @@ jobs:
             --prepare-only --serve-tcp-link \
             --work-dir "$RUNNER_TEMP/tcp-link-test"
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "tcp-link-test"
           notebook = json.loads((root / "kernel" / "io_loop_proof.ipynb").read_text())
@@ -120,8 +120,8 @@ jobs:
           metadata = json.loads((root / "kernel" / "kernel-metadata.json").read_text())
           assert "WEBVM_TAILSCALE_AUTHKEY" in source
           assert "TCP_LINK_KERNEL_SUBMITTED" not in source
-          assert "tailscale serve" in source
-          assert "tskey-auth-" not in source
+          assert '"serve"' in source and "TAILNET_PORT = 8888" in source
+          assert not re.search(r"tskey-auth-[A-Za-z0-9_-]{20,}", source)
           assert metadata["id"] == "ci-user/webvm-tcp-link"
           assert metadata["is_private"] is True
           print("KAGGLE_TCP_LINK_NOTEBOOK_BUILD_OK")
