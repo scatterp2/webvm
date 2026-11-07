@@ -7,7 +7,6 @@ import json
 import time
 import shutil
 import subprocess
-import selectors
 from pathlib import Path
 
 # ============================================================
@@ -787,6 +786,37 @@ def deploy():
 # MAIN
 # ============================================================
 
+def run_streamed_subprocess(command, env, label, timeout=1200):
+    """Stream newline-delimited child logs without selectors (unreliable in WebAssembly)."""
+    started = time.monotonic()
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, env=env
+    )
+    try:
+        while True:
+            line = process.stdout.readline()
+            if line:
+                print(line, end="", flush=True)
+                continue
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if time.monotonic() - started > timeout:
+                process.kill()
+                raise subprocess.TimeoutExpired(command, timeout)
+            time.sleep(0.1)
+        print("{}_EXIT returncode={}".format(label, returncode), flush=True)
+        if returncode != 0:
+            raise RuntimeError("{} failed with exit code {}".format(label, returncode))
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout:
+            process.stdout.close()
+
+
 def run_io_loop_proof():
     """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
     from urllib.error import HTTPError, URLError
@@ -831,38 +861,7 @@ def run_io_loop_proof():
     ]
     print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
         USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
-    # Stream controller diagnostics as they happen. Capturing with subprocess.run()
-    # hides API_REQUEST_START / timeout events until the whole 20-minute process exits.
-    started = time.monotonic()
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, bufsize=1, env=env)
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            if time.monotonic() - started > 1200:
-                process.kill()
-                raise subprocess.TimeoutExpired(command, 1200)
-            events = selector.select(timeout=1)
-            for key, _ in events:
-                line = key.fileobj.readline()
-                if line:
-                    print(line, end="", flush=True)
-                else:
-                    selector.unregister(key.fileobj)
-            returncode = process.poll()
-            if returncode is not None and not selector.get_map():
-                break
-        print("IO_LOOP_CONTROLLER_EXIT returncode={}".format(returncode), flush=True)
-        if returncode != 0:
-            raise RuntimeError("Kaggle API-mediated IO loop proof failed with exit code {}".format(returncode))
-    finally:
-        selector.close()
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        if process.stdout:
-            process.stdout.close()
+    run_streamed_subprocess(command, env, "IO_LOOP_CONTROLLER", timeout=1200)
 
     # Submit a separate, long-running TCP proxy kernel. It authenticates using
     # the WEBVM_TAILSCALE_AUTHKEY Kaggle Secret; no auth key is sent via RX/TX.
@@ -877,37 +876,7 @@ def run_io_loop_proof():
     ]
     print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
         USERNAME + "/webvm-tcp-link"), flush=True)
-    started = time.monotonic()
-    process = subprocess.Popen(tcp_command, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, text=True,
-                               bufsize=1, env=env)
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            if time.monotonic() - started > 1200:
-                process.kill()
-                raise subprocess.TimeoutExpired(tcp_command, 1200)
-            events = selector.select(timeout=1)
-            for key, _ in events:
-                line = key.fileobj.readline()
-                if line:
-                    print(line, end="", flush=True)
-                else:
-                    selector.unregister(key.fileobj)
-            returncode = process.poll()
-            if returncode is not None and not selector.get_map():
-                break
-        print("TCP_LINK_CONTROLLER_EXIT returncode={}".format(returncode), flush=True)
-        if returncode != 0:
-            raise RuntimeError("Kaggle TCP link submission failed with exit code {}".format(returncode))
-    finally:
-        selector.close()
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        if process.stdout:
-            process.stdout.close()
+    run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
 
 
 def main():
