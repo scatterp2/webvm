@@ -248,13 +248,47 @@ def main():
 
         results = []
         for game in GAMES:
-            prompt_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
-            log(f"PROMPT_FETCH_START game={game} url={prompt_url}")
-            publish("PROMPT_FETCH_START", f"game={game}; url={prompt_url}")
+            import base64
             import requests
-            response = requests.get(prompt_url, timeout=120)
-            response.raise_for_status()
-            prompt = response.text
+
+            api_url = (
+                "https://api.github.com/repos/RikiyaT/lm_understand-logs/contents/"
+                f"exp1_which_game/runs/{game}/prompt.txt?ref=main"
+            )
+            raw_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
+            prompt = None
+            last_prompt_error = None
+            log(f"PROMPT_FETCH_START game={game} source=github_contents_api")
+            publish("PROMPT_FETCH_START", f"game={game}; source=github_contents_api")
+            for prompt_attempt in range(4):
+                prompt_url = api_url if prompt_attempt < 3 else raw_url
+                prompt_source = "github_contents_api" if prompt_attempt < 3 else "raw_github_fallback"
+                try:
+                    response = requests.get(
+                        prompt_url,
+                        timeout=45,
+                        headers={
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "webvm-qwen-runtime/1.0",
+                        },
+                    )
+                    response.raise_for_status()
+                    if prompt_source == "github_contents_api":
+                        payload = response.json()
+                        if payload.get("encoding") != "base64" or not payload.get("content"):
+                            raise ValueError("GitHub Contents API did not return base64 file content")
+                        prompt = base64.b64decode(payload["content"]).decode("utf-8")
+                    else:
+                        prompt = response.text
+                    log(f"PROMPT_FETCH_OK game={game} source={prompt_source} attempt={prompt_attempt + 1} characters={len(prompt)}")
+                    break
+                except (requests.RequestException, ValueError, KeyError, UnicodeDecodeError) as exc:
+                    last_prompt_error = exc
+                    log(f"PROMPT_FETCH_RETRY game={game} source={prompt_source} attempt={prompt_attempt + 1} error={type(exc).__name__}: {exc}")
+                    if prompt_attempt < 3:
+                        time.sleep(min(2 ** prompt_attempt, 8))
+            if prompt is None:
+                raise RuntimeError(f"Could not fetch prompt for {game} from GitHub API or raw fallback: {last_prompt_error}")
             messages = [{"role": "user", "content": prompt}]
             encoded = tokenizer.apply_chat_template(
                 messages,
