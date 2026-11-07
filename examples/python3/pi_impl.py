@@ -35,9 +35,9 @@ RUNTIME_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/p
 PROMPT_ROOT = "https://raw.githubusercontent.com/RikiyaT/lm_understand-logs/main/exp1_which_game/runs"
 GAMES = ["pacman", "pong", "breakout", "freeway"]
 
-# Run inside Kaggle's notebook runtime before the experiment workload.
-# WEBVM_PROXY_SOURCE_IP can override the sample source address.
-PROXY_DIAGNOSTIC_SOURCE = r'''# WEBVM Kaggle proxy / NAT diagnostic
+# Run inside Kaggle's notebook runtime before the workload.
+# This reports route/capability facts; TCP forwarding is handled by Tailscale Serve.
+PROXY_DIAGNOSTIC_SOURCE = r'''# WEBVM Kaggle proxy route diagnostic
 import glob as _wvm_glob
 import os as _wvm_os
 import re as _wvm_re
