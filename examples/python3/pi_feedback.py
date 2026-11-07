@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-FEEDBACK_TAG = "WVMQWENWS_6D91C42F"
+FEEDBACK_TAG = "WVMGPU_DIAG_20261107_6D91C42F"
 FEEDBACK_URL = "https://pste.us/api/v1/pastes"
 SCRIPT = Path(__file__).resolve().parent / "pi.py"
 LOG_FILE = Path("/tmp/webvm-kaggle-feedback.log")
