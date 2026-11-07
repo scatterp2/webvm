@@ -46,8 +46,10 @@ for pid in pids:
 if base_url:
     match = re.search(r"/k/\d+/([^/]+)/proxy/?$", base_url)
     if match:
-        _proxy_log("PROXY_URL_DISCOVERED", pid=server_pid, base_url=base_url,
-                   proxy_url="https://kkb-production.jupyter-proxy.kaggle.net?token=" + match.group(1))
+        _proxy_log("PROXY_URL_DISCOVERED", pid=server_pid,
+                   proxy_host="kkb-production.jupyter-proxy.kaggle.net",
+                   proxy_route_shape="/k/{}/<redacted>/proxy".format(re.search(r"/k/(\\d+)/", base_url).group(1)),
+                   token_present=bool(match.group(1)))
     else:
         _proxy_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=server_pid, base_url=base_url)
 else:
