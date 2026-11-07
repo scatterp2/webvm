@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/watch-runtime.yml'
+      - 'examples/python3/pi_impl.py'
+      - 'examples/python3/kaggle_io_loop/controller.py'
+      - 'reset'
   workflow_dispatch:
 
 permissions:
