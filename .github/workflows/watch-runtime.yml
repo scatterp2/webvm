@@ -81,14 +81,19 @@ jobs:
                   for item in items[:50]:
                       pid = pid_of(item)
                       body = body_from(item)
-                      if not body and pid:
+                      marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC)'
+                      # The listing endpoint may expose metadata/title but omit the paste body.
+                      # Fetch detail whenever listing text does not contain runtime markers.
+                      if pid and (not body or not re.search(marker, body, re.I)):
                           try:
-                              body = body_from(get_json(BASE + "/" + quote(pid, safe="")))
+                              detail_body = body_from(get_json(BASE + "/" + quote(pid, safe="")))
+                              if detail_body:
+                                  body = detail_body
                           except Exception:
-                              continue
+                              pass
                       if not body or (pid and pid in seen):
                           continue
-                      if not re.search(r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC)', body, re.I):
+                      if not re.search(marker, body, re.I):
                           continue
                       seen.add(pid or str(hash(body)))
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
