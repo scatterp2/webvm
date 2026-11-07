@@ -25,6 +25,13 @@ def main():
     rx_path = Path(os.environ.get("WEBVM_IO_LOOP_INPUT", str(DEFAULT_RX)))
     tx_path = Path(os.environ.get("WEBVM_IO_LOOP_OUTPUT", str(DEFAULT_TX)))
     log("AGENT_START", rx_path=str(rx_path), tx_path=str(tx_path))
+    if not rx_path.is_file() and "WEBVM_IO_LOOP_INPUT" not in os.environ:
+        # Kaggle may normalize a mounted dataset directory name; discover the
+        # unique RX file without network access rather than guessing a path.
+        candidates = sorted(Path("/kaggle/input").glob("*/rx_message.json"))
+        if len(candidates) == 1:
+            rx_path = candidates[0]
+            log("RX_PATH_DISCOVERED", path=str(rx_path))
     if not rx_path.is_file():
         raise FileNotFoundError("RX message not found at " + str(rx_path))
     raw = rx_path.read_bytes()
