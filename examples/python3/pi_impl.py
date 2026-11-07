@@ -235,72 +235,22 @@ def fetch_runtime_source():
 
 
 def build_embedded_runtime():
-    """Embed live runtime code and prompts so Kaggle does not fetch source files during execution."""
-    from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
-
-    runtime_source = fetch_runtime_source()
-    prompts = {}
-    for game in GAMES:
-        prompt_url = "{}/{}/prompt.txt".format(PROMPT_ROOT, game)
-        last_error = None
-        for attempt in range(3):
-            try:
-                request = Request(
-                    prompt_url,
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "User-Agent": "webvm-qwen-experiment-submitter/1.0",
-                    },
-                )
-                with urlopen(request, timeout=60) as response:
-                    prompts[game] = response.read().decode("utf-8")
-                print("PROMPT_EMBEDDED game={} characters={}".format(game, len(prompts[game])), flush=True)
-                break
-            except (HTTPError, URLError, TimeoutError, OSError) as exc:
-                last_error = exc
-                print("PROMPT_FETCH_RETRY game={} attempt={} error={}: {}".format(
-                    game, attempt + 1, type(exc).__name__, exc
-                ), flush=True)
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-        if game not in prompts:
-            raise RuntimeError("Could not fetch source prompt for {} after 3 attempts: {}".format(game, last_error))
-
-    root_line = 'PROMPT_ROOT = "' + PROMPT_ROOT + '"'
-    if root_line not in runtime_source:
-        raise RuntimeError("Could not locate PROMPT_ROOT in kaggle_runtime.py; refusing to submit a partial experiment.")
-    runtime_source = runtime_source.replace(
-        root_line,
-        "PROMPTS = " + json.dumps(prompts, ensure_ascii=False, separators=(",", ":")),
-        1,
+    """Return only runtime code; prompt files are fetched inside Kaggle at runtime."""
+    source = fetch_runtime_source()
+    compile(source, str(RUNTIME_FILE) + "[inline]", "exec")
+    print(
+        "RUNTIME_INLINE source=main-or-local-fallback characters={} prompts=runtime-fetch syntax=ok".format(
+            len(source)
+        ),
+        flush=True,
     )
-
-    old_prompt_fetch = '''            prompt_url = f"{PROMPT_ROOT}/{game}/prompt.txt"
-            log(f"PROMPT_FETCH_START game={game} url={prompt_url}")
-            publish("PROMPT_FETCH_START", f"game={game}; url={prompt_url}")
-            import requests
-            response = requests.get(prompt_url, timeout=120)
-            response.raise_for_status()
-            prompt = response.text'''
-    new_prompt_fetch = '''            prompt = PROMPTS[game]
-            log(f"PROMPT_SOURCE_EMBEDDED game={game} characters={len(prompt)}")
-            publish("PROMPT_SOURCE_EMBEDDED", f"game={game}; characters={len(prompt)}; source=embedded_at_submission")'''
-    if old_prompt_fetch not in runtime_source:
-        raise RuntimeError("Could not locate prompt-fetch block in kaggle_runtime.py; refusing to submit a partial experiment.")
-    runtime_source = runtime_source.replace(old_prompt_fetch, new_prompt_fetch, 1)
-    compile(runtime_source, str(RUNTIME_FILE) + "[embedded]", "exec")
-    print("RUNTIME_EMBEDDED source={} characters={} prompts={} syntax=ok".format(
-        "main-or-local-fallback", len(runtime_source), ",".join(GAMES)
-    ), flush=True)
-    return runtime_source
-
+    return source
 
 def write_notebook():
     print("booting....", flush=True)
     # Keep the SaveKernel request small: embed the runtime code, but fetch the
     # four large prompt files inside Kaggle through the retryable Contents API.
-    runtime_source = fetch_runtime_source()
+    runtime_source = build_embedded_runtime()
     print(
         "RUNTIME_INLINE characters={} prompts=runtime-fetch syntax=ok".format(
             len(runtime_source)
