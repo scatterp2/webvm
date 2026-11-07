@@ -297,27 +297,13 @@ def build_embedded_runtime():
 
 
 def write_notebook():
-    import base64
-    import gzip
-    import textwrap
-
     print("booting....", flush=True)
-    runtime_source = build_embedded_runtime()
-    compressed_runtime = gzip.compress(runtime_source.encode("utf-8"), compresslevel=9)
-    encoded_runtime = base64.b64encode(compressed_runtime).decode("ascii")
-    payload_lines = "\n".join(
-        "    " + json.dumps(chunk)
-        for chunk in textwrap.wrap(encoded_runtime, 4000)
-    )
-    notebook_source = (
-        "import base64 as _base64, gzip as _gzip\n"
-        "_runtime_payload = (\n" + payload_lines + "\n)\n"
-        "_runtime_source = _gzip.decompress(_base64.b64decode(_runtime_payload)).decode('utf-8')\n"
-        "exec(compile(_runtime_source, 'kaggle_runtime.py', 'exec'), globals(), globals())\n"
-    )
+    # Keep the SaveKernel request small: embed the runtime code, but fetch the
+    # four large prompt files inside Kaggle through the retryable Contents API.
+    runtime_source = fetch_runtime_source()
     print(
-        "RUNTIME_COMPRESSED original_chars={} gzip_bytes={} base64_chars={}".format(
-            len(runtime_source), len(compressed_runtime), len(encoded_runtime)
+        "RUNTIME_INLINE characters={} prompts=runtime-fetch syntax=ok".format(
+            len(runtime_source)
         ),
         flush=True,
     )
@@ -377,7 +363,7 @@ def write_notebook():
 #                     "except Exception as exc:\n",
 #                     "    print('GPU test error:', repr(exc))\n"
 #                 ]
-                "source": notebook_source.splitlines(keepends=True),
+                "source": runtime_source.splitlines(keepends=True),
             }
         ],
         "metadata": {
