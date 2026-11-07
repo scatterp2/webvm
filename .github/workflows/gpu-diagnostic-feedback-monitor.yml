@@ -25,15 +25,16 @@ jobs:
           from datetime import datetime, timezone
 
           TAG = "WVMGPU_DIAG_20261107_6D91C42F"
+          # A WebVM wrapper can mention GPU settings, so require Kaggle-origin
+          # telemetry plus an actual diagnostic marker before accepting a match.
           GPU_MARKERS = (
-              "source=KAGGLE",
-              "GPU_PREFLIGHT",
+              "GPU_PREFLIGHT_BEGIN",
+              "GPU_PREFLIGHT_PASSED",
+              "GPU_PREFLIGHT_CLASSIFICATION",
               "TORCH_DIAGNOSTIC",
               "KAGGLE_DIAGNOSTIC_FILE",
-              "KAGGLE_ACCELERATOR_REQUEST",
-              "automated-gpu-test",
           )
-          SEARCH_URL = "https://pste.us/recent?search=" + TAG + "&sort=date&order=desc&limit=10"
+          SEARCH_URL = "https://pste.us/pastes"
           RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
@@ -53,17 +54,18 @@ jobs:
               return result.stdout
 
           print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
-          print(f"[{stamp()}] Polling pste.us for up to {WINDOW_SECONDS}s", flush=True)
+          print(f"[{stamp()}] Polling pste.us recent-pastes page for up to {WINDOW_SECONDS}s", flush=True)
 
           while time.monotonic() - START < WINDOW_SECONDS:
               matches = 0
               ignored = 0
               try:
                   page = fetch_text(SEARCH_URL, max_time=5)
+                  # Paste IDs on the public listing are 8-character path segments.
                   ids = list(dict.fromkeys(re.findall(
-                      r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', page
+                      r'<a[^>]+href="/([A-Za-z0-9_-]{8})"[^>]*>', page
                   )))
-                  for pid in ids[:10]:
+                  for pid in ids[:25]:
                       if pid in SEEN:
                           continue
                       try:
@@ -74,7 +76,7 @@ jobs:
                       if TAG not in body:
                           SEEN.add(pid)
                           continue
-                      if not any(marker in body for marker in GPU_MARKERS):
+                      if "source=KAGGLE" not in body or not any(marker in body for marker in GPU_MARKERS):
                           SEEN.add(pid)
                           ignored += 1
                           print(f"[{stamp()}] NON_GPU_FEEDBACK_IGNORED id={pid}", flush=True)
