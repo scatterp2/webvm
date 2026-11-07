@@ -211,7 +211,7 @@ def main():
     round_trip_started = time.monotonic()
     log.event("RUN_BEGIN", dataset_id=args.dataset_id, kernel_id=args.kernel_id,
               timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds)
-    if args.serve_tcp_link:
+    if args.serve_tcp_link and not args.prepare_only:
         existing = command(log, ["kaggle", "kernels", "status", args.kernel_id],
                            timeout=60, check=False)
         existing_text = (existing.stdout or "").upper()
