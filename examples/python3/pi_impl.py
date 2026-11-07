@@ -52,7 +52,7 @@ def _wvm_log(event, **fields):
 
 def _wvm_cmdline(pid):
     with open("/proc/{}/cmdline".format(pid), "rb") as _f:
-        return [x.decode(errors="replace") for x in _f.read().split(b"\\0") if x]
+        return [x.decode(errors="replace") for x in _f.read().split(b"\0") if x]
 
 _wvm_base_url = None
 _wvm_server_pid = None
@@ -94,7 +94,7 @@ if _wvm_base_url:
 else:
     _wvm_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
 
-_wvm_source_ip = _wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "192.0.2.10")
+_wvm_source_ip = _wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip()
 _wvm_rule = [
     "iptables", "-t", "nat", "-A", "PREROUTING", "-s", _wvm_source_ip,
     "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
@@ -104,7 +104,9 @@ _wvm_check = [
     "iptables", "-t", "nat", "-C", "PREROUTING", "-s", _wvm_source_ip,
     "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
 ]
-if not _wvm_re.fullmatch(r"(?:\d{1,3}\\.){3}\d{1,3}", _wvm_source_ip):
+if not _wvm_source_ip:
+    _wvm_log("NAT_RULE_SKIPPED_SOURCE_IP_NOT_CONFIGURED", required_env="WEBVM_PROXY_SOURCE_IP", example="192.0.2.10 is documentation-only")
+elif not _wvm_re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", _wvm_source_ip):
     _wvm_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=_wvm_source_ip)
 elif not _wvm_shutil.which("iptables"):
     _wvm_log("IPTABLES_UNAVAILABLE", source_ip=_wvm_source_ip)
