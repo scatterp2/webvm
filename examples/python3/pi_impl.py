@@ -851,17 +851,25 @@ def run_io_loop_proof():
     env = os.environ.copy()
     env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
     env["HOME"] = str(HOME)
-    command = [
-        sys.executable, str(target_dir / "controller.py"),
-        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
-        "--kernel-id", USERNAME + "/webvm-io-loop-proof",
-        "--work-dir", "/home/user/kaggle-io-loop-run",
-        "--timeout-seconds", "900",
-        "--poll-seconds", "10",
-    ]
-    print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
-        USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
-    run_streamed_subprocess(command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+
+    # The live RX/TX round-trip was already validated. Avoid repeating its
+    # several-minute Kaggle run on every reset; set WEBVM_RUN_RX_TX_PROOF=1
+    # only when a fresh data-loop diagnostic is actually needed.
+    if os.environ.get("WEBVM_RUN_RX_TX_PROOF", "").strip() == "1":
+        proof_command = [
+            sys.executable, str(target_dir / "controller.py"),
+            "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+            "--kernel-id", USERNAME + "/webvm-io-loop-proof",
+            "--work-dir", "/home/user/kaggle-io-loop-run",
+            "--timeout-seconds", "900",
+            "--poll-seconds", "10",
+        ]
+        print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
+            USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
+        run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+    else:
+        print("RX_TX_PROOF_SKIPPED already_validated=1 override=WEBVM_RUN_RX_TX_PROOF=1",
+              flush=True)
 
     # Submit a separate, long-running TCP proxy kernel. It authenticates using
     # the WEBVM_TAILSCALE_AUTHKEY Kaggle Secret; no auth key is sent via RX/TX.
