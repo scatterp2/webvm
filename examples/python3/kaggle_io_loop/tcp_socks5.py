@@ -146,6 +146,7 @@ def _public_destination(host, port):
             public.append(value)
     if not public:
         raise PermissionError("destination did not resolve to a public IP address")
+    public.sort(key=lambda value: (ipaddress.ip_address(value).version != 4, value))
     return public[0]
 
 
