@@ -156,6 +156,33 @@ def run(command, check=True, env=None):
     return result
 
 
+def configure_kaggle_proxy_autoload():
+    """Refresh proxy environment from the browser-updated DataDevice on each shell prompt."""
+    marker = "# WebVM Kaggle TCP link auto-proxy"
+    stanza = r'''
+# WebVM Kaggle TCP link auto-proxy
+__webvm_refresh_kaggle_proxy() {
+    if [ -r /data/kaggle-tcp-link.env ]; then
+        . /data/kaggle-tcp-link.env
+    fi
+}
+case ";${PROMPT_COMMAND:-};" in
+    *";__webvm_refresh_kaggle_proxy;"*) ;;
+    *) PROMPT_COMMAND="__webvm_refresh_kaggle_proxy${PROMPT_COMMAND:+;\$PROMPT_COMMAND}" ;;
+esac
+__webvm_refresh_kaggle_proxy
+''' 
+    for rc_path in (Path("/root/.bashrc"), Path("/home/user/.bashrc")):
+        try:
+            existing = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
+            if marker not in existing:
+                rc_path.parent.mkdir(parents=True, exist_ok=True)
+                rc_path.write_text(existing.rstrip() + "\n\n" + stanza.strip() + "\n", encoding="utf-8")
+        except OSError as exc:
+            print("TCP_LINK_PROXY_PROFILE_WRITE_FAILED file={} error={}: {}".format(
+                rc_path, type(exc).__name__, exc), flush=True)
+
+
 # ============================================================
 # STEP 1: PREPARE SYSTEM
 # ============================================================
@@ -174,6 +201,7 @@ def prepare_system():
 
     KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
+    configure_kaggle_proxy_autoload()
 
 
 # ============================================================
@@ -763,10 +791,10 @@ def run_io_loop_proof():
     """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
     from urllib.error import HTTPError, URLError
 
-    base = "https://raw.githubusercontent.com/scatterp2/webvm/b4b6d0682ce96e4e5165db660cea0ef7ba4bdf6e/examples/python3/kaggle_io_loop/"
+    base = "https://raw.githubusercontent.com/scatterp2/webvm/a2eecba006f56ae06596f0925e2d2006dab992d7/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("controller.py", "agent.py"):
+    for filename in ("controller.py", "agent.py", "tcp_socks5.py"):
         last_error = None
         for attempt in range(1, 11):
             try:
@@ -828,6 +856,51 @@ def run_io_loop_proof():
         print("IO_LOOP_CONTROLLER_EXIT returncode={}".format(returncode), flush=True)
         if returncode != 0:
             raise RuntimeError("Kaggle API-mediated IO loop proof failed with exit code {}".format(returncode))
+    finally:
+        selector.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        if process.stdout:
+            process.stdout.close()
+
+    # Submit a separate, long-running TCP proxy kernel. It authenticates using
+    # the WEBVM_TAILSCALE_AUTHKEY Kaggle Secret; no auth key is sent via RX/TX.
+    tcp_command = [
+        sys.executable, str(target_dir / "controller.py"),
+        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--kernel-id", USERNAME + "/webvm-tcp-link",
+        "--work-dir", "/home/user/kaggle-tcp-link-run",
+        "--timeout-seconds", "900",
+        "--poll-seconds", "10",
+        "--serve-tcp-link",
+    ]
+    print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
+        USERNAME + "/webvm-tcp-link"), flush=True)
+    started = time.monotonic()
+    process = subprocess.Popen(tcp_command, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               bufsize=1, env=env)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            if time.monotonic() - started > 1200:
+                process.kill()
+                raise subprocess.TimeoutExpired(tcp_command, 1200)
+            events = selector.select(timeout=1)
+            for key, _ in events:
+                line = key.fileobj.readline()
+                if line:
+                    print(line, end="", flush=True)
+                else:
+                    selector.unregister(key.fileobj)
+            returncode = process.poll()
+            if returncode is not None and not selector.get_map():
+                break
+        print("TCP_LINK_CONTROLLER_EXIT returncode={}".format(returncode), flush=True)
+        if returncode != 0:
+            raise RuntimeError("Kaggle TCP link submission failed with exit code {}".format(returncode))
     finally:
         selector.close()
         if process.poll() is None:
