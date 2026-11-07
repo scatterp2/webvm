@@ -1,1 +1,3 @@
 Trigger a fresh runtime-feedback poll after the restored deployment. Inspect actual Kaggle kernel output, not just pste heartbeat snapshots; capture and classify the latest execution logs.
+
+Fresh test triggered by WebVM reset generation 1611 after metadata boolean fix commit 198203d57c28b726ac536cce177942861fb99f09. Inspect the next actual Kaggle execution for GPU_PREFLIGHT, DNS/HTTPS checks, MODEL_LOADING, and RUN_FAILED.
