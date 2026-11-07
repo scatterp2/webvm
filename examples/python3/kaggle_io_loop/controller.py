@@ -223,38 +223,50 @@ def main():
                       note="Keeping the existing queued or running TCP link; not pushing another version")
             print("TCP_LINK_ALREADY_RUNNING kernel_id=" + args.kernel_id, flush=True)
             return
-    message = make_message()
-    write_json(dataset_dir / "rx_message.json", message)
-    write_json(dataset_dir / "dataset-metadata.json", {
-        "title": "WebVM IO Loop RX", "id": args.dataset_id,
-        "licenses": [{"name": "CC0-1.0"}],
-        "description": "Private harmless fixed-message RX resource for WebVM Kaggle IO loop proof.",
-    })
-    agent_source = AGENT.read_text(encoding="utf-8")
-    dataset_slug = args.dataset_id.split("/", 1)[1]
-    agent_source = agent_source.replace("/kaggle/input/webvm-io-loop-rx/rx_message.json", "/kaggle/input/" + dataset_slug + "/rx_message.json")
-    compile(agent_source, str(AGENT), "exec")
+    if args.serve_tcp_link:
+        message = None
+        agent_source = ""
+    else:
+        message = make_message()
+        write_json(dataset_dir / "rx_message.json", message)
+        write_json(dataset_dir / "dataset-metadata.json", {
+            "title": "WebVM IO Loop RX", "id": args.dataset_id,
+            "licenses": [{"name": "CC0-1.0"}],
+            "description": "Private harmless fixed-message RX resource for WebVM Kaggle IO loop proof.",
+        })
+        agent_source = AGENT.read_text(encoding="utf-8")
+        dataset_slug = args.dataset_id.split("/", 1)[1]
+        agent_source = agent_source.replace("/kaggle/input/webvm-io-loop-rx/rx_message.json", "/kaggle/input/" + dataset_slug + "/rx_message.json")
+        compile(agent_source, str(AGENT), "exec")
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
-    notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
     if args.serve_tcp_link:
         service_path = HERE / "tcp_socks5.py"
         if not service_path.is_file():
             raise RuntimeError("TCP link service source is missing: " + str(service_path))
         service_source = service_path.read_text(encoding="utf-8")
         compile(service_source, str(service_path), "exec")
-        notebook_source += "\n\n" + service_source
+        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + service_source
+    else:
+        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
         "id": args.kernel_id, "title": ("WebVM Kaggle TCP Link" if args.serve_tcp_link else "WebVM IO Loop Proof"), "code_file": notebook_path.name,
         "language": "python", "kernel_type": "notebook", "is_private": True,
         "enable_gpu": False, "enable_internet": True, "machine_shape": "",
-        "dataset_sources": [args.dataset_id], "competition_sources": [], "kernel_sources": [], "model_sources": [],
+        "dataset_sources": ([] if args.serve_tcp_link else [args.dataset_id]), "competition_sources": [], "kernel_sources": [], "model_sources": [],
     })
-    log.event("POC_FILES_WRITTEN", rx_bytes=(dataset_dir / "rx_message.json").stat().st_size,
-              notebook_bytes=notebook_path.stat().st_size, payload=message["payload"],
-              request_id=message["request_id"], sequence=message["sequence"], checksum=message["checksum"])
+    if args.serve_tcp_link:
+        log.event("POC_FILES_WRITTEN", notebook_bytes=notebook_path.stat().st_size,
+                  service="tailscale-serve-tcp-to-http-connect-socks5")
+    else:
+        log.event("POC_FILES_WRITTEN", rx_bytes=(dataset_dir / "rx_message.json").stat().st_size,
+                  notebook_bytes=notebook_path.stat().st_size, payload=message["payload"],
+                  request_id=message["request_id"], sequence=message["sequence"], checksum=message["checksum"])
+    if args.prepare_only and args.serve_tcp_link:
+        log.event("PREPARE_ONLY_PASS", note="TCP link notebook generated; Kaggle API not called")
+        return
     if args.prepare_only:
         local_output = work / "local-tx-response.json"
         env = os.environ.copy()
@@ -269,54 +281,55 @@ def main():
         log.event("PREPARE_ONLY_PASS", note="Local protocol test passed; Kaggle API not called")
         return
 
-    if args.dataset_exists:
-        dataset_exists = True
-    else:
-        probe = command(log, ["kaggle", "datasets", "status", args.dataset_id], timeout=60, check=False)
-        dataset_exists = probe.returncode == 0
-        log.event("RX_DATASET_EXISTENCE_PROBE", dataset_id=args.dataset_id, exists=dataset_exists)
-    publish_cmd = (["kaggle", "datasets", "version", "-p", str(dataset_dir),
-                    "-m", "WebVM IO loop RX message sequence 1", "-r", "skip"]
-                   if dataset_exists else
-                   ["kaggle", "datasets", "create", "-p", str(dataset_dir), "-r", "skip"])
-    command(log, publish_cmd, timeout=300, check=True)
-    log.event("RX_RESOURCE_PUBLISHED", dataset_id=args.dataset_id, message_checksum=message["checksum"])
-    # Dataset version creation is asynchronous. Wait until the latest version
-    # can be downloaded and matches this run before submitting the notebook.
-    verify_dir = output_dir / "published_rx_verify"
-    verify_dir.mkdir(parents=True, exist_ok=True)
-    verify_deadline = time.monotonic() + 240
-    published_verified = False
-    while time.monotonic() < verify_deadline:
-        verify = command(log, ["kaggle", "datasets", "download", args.dataset_id,
-                               "-f", "rx_message.json", "-p", str(verify_dir),
-                               "--unzip", "-o"], timeout=90, check=False)
-        candidates = sorted(verify_dir.rglob("rx_message.json"))
-        if verify.returncode == 0 and candidates:
-            try:
-                downloaded_message = json.loads(candidates[-1].read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                log.event("RX_PUBLICATION_VERIFY_RETRY", reason=type(exc).__name__ + ": " + str(exc))
-            else:
-                if downloaded_message == message:
-                    published_verified = True
-                    log.event("RX_PUBLICATION_VERIFIED", dataset_id=args.dataset_id,
-                              request_id=message["request_id"], checksum=message["checksum"],
-                              file=str(candidates[-1]))
-                    break
-                log.event("RX_PUBLICATION_VERIFY_RETRY", expected_request_id=message["request_id"],
-                          observed_request_id=downloaded_message.get("request_id"),
-                          expected_checksum=message["checksum"],
-                          observed_checksum=downloaded_message.get("checksum"))
+    if not args.serve_tcp_link:
+        if args.dataset_exists:
+            dataset_exists = True
         else:
-            log.event("RX_PUBLICATION_VERIFY_RETRY", exit_code=verify.returncode,
-                      output_tail=safe_text(verify.stdout), files=[str(p) for p in candidates])
-        time.sleep(10)
-    if not published_verified:
-        raise RuntimeError("Published Dataset did not expose this run's rx_message.json within 240 seconds; refusing to submit with stale or missing input")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata["dataset_sources"] != [args.dataset_id]:
-        raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
+            probe = command(log, ["kaggle", "datasets", "status", args.dataset_id], timeout=60, check=False)
+            dataset_exists = probe.returncode == 0
+            log.event("RX_DATASET_EXISTENCE_PROBE", dataset_id=args.dataset_id, exists=dataset_exists)
+        publish_cmd = (["kaggle", "datasets", "version", "-p", str(dataset_dir),
+                        "-m", "WebVM IO loop RX message sequence 1", "-r", "skip"]
+                       if dataset_exists else
+                       ["kaggle", "datasets", "create", "-p", str(dataset_dir), "-r", "skip"])
+        command(log, publish_cmd, timeout=300, check=True)
+        log.event("RX_RESOURCE_PUBLISHED", dataset_id=args.dataset_id, message_checksum=message["checksum"])
+        # Dataset version creation is asynchronous. Wait until the latest version
+        # can be downloaded and matches this run before submitting the notebook.
+        verify_dir = output_dir / "published_rx_verify"
+        verify_dir.mkdir(parents=True, exist_ok=True)
+        verify_deadline = time.monotonic() + 240
+        published_verified = False
+        while time.monotonic() < verify_deadline:
+            verify = command(log, ["kaggle", "datasets", "download", args.dataset_id,
+                                   "-f", "rx_message.json", "-p", str(verify_dir),
+                                   "--unzip", "-o"], timeout=90, check=False)
+            candidates = sorted(verify_dir.rglob("rx_message.json"))
+            if verify.returncode == 0 and candidates:
+                try:
+                    downloaded_message = json.loads(candidates[-1].read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    log.event("RX_PUBLICATION_VERIFY_RETRY", reason=type(exc).__name__ + ": " + str(exc))
+                else:
+                    if downloaded_message == message:
+                        published_verified = True
+                        log.event("RX_PUBLICATION_VERIFIED", dataset_id=args.dataset_id,
+                                  request_id=message["request_id"], checksum=message["checksum"],
+                                  file=str(candidates[-1]))
+                        break
+                    log.event("RX_PUBLICATION_VERIFY_RETRY", expected_request_id=message["request_id"],
+                              observed_request_id=downloaded_message.get("request_id"),
+                              expected_checksum=message["checksum"],
+                              observed_checksum=downloaded_message.get("checksum"))
+            else:
+                log.event("RX_PUBLICATION_VERIFY_RETRY", exit_code=verify.returncode,
+                          output_tail=safe_text(verify.stdout), files=[str(p) for p in candidates])
+            time.sleep(10)
+        if not published_verified:
+            raise RuntimeError("Published Dataset did not expose this run's rx_message.json within 240 seconds; refusing to submit with stale or missing input")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata["dataset_sources"] != [args.dataset_id]:
+            raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
     command(log, ["kaggle", "kernels", "push", "-p", str(kernel_dir)], timeout=300, check=True)
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
     if args.serve_tcp_link:
