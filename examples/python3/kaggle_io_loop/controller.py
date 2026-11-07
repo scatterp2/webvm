@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controller for the one-message Kaggle Dataset -> notebook -> output proof."""
+"""Controller for the Kaggle RX/TX proof and optional live Tailscale TCP link."""
 import argparse, hashlib, json, os, re, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
