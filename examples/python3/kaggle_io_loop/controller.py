@@ -121,21 +121,53 @@ class Logger:
         print("IO_LOOP_CONTROLLER " + json.dumps(row, sort_keys=True, ensure_ascii=False), flush=True)
 
 def command(logger, argv, *, timeout=120, check=False):
+    """Run Kaggle CLI with a bounded proxy-bypass retry for read-only API calls."""
     start = time.monotonic()
-    logger.event("API_REQUEST_START", command=argv, timeout_seconds=timeout)
-    try:
-        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, timeout=timeout, check=False, env=os.environ.copy())
+    read_only = len(argv) >= 3 and (
+        (argv[1:3] == ["datasets", "status"]) or
+        (argv[1:3] == ["datasets", "download"]) or
+        (argv[1:3] == ["kernels", "status"]) or
+        (argv[1:3] == ["kernels", "output"])
+    )
+    attempts = [("configured_environment", os.environ.copy())]
+    if read_only:
+        direct_env = os.environ.copy()
+        proxy_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                       "http_proxy", "https_proxy", "all_proxy")
+        removed = [name for name in proxy_names if direct_env.get(name)]
+        for name in proxy_names:
+            direct_env.pop(name, None)
+        direct_env["NO_PROXY"] = "api.kaggle.com,www.kaggle.com,.kaggle.com"
+        direct_env["no_proxy"] = direct_env["NO_PROXY"]
+        if removed:
+            attempts.append(("proxy_bypass", direct_env))
+    last_timeout = None
+    for attempt_name, env in attempts:
+        attempt_start = time.monotonic()
+        logger.event("API_REQUEST_START", command=argv, timeout_seconds=timeout,
+                     attempt=attempt_name, proxy_vars_removed=(attempt_name == "proxy_bypass"))
+        try:
+            result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, timeout=timeout, check=False, env=env)
+        except subprocess.TimeoutExpired as exc:
+            last_timeout = exc
+            logger.event("API_REQUEST_TIMEOUT", command=argv,
+                         duration_ms=round((time.monotonic() - attempt_start) * 1000, 3),
+                         attempt=attempt_name, output_tail=safe_text(exc.stdout))
+            continue
         output = safe_text(result.stdout)
         logger.event("API_REQUEST_RESULT", command=argv, exit_code=result.returncode,
-                     duration_ms=round((time.monotonic() - start) * 1000, 3), output_tail=output)
+                     duration_ms=round((time.monotonic() - attempt_start) * 1000, 3),
+                     attempt=attempt_name, output_tail=output)
         if check and result.returncode != 0:
             raise RuntimeError("Command failed: " + " ".join(argv) + " (exit " + str(result.returncode) + ")")
         return result
-    except subprocess.TimeoutExpired as exc:
-        logger.event("API_REQUEST_TIMEOUT", command=argv, duration_ms=round((time.monotonic() - start) * 1000, 3),
-                     output_tail=safe_text(exc.stdout))
-        raise
+    if last_timeout is not None:
+        logger.event("API_REQUEST_EXHAUSTED", command=argv, attempts=len(attempts),
+                     elapsed_ms=round((time.monotonic() - start) * 1000, 3),
+                     read_only=read_only, reason="all permitted attempts timed out")
+        raise TimeoutError("Kaggle read-only API command timed out in configured and proxy-bypass attempts: " + " ".join(argv))
+    raise RuntimeError("Kaggle command failed without a result")
 
 def make_message():
     # A per-run request ID proves the published Dataset version is current.
