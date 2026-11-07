@@ -238,6 +238,15 @@ def main():
     round_trip_started = time.monotonic()
     log.event("RUN_BEGIN", dataset_id=args.dataset_id, kernel_id=args.kernel_id,
               timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds)
+    if args.serve_tcp_link:
+        existing = command(log, ["kaggle", "kernels", "status", args.kernel_id],
+                           timeout=60, check=False)
+        existing_text = (existing.stdout or "").upper()
+        if existing.returncode == 0 and "RUNNING" in existing_text:
+            log.event("TCP_LINK_ALREADY_RUNNING", kernel_id=args.kernel_id,
+                      note="Keeping the existing long-running TCP link; not pushing another version")
+            print("TCP_LINK_ALREADY_RUNNING kernel_id=" + args.kernel_id, flush=True)
+            return
     message = make_message()
     write_json(dataset_dir / "rx_message.json", message)
     write_json(dataset_dir / "dataset-metadata.json", {
@@ -262,7 +271,7 @@ def main():
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
-        "id": args.kernel_id, "title": "WebVM IO Loop Proof", "code_file": notebook_path.name,
+        "id": args.kernel_id, "title": ("WebVM Kaggle TCP Link" if args.serve_tcp_link else "WebVM IO Loop Proof"), "code_file": notebook_path.name,
         "language": "python", "kernel_type": "notebook", "is_private": True,
         "enable_gpu": False, "enable_internet": True, "machine_shape": "",
         "dataset_sources": [args.dataset_id], "competition_sources": [], "kernel_sources": [], "model_sources": [],
