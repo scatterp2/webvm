@@ -29,11 +29,12 @@ jobs:
 
           BASE = "https://pste.us/api/v1/pastes"
           seen = set()
+          details_attempted = set()
           started = time.monotonic()
 
-          def get_json(url):
+          def get_json(url, timeout=15):
               req = Request(url, headers={"Accept":"application/json","User-Agent":"webvm-active-runtime-watch/1.0"})
-              with urlopen(req, timeout=15) as r:
+              with urlopen(req, timeout=timeout) as r:
                   return json.loads(r.read().decode("utf-8", "replace"))
 
           def unwrap(v):
@@ -77,17 +78,21 @@ jobs:
           terminal_stage_seen = False
           while time.monotonic() - started < 600:
               try:
-                  data = unwrap(get_json(BASE + "?" + urlencode({"limit":50,"offset":0})))
+                  data = unwrap(get_json(BASE + "?" + urlencode({"limit":20,"offset":0}), timeout=10))
                   items = data if isinstance(data,list) else (data.get("pastes") or data.get("items") or data.get("results") or []) if isinstance(data,dict) else []
-                  for item in items[:50]:
+                  detail_fetches = 0
+                  for item in items[:20]:
                       pid = pid_of(item)
                       body = body_from(item)
                       marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC)'
                       # The listing endpoint may expose metadata/title but omit the paste body.
                       # Fetch detail whenever listing text does not contain runtime markers.
-                      if pid and (not body or not re.search(marker, body, re.I)):
+                      if (pid and (not body or not re.search(marker, body, re.I))
+                              and pid not in details_attempted and detail_fetches < 3):
+                          details_attempted.add(pid)
+                          detail_fetches += 1
                           try:
-                              detail_body = body_from(get_json(BASE + "/" + quote(pid, safe="")))
+                              detail_body = body_from(get_json(BASE + "/" + quote(pid, safe=""), timeout=5))
                               if detail_body:
                                   body = detail_body
                           except Exception:
