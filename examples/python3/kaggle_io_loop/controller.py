@@ -68,7 +68,7 @@ def make_notebook(agent_source):
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
-            "kaggle": {"accelerator": None, "dataSources": [], "isInternetEnabled": False,
+            "kaggle": {"accelerator": None, "dataSources": [], "isInternetEnabled": True,
                        "isGpuEnabled": False, "language": "python", "sourceType": "notebook"},
         },
         "nbformat": 4, "nbformat_minor": 5,
@@ -137,7 +137,7 @@ def main():
     write_json(metadata_path, {
         "id": args.kernel_id, "title": "WebVM IO Loop Proof", "code_file": notebook_path.name,
         "language": "python", "kernel_type": "notebook", "is_private": True,
-        "enable_gpu": False, "enable_internet": False, "machine_shape": "",
+        "enable_gpu": False, "enable_internet": True, "machine_shape": "",
         "dataset_sources": [args.dataset_id], "competition_sources": [], "kernel_sources": [], "model_sources": [],
     })
     log.event("POC_FILES_WRITTEN", rx_bytes=(dataset_dir / "rx_message.json").stat().st_size,
