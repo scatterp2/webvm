@@ -252,7 +252,7 @@ def main():
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
-        "id": args.kernel_id, "title": ("WebVM Kaggle TCP Link" if args.serve_tcp_link else "WebVM IO Loop Proof"), "code_file": notebook_path.name,
+        "id": args.kernel_id, "title": ("WebVM TCP Link" if args.serve_tcp_link else "WebVM IO Loop Proof"), "code_file": notebook_path.name,
         "language": "python", "kernel_type": "notebook", "is_private": True,
         "enable_gpu": False, "enable_internet": True, "machine_shape": "",
         "dataset_sources": ([] if args.serve_tcp_link else [args.dataset_id]), "competition_sources": [], "kernel_sources": [], "model_sources": [],
