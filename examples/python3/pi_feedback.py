@@ -113,7 +113,10 @@ def main():
                 if any(marker in lower for marker in (
                     "notebook url", "kaggle notebook submission failed",
                     "fatal:", "kaggle reports", "kaggle reported",
-                    "kaggle kernels push", "feedback upload unavailable"
+                    "kaggle kernels push", "feedback upload unavailable",
+                    "io_loop_controller_start", "api_request_result",
+                    "execution_status", "output_validation",
+                    "loop_proof_pass", "io_loop_controller_exit"
                 )):
                     publish("PI_PROGRESS")
         except queue.Empty:
