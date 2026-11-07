@@ -104,36 +104,74 @@ def run_diagnostic_command(command, timeout=10):
 
 
 def diagnose_network():
-    """Log whether Kaggle can resolve and reach the endpoints the run depends on."""
+    """Retry DNS, TCP connect, and HTTPS checks up to ten times, logging every result."""
     import socket
-    from urllib.error import HTTPError, URLError
+    from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
-    log("NETWORK_PREFLIGHT_BEGIN")
-    for host in ("pypi.org", "huggingface.co", "pste.us", "raw.githubusercontent.com"):
-        try:
-            addresses = sorted({item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)})
-            log(f"NETWORK_DNS_OK host={host} addresses={','.join(addresses[:6])}")
-        except Exception as exc:
-            log(f"NETWORK_DNS_FAILED host={host} error={type(exc).__name__}: {exc}")
+    attempts = 10
+    hosts = ("pypi.org", "huggingface.co", "pste.us", "raw.githubusercontent.com")
+    log("NETWORK_PREFLIGHT_BEGIN attempts=10")
 
-    for url in (
+    for host in hosts:
+        resolved = []
+        for attempt in range(1, attempts + 1):
+            try:
+                resolved = sorted({item[4][0] for item in socket.getaddrinfo(
+                    host, 443, type=socket.SOCK_STREAM
+                )})
+                log(f"NETWORK_DNS_ATTEMPT host={host} attempt={attempt}/10 result=ok addresses={','.join(resolved[:6])}")
+                break
+            except Exception as exc:
+                log(f"NETWORK_DNS_ATTEMPT host={host} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                if attempt < attempts:
+                    time.sleep(min(attempt, 5))
+        if not resolved:
+            log(f"NETWORK_DNS_EXHAUSTED host={host} attempts=10")
+
+        tcp_ok = False
+        for attempt in range(1, attempts + 1):
+            try:
+                with socket.create_connection((host, 443), timeout=5):
+                    tcp_ok = True
+                log(f"NETWORK_TCP_ATTEMPT host={host} port=443 attempt={attempt}/10 result=ok")
+                break
+            except Exception as exc:
+                log(f"NETWORK_TCP_ATTEMPT host={host} port=443 attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                if attempt < attempts:
+                    time.sleep(min(attempt, 5))
+        if not tcp_ok:
+            log(f"NETWORK_TCP_EXHAUSTED host={host} port=443 attempts=10")
+
+    urls = (
         "https://pypi.org/simple/transformers/",
         "https://huggingface.co/api/models/Qwen/Qwen3.8-27B",
         "https://pste.us/",
         "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_runtime.py",
-    ):
+    )
+    for url in urls:
         host = url.split("/")[2]
-        try:
-            request = Request(url, headers={"User-Agent": "webvm-kaggle-network-preflight/1.0"}, method="HEAD")
-            with urlopen(request, timeout=8) as response:
-                log(f"NETWORK_HTTP_OK host={host} status={response.status}")
-        except HTTPError as exc:
-            # A reachable endpoint returning an HTTP error still proves DNS/TCP/TLS worked.
-            log(f"NETWORK_HTTP_RESPONSE host={host} status={exc.code}")
-        except Exception as exc:
-            log(f"NETWORK_HTTP_FAILED host={host} error={type(exc).__name__}: {exc}")
+        success = False
+        for attempt in range(1, attempts + 1):
+            try:
+                request = Request(url, headers={"User-Agent": "webvm-kaggle-network-preflight/1.0"}, method="HEAD")
+                with urlopen(request, timeout=8) as response:
+                    log(f"NETWORK_HTTPS_ATTEMPT host={host} attempt={attempt}/10 result=ok status={response.status}")
+                success = True
+                break
+            except HTTPError as exc:
+                # An HTTP response, including 4xx/5xx, proves the endpoint was reached.
+                log(f"NETWORK_HTTPS_ATTEMPT host={host} attempt={attempt}/10 result=http_response status={exc.code}")
+                success = True
+                break
+            except Exception as exc:
+                log(f"NETWORK_HTTPS_ATTEMPT host={host} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+                if attempt < attempts:
+                    time.sleep(min(attempt, 5))
+        if not success:
+            log(f"NETWORK_HTTPS_EXHAUSTED host={host} attempts=10")
     log("NETWORK_PREFLIGHT_END")
+
 
 
 def diagnose_gpu():
