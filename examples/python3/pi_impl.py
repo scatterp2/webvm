@@ -394,25 +394,11 @@ def collect_kaggle_diagnostics(env, reason):
 # ============================================================
 
 def ensure_accelerator_cli(env):
-    """Ensure the installed Kaggle CLI supports an explicit accelerator request."""
-    run([str(KAGGLE_BIN), "--version"], check=False, env=env)
-    help_result = run([
-        str(KAGGLE_BIN), "kernels", "push", "--help"
-    ], check=False, env=env)
-    if "--accelerator" in (help_result.stdout or ""):
-        print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE", flush=True)
-        return
-
-    print("KAGGLE_CLI_ACCELERATOR_FLAG_MISSING; upgrading Kaggle CLI before submission.", flush=True)
-    run([
-        str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "kaggle"
-    ], check=True, env=env)
-    help_result = run([
-        str(KAGGLE_BIN), "kernels", "push", "--help"
-    ], check=False, env=env)
-    if "--accelerator" not in (help_result.stdout or ""):
-        raise RuntimeError("Installed Kaggle CLI still does not support --accelerator after upgrade; refusing a CPU-ambiguous submission.")
-    print("KAGGLE_CLI_ACCELERATOR_FLAG_AVAILABLE_AFTER_UPGRADE", flush=True)
+    """Avoid slow per-run CLI probes; validate the flag on the actual push."""
+    print(
+        "KAGGLE_CLI_PREFLIGHT_SKIPPED reason=push_command_checks_accelerator_flag",
+        flush=True,
+    )
 
 
 def deploy():
@@ -452,6 +438,19 @@ def deploy():
 
         push_output = str(getattr(push, "stdout", "") or "") + str(getattr(push, "stderr", "") or "")
         push_output_lower = push_output.lower()
+        if (
+            "--accelerator" in push_output_lower
+            and ("unrecognized arguments" in push_output_lower or "unknown option" in push_output_lower)
+        ):
+            print("KAGGLE_CLI_ACCELERATOR_FLAG_MISSING; upgrading only after push rejection.", flush=True)
+            run([
+                str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "kaggle"
+            ], check=True, env=env)
+            push = run(push_command, check=False, env=env)
+            if push.returncode == 0:
+                break
+            push_output = str(getattr(push, "stdout", "") or "") + str(getattr(push, "stderr", "") or "")
+            push_output_lower = push_output.lower()
         transient_transport_failure = any(
             marker in push_output_lower
             for marker in (
