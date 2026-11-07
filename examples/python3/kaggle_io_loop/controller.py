@@ -139,8 +139,7 @@ def command(logger, argv, *, timeout=120, check=False):
             direct_env.pop(name, None)
         direct_env["NO_PROXY"] = "api.kaggle.com,www.kaggle.com,.kaggle.com"
         direct_env["no_proxy"] = direct_env["NO_PROXY"]
-        if removed:
-            attempts.append(("proxy_bypass", direct_env))
+        attempts.append(("proxy_bypass", direct_env))
     last_timeout = None
     for attempt_name, env in attempts:
         attempt_start = time.monotonic()
