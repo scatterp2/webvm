@@ -431,7 +431,12 @@ def deploy():
         "-p", str(NOTEBOOK_DIR), "--accelerator", "NvidiaTeslaT4"
     ]
     transient_transport_failure = False
-    for push_attempt in range(1, 4):
+    # Retry failed pushes up to ten total attempts. Record every attempt and
+    # its classification so intermittent transport/platform failures are
+    # distinguishable from repeatable CLI or configuration errors.
+    push_attempt_log = []
+    for push_attempt in range(1, 11):
+        push_started = time.time()
         push = run(push_command, check=False, env=env)
         if push.returncode == 0:
             break
@@ -468,24 +473,27 @@ def deploy():
                 "max retries exceeded",
             )
         )
-        print(
-            "KAGGLE_PUSH_FAILED attempt={} transient_transport={} output={}".format(
-                push_attempt, transient_transport_failure,
-                " ".join(push_output.split())[-500:],
-            ),
-            flush=True,
-        )
-        if not transient_transport_failure:
-            break
-        if push_attempt < 3:
-            delay = 5 * push_attempt
+        attempt_record = {
+            "attempt": push_attempt,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(push_started)),
+            "duration_seconds": round(time.time() - push_started, 2),
+            "returncode": push.returncode,
+            "transient_transport": transient_transport_failure,
+            "output_tail": " ".join(push_output.split())[-500:],
+        }
+        push_attempt_log.append(attempt_record)
+        print("KAGGLE_PUSH_ATTEMPT_RESULT " + json.dumps(attempt_record, sort_keys=True), flush=True)
+        if push_attempt < 10:
+            delay = min(5 * push_attempt, 30)
             print(
-                "KAGGLE_PUSH_TRANSIENT_RETRY attempt={} retry_in={}s".format(
-                    push_attempt, delay
+                "KAGGLE_PUSH_RETRY attempt={} next_attempt={} retry_in={}s reason={}".format(
+                    push_attempt, push_attempt + 1, delay,
+                    "transient_transport" if transient_transport_failure else "push_failed",
                 ),
                 flush=True,
             )
             time.sleep(delay)
+    print("KAGGLE_PUSH_ATTEMPT_SUMMARY " + json.dumps(push_attempt_log, sort_keys=True), flush=True)
 
     if push is not None and push.returncode != 0 and transient_transport_failure:
         tls_config = Path("/tmp/webvm-openssl-tls12.cnf")
