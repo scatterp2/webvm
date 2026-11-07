@@ -379,6 +379,42 @@ def main():
     command(log, ["kaggle", "kernels", "output", args.kernel_id, "-p", str(output_dir),
                   "-o", "--file-pattern", "^tx_response\\.json$"], timeout=300, check=True)
     response = validate_output(output_dir / "tx_response.json", message, log)
+
+    # Download the executed notebook separately so the proxy/NAT diagnostic
+    # emitted before the RX/TX agent is visible in the remote runtime log.
+    notebook_dir = output_dir / "notebook_diagnostics"
+    notebook_dir.mkdir(parents=True, exist_ok=True)
+    notebook_download = command(
+        log, ["kaggle", "kernels", "output", args.kernel_id, "-p",
+              str(notebook_dir), "-o", "--file-pattern", r"^io_loop_proof\.ipynb$"],
+        timeout=180, check=False)
+    notebook_files = sorted(p for p in notebook_dir.rglob("*.ipynb") if p.is_file())
+    log.event("NOTEBOOK_DIAGNOSTIC_DOWNLOAD", exit_code=notebook_download.returncode,
+              files=[str(p.relative_to(notebook_dir)) for p in notebook_files],
+              output_tail=safe_text(notebook_download.stdout))
+    diagnostic_lines = []
+    for notebook_file in notebook_files:
+        try:
+            notebook = json.loads(notebook_file.read_text(encoding="utf-8"))
+            for cell in notebook.get("cells", []):
+                for output in cell.get("outputs", []):
+                    text_value = output.get("text", "")
+                    if isinstance(text_value, list):
+                        text_value = "".join(text_value)
+                    data = output.get("data", {})
+                    plain = data.get("text/plain", "") if isinstance(data, dict) else ""
+                    if isinstance(plain, list):
+                        plain = "".join(plain)
+                    for value in (text_value, plain):
+                        for line in str(value).splitlines():
+                            if "WEBVM_PROXY_DIAGNOSTIC" in line:
+                                diagnostic_lines.append(line[:1500])
+        except (OSError, ValueError, TypeError) as exc:
+            log.event("NOTEBOOK_DIAGNOSTIC_PARSE_ERROR",
+                      file=str(notebook_file.relative_to(notebook_dir)),
+                      error=type(exc).__name__ + ": " + str(exc))
+    log.event("PROXY_DIAGNOSTIC_RESULTS", found=bool(diagnostic_lines),
+              line_count=len(diagnostic_lines), lines=diagnostic_lines[-20:])
     log.event("LOOP_PROOF_PASS", request_id=message["request_id"], sequence=message["sequence"],
               rx_checksum=message["checksum"], tx_checksum=response["checksum"],
               round_trip_ms=round((time.monotonic() - round_trip_started) * 1000, 3),
