@@ -64,8 +64,8 @@ def main():
         "ack_state": delivery_state, "received_checksum": actual_checksum, "received_at": utc_now(),
     }
     response = dict(response_core)
-    response["checksum"] = sha256(response_core)
     response["agent_elapsed_ms"] = round((time.monotonic() - started) * 1000, 3)
+    response["checksum"] = sha256(response)
     tx_path.parent.mkdir(parents=True, exist_ok=True)
     tx_path.write_text(json.dumps(response, sort_keys=True, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     log("TX_WRITTEN", path=str(tx_path), sequence=response["sequence"], request_id=response["request_id"],
