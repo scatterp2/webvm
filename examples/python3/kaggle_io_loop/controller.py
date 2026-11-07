@@ -321,10 +321,64 @@ def main():
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
     if args.serve_tcp_link:
         log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
-                  service="tailscale-serve-tcp-to-socks5", local_port=8889,
+                  service="tailscale-serve-tcp-to-http-connect-socks5", local_port=8889,
                   tailnet_port=8888, wait_for_completion=False)
         print("TCP_LINK_KERNEL_SUBMITTED kernel_id=" + args.kernel_id +
               " local_port=8889 tailnet_port=8888", flush=True)
+
+        # A missing Kaggle Secret makes the notebook finish quickly. Retrieve
+        # its status artifact in that case; if it stays running, leave the
+        # live TCP service alone and let runtime telemetry report readiness.
+        startup_started = time.monotonic()
+        startup_deadline = startup_started + 75
+        last_status_text = ""
+        while time.monotonic() < startup_deadline:
+            status_result = command(
+                log, ["kaggle", "kernels", "status", args.kernel_id],
+                timeout=15, check=False)
+            last_status_text = (status_result.stdout or "").upper()
+            active_state = any(state in last_status_text for state in
+                               ("RUNNING", "QUEUED", "PENDING", "INITIALIZING", "SUBMITTED"))
+            terminal_state = any(state in last_status_text for state in
+                                 ("COMPLETE", "ERROR", "FAILED", "CANCELLED"))
+            if terminal_state and not active_state:
+                status_dir = output_dir / "tcp_link_status"
+                status_dir.mkdir(parents=True, exist_ok=True)
+                output_result = command(
+                    log,
+                    ["kaggle", "kernels", "output", args.kernel_id, "-p",
+                     str(status_dir), "-o", "--file-pattern", r"^tcp_link_status\.json$"],
+                    timeout=120, check=False)
+                status_files = sorted(
+                    path for path in status_dir.rglob("tcp_link_status.json") if path.is_file())
+                if status_files:
+                    try:
+                        status_doc = json.loads(status_files[0].read_text(encoding="utf-8"))
+                        log.event("TCP_LINK_STARTUP_STATUS", kernel_id=args.kernel_id,
+                                  status=status_doc.get("stage", "UNKNOWN"),
+                                  details=status_doc)
+                        print("TCP_LINK_STARTUP_STATUS " +
+                              json.dumps(status_doc, sort_keys=True)[:2500], flush=True)
+                    except (OSError, ValueError, TypeError) as exc:
+                        log.event("TCP_LINK_STATUS_PARSE_ERROR",
+                                  error=type(exc).__name__ + ": " + str(exc))
+                else:
+                    log.event("TCP_LINK_STATUS_ARTIFACT_MISSING",
+                              kernel_id=args.kernel_id,
+                              output_exit_code=output_result.returncode,
+                              output_tail=safe_text(output_result.stdout)[-1000:])
+                return
+            if active_state and time.monotonic() - startup_started >= 35:
+                log.event("TCP_LINK_KERNEL_RUNNING", kernel_id=args.kernel_id,
+                          waited_seconds=round(time.monotonic() - startup_started, 1),
+                          status_shape="active")
+                print("TCP_LINK_KERNEL_RUNNING kernel_id=" + args.kernel_id, flush=True)
+                return
+            time.sleep(5)
+        log.event("TCP_LINK_STARTUP_PENDING", kernel_id=args.kernel_id,
+                  waited_seconds=round(time.monotonic() - startup_started, 1),
+                  status_tail=last_status_text[-300:])
+        print("TCP_LINK_STARTUP_PENDING kernel_id=" + args.kernel_id, flush=True)
         return
     deadline, final_status = time.monotonic() + args.timeout_seconds, None
     while time.monotonic() < deadline:
