@@ -42,3 +42,22 @@ Notebook internet is disabled in this proof because no outbound network access i
 - Kernel status and output download: https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md
 
 Kaggle's current notebook documentation states 12 hours maximum execution time for CPU/GPU sessions (9 hours for TPU sessions) and up to 20 GB of saved output in /kaggle/working. Kaggle documents dynamic API rate limiting but does not publish one fixed universal numeric request quota in the API overview; handle HTTP 429 / Too Many Requests by pausing and retrying rather than tight-looping. These are platform-level documented limits, not limits measured by this proof. Dataset/API upload size ceilings and effective per-account request rates still need an empirical test and current policy check.
+
+
+## Stage 2: live TCP bridge over Tailscale
+
+The RX/TX proof above is only a file/message round trip. The live transport is a separate, long-running private Kaggle notebook, `USERNAME/webvm-tcp-link`, which runs a TCP-only SOCKS5 proxy on local port 8889 and exposes it to the tailnet through Tailscale Serve on port 8888. No `iptables` PREROUTING rule is required.
+
+### One-time setup
+
+1. Run WebVM once after the Stage 2 code has deployed. It creates the private `webvm-tcp-link` notebook and reports whether the Tailscale secret is missing.
+2. Open the private Kaggle notebook at `https://www.kaggle.com/code/USERNAME/webvm-tcp-link`.
+3. In the notebook's Secrets settings, add `WEBVM_TAILSCALE_AUTHKEY` with a fresh, preferably ephemeral Tailscale auth key for the same tailnet as WebVM. Do not paste the key into source code, the RX dataset, the TX response, or logs.
+4. Reload WebVM or run `pi.py` again. It reuses the running service if one is already active. The notebook reads the key directly from Kaggle Secrets and keeps the service alive.
+5. In WebVM's Networking panel, wait for `webvm-kaggle-tcp-link` and its Tailscale IPv4 address to appear. The browser writes `/data/kaggle-tcp-link.env`; new shell prompts load it and set `ALL_PROXY=socks5h://<peer-ip>:8888` if the user has not configured another proxy.
+
+The notebook reports non-secret stages through the existing runtime telemetry: installation, local SOCKS5 TCP self-test, Tailscale Serve status, the peer IPv4 address, and any startup error. The auth key is never returned over RX/TX or included in telemetry.
+
+### What this link provides
+
+This is a real TCP stream path from WebVM over its Tailscale network to the Kaggle peer, then through a SOCKS5 `CONNECT` proxy to public TCP destinations. It is not the old file-based RX/TX loop, and it does not rely on a guessed source IP or NAT redirect. UDP and arbitrary layer-3 packet forwarding are not provided by this SOCKS5 mode; applications must honor the SOCKS/HTTP proxy environment variables. The service remains available only while the Kaggle notebook is running and subject to Kaggle's session limits.
