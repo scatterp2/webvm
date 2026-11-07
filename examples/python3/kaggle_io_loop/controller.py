@@ -344,6 +344,11 @@ def main():
             if terminal_state and not active_state:
                 status_dir = output_dir / "tcp_link_status"
                 status_dir.mkdir(parents=True, exist_ok=True)
+                for stale_status in status_dir.rglob("tcp_link_status.json"):
+                    try:
+                        stale_status.unlink()
+                    except OSError:
+                        pass
                 output_result = command(
                     log,
                     ["kaggle", "kernels", "output", args.kernel_id, "-p",
