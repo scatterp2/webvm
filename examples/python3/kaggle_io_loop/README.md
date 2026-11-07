@@ -41,4 +41,4 @@ Notebook internet is disabled in this proof because no outbound network access i
 - Kernel metadata and dataset_sources: https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels_metadata.md
 - Kernel status and output download: https://github.com/Kaggle/kaggle-cli/blob/main/docs/kernels.md
 
-Limits such as maximum runtime, output-size ceilings and request rate are not asserted here: check current Kaggle documentation/account policy and measure empirically rather than guessing.
+Kaggle's current notebook documentation states 12 hours maximum execution time for CPU/GPU sessions (9 hours for TPU sessions) and up to 20 GB of saved output in /kaggle/working. Kaggle documents dynamic API rate limiting but does not publish one fixed universal numeric request quota in the API overview; handle HTTP 429 / Too Many Requests by pausing and retrying rather than tight-looping. These are platform-level documented limits, not limits measured by this proof. Dataset/API upload size ceilings and effective per-account request rates still need an empirical test and current policy check.
