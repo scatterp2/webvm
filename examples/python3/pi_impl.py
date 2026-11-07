@@ -668,10 +668,63 @@ def deploy():
 # MAIN
 # ============================================================
 
+def run_io_loop_proof():
+    """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
+    from urllib.error import HTTPError, URLError
+
+    base = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_io_loop/"
+    target_dir = Path("/home/user/kaggle-io-loop")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ("controller.py", "agent.py"):
+        last_error = None
+        for attempt in range(1, 11):
+            try:
+                request = Request(
+                    base + filename + "?t=" + str(int(time.time() * 1000)),
+                    headers={"Cache-Control": "no-cache", "User-Agent": "webvm-kaggle-io-loop/1.0"},
+                )
+                with urlopen(request, timeout=25) as response:
+                    source = response.read().decode("utf-8")
+                compile(source, str(target_dir / filename), "exec")
+                (target_dir / filename).write_text(source, encoding="utf-8")
+                print("IO_LOOP_SOURCE_FETCHED file={} attempt={}/10 characters={}".format(
+                    filename, attempt, len(source)), flush=True)
+                break
+            except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
+                last_error = exc
+                print("IO_LOOP_SOURCE_FETCH_FAILED file={} attempt={}/10 error={}: {}".format(
+                    filename, attempt, type(exc).__name__, exc), flush=True)
+                if attempt < 10:
+                    time.sleep(min(attempt, 5))
+        else:
+            raise RuntimeError("Could not fetch IO loop source {}: {}".format(filename, last_error))
+
+    env = os.environ.copy()
+    env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
+    env["HOME"] = str(HOME)
+    command = [
+        sys.executable, str(target_dir / "controller.py"),
+        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--kernel-id", USERNAME + "/webvm-io-loop-proof",
+        "--work-dir", "/home/user/kaggle-io-loop-run",
+        "--timeout-seconds", "900",
+        "--poll-seconds", "10",
+    ]
+    print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
+        USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, timeout=1200, check=False, env=env)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\\n") else "\\n", flush=True)
+    print("IO_LOOP_CONTROLLER_EXIT returncode={}".format(result.returncode), flush=True)
+    if result.returncode != 0:
+        raise RuntimeError("Kaggle API-mediated IO loop proof failed with exit code {}".format(result.returncode))
+
+
 def main():
     prepare_system()
     prepare_credentials()
-    # prepare_python()  # Environment and Kaggle CLI are installed in the Docker image.
-    write_notebook()
-    deploy()
+    # The current task is the one-message Kaggle API-mediated RX/TX proof.
+    # Keep the Qwen experiment implementation intact but do not submit it here.
+    run_io_loop_proof()
 
