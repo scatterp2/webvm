@@ -555,14 +555,14 @@ def deploy():
     if push is not None and push.returncode != 0 and transient_transport_failure:
         tls_config = Path("/tmp/webvm-openssl-tls12.cnf")
         tls_config.write_text(
-            "openssl_conf = openssl_init\\n"
-            "[openssl_init]\\n"
-            "ssl_conf = ssl_sect\\n"
-            "[ssl_sect]\\n"
-            "system_default = system_default_sect\\n"
-            "[system_default_sect]\\n"
-            "MinProtocol = TLSv1.2\\n"
-            "MaxProtocol = TLSv1.2\\n",
+            "openssl_conf = openssl_init\n"
+            "[openssl_init]\n"
+            "ssl_conf = ssl_sect\n"
+            "[ssl_sect]\n"
+            "system_default = system_default_sect\n"
+            "[system_default_sect]\n"
+            "MinProtocol = TLSv1.2\n"
+            "MaxProtocol = TLSv1.2\n",
             encoding="utf-8",
         )
         tls12_env = env.copy()
@@ -577,13 +577,13 @@ def deploy():
         alt_host_dir = Path("/tmp/webvm-kaggle-alt-host")
         alt_host_dir.mkdir(parents=True, exist_ok=True)
         (alt_host_dir / "sitecustomize.py").write_text(
-            "import os\\n"
-            "try:\\n"
-            "    import kagglesdk.kaggle_env as _kaggle_env\\n"
-            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\\n"
-            "except Exception as _exc:\\n"
-            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\\n",
+            "import os\n"
+            "try:\n"
+            "    import kagglesdk.kaggle_env as _kaggle_env\n"
+            "    _kaggle_env._env_to_endpoint[_kaggle_env.KaggleEnv.PROD] = 'https://www.kaggle.com/api'\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_APPLIED', flush=True)\n"
+            "except Exception as _exc:\n"
+            "    print('WEBVM_KAGGLE_ALT_HOST_PATCH_FAILED ' + type(_exc).__name__, flush=True)\n",
             encoding="utf-8",
         )
         alt_env = env.copy()
