@@ -424,6 +424,7 @@ def main():
         serve = cli(
             "serve",
             "--bg",
+            "--yes",
             "--tcp=" + str(TAILNET_PORT),
             "tcp://" + LOCAL_SOCKS_HOST + ":" + str(LOCAL_SOCKS_PORT),
         )
