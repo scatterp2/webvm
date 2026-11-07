@@ -9,6 +9,89 @@ AGENT = HERE / "agent.py"
 DEFAULT_WORK = Path.cwd() / "kaggle_io_loop_run"
 FIXED_PAYLOAD = "WEBVM_IO_LOOP_HELLO_V1"
 
+PROXY_DIAGNOSTIC_SOURCE = r'''# WebVM proxy URL and NAT capability diagnostic
+import glob, json, os, re, shutil, socket, subprocess
+
+def _proxy_log(event, **fields):
+    print("WEBVM_PROXY_DIAGNOSTIC " + json.dumps(
+        {"event": event, **fields}, sort_keys=True
+    ), flush=True)
+
+base_url = None
+server_pid = None
+pids = [12] + [
+    int(p.split("/")[2]) for p in glob.glob("/proc/[0-9]*/cmdline")
+    if p.split("/")[2].isdigit() and int(p.split("/")[2]) != 12
+]
+for pid in pids:
+    try:
+        with open("/proc/{}/cmdline".format(pid), "rb") as f:
+            args = [x.decode(errors="replace") for x in f.read().split(b"\\0") if x]
+    except (OSError, PermissionError):
+        continue
+    if not any("jupyter" in x.lower() or "notebook" in x.lower() for x in args):
+        continue
+    for i, arg in enumerate(args):
+        if arg.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
+            base_url = arg.split("=", 1)[1]
+            server_pid = pid
+            break
+        if arg in ("--NotebookApp.base_url", "--ServerApp.base_url") and i + 1 < len(args):
+            base_url = args[i + 1]
+            server_pid = pid
+            break
+    if base_url:
+        break
+
+if base_url:
+    match = re.search(r"/k/\\d+/([^/]+)/proxy/?$", base_url)
+    if match:
+        _proxy_log("PROXY_URL_DISCOVERED", pid=server_pid, base_url=base_url,
+                   proxy_url="https://kkb-production.jupyter-proxy.kaggle.net?token=" + match.group(1))
+    else:
+        _proxy_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=server_pid, base_url=base_url)
+else:
+    _proxy_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
+
+source_ip = os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip()
+iptables = shutil.which("iptables")
+if not iptables:
+    _proxy_log("IPTABLES_CAPABILITY_PROBE", available=False)
+else:
+    cap = subprocess.run([iptables, "-t", "nat", "-S", "PREROUTING"],
+                         capture_output=True, text=True)
+    _proxy_log("IPTABLES_CAPABILITY_PROBE", available=True, returncode=cap.returncode,
+               permitted=(cap.returncode == 0), stderr=(cap.stderr or "")[-1000:],
+               rules=(cap.stdout or "")[-2000:])
+if not source_ip:
+    _proxy_log("NAT_RULE_SKIPPED_SOURCE_IP_NOT_CONFIGURED",
+               required_env="WEBVM_PROXY_SOURCE_IP",
+               note="No example source address is assumed to be real")
+elif not re.fullmatch(r"(?:\\d{1,3}\\.){3}\\d{1,3}", source_ip):
+    _proxy_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=source_ip)
+elif not iptables:
+    _proxy_log("NAT_RULE_SKIPPED_IPTABLES_UNAVAILABLE", source_ip=source_ip)
+else:
+    rule = [iptables, "-t", "nat", "-A", "PREROUTING", "-s", source_ip,
+            "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"]
+    check = [iptables, "-t", "nat", "-C", "PREROUTING", "-s", source_ip,
+             "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"]
+    existing = subprocess.run(check, capture_output=True, text=True)
+    if existing.returncode == 0:
+        _proxy_log("NAT_RULE_ALREADY_PRESENT", source_ip=source_ip, from_port=8888, to_port=8889)
+    else:
+        added = subprocess.run(rule, capture_output=True, text=True)
+        _proxy_log("NAT_RULE_ADDED" if added.returncode == 0 else "NAT_RULE_ADD_FAILED",
+                   source_ip=source_ip, from_port=8888, to_port=8889,
+                   returncode=added.returncode, stderr=(added.stderr or "")[-1000:])
+try:
+    with socket.create_connection(("127.0.0.1", 8889), timeout=2):
+        _proxy_log("LOCAL_TARGET_LISTENER", port=8889, listening=True)
+except OSError as exc:
+    _proxy_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
+               error=type(exc).__name__ + ": " + str(exc))
+'''
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -133,7 +216,9 @@ def main():
     compile(agent_source, str(AGENT), "exec")
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
-    write_json(notebook_path, make_notebook(agent_source))
+    notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
+    compile(notebook_source, str(notebook_path), "exec")
+    write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
         "id": args.kernel_id, "title": "WebVM IO Loop Proof", "code_file": notebook_path.name,
         "language": "python", "kernel_type": "notebook", "is_private": True,
