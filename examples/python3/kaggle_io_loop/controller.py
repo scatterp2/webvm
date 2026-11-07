@@ -55,7 +55,9 @@ def command(logger, argv, *, timeout=120, check=False):
         raise
 
 def make_message():
-    core = {"version": 1, "sequence": 1, "request_id": "io-loop-proof-0001",
+    # A per-run request ID proves the published Dataset version is current.
+    request_id = "io-loop-proof-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    core = {"version": 1, "sequence": 1, "request_id": request_id,
             "type": "echo", "payload_length": len(FIXED_PAYLOAD.encode("utf-8")), "payload": FIXED_PAYLOAD}
     return {**core, "checksum": digest(core)}
 
@@ -167,6 +169,39 @@ def main():
                    ["kaggle", "datasets", "create", "-p", str(dataset_dir), "-r", "skip"])
     command(log, publish_cmd, timeout=300, check=True)
     log.event("RX_RESOURCE_PUBLISHED", dataset_id=args.dataset_id, message_checksum=message["checksum"])
+    # Dataset version creation is asynchronous. Wait until the latest version
+    # can be downloaded and matches this run before submitting the notebook.
+    verify_dir = output_dir / "published_rx_verify"
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    verify_deadline = time.monotonic() + 240
+    published_verified = False
+    while time.monotonic() < verify_deadline:
+        verify = command(log, ["kaggle", "datasets", "download", args.dataset_id,
+                               "-f", "rx_message.json", "-p", str(verify_dir),
+                               "--unzip", "-o"], timeout=90, check=False)
+        candidates = sorted(verify_dir.rglob("rx_message.json"))
+        if verify.returncode == 0 and candidates:
+            try:
+                downloaded_message = json.loads(candidates[-1].read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                log.event("RX_PUBLICATION_VERIFY_RETRY", reason=type(exc).__name__ + ": " + str(exc))
+            else:
+                if downloaded_message == message:
+                    published_verified = True
+                    log.event("RX_PUBLICATION_VERIFIED", dataset_id=args.dataset_id,
+                              request_id=message["request_id"], checksum=message["checksum"],
+                              file=str(candidates[-1]))
+                    break
+                log.event("RX_PUBLICATION_VERIFY_RETRY", expected_request_id=message["request_id"],
+                          observed_request_id=downloaded_message.get("request_id"),
+                          expected_checksum=message["checksum"],
+                          observed_checksum=downloaded_message.get("checksum"))
+        else:
+            log.event("RX_PUBLICATION_VERIFY_RETRY", exit_code=verify.returncode,
+                      output_tail=safe_text(verify.stdout), files=[str(p) for p in candidates])
+        time.sleep(10)
+    if not published_verified:
+        raise RuntimeError("Published Dataset did not expose this run's rx_message.json within 240 seconds; refusing to submit with stale or missing input")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if metadata["dataset_sources"] != [args.dataset_id]:
         raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
