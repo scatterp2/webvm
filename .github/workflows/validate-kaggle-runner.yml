@@ -31,14 +31,15 @@ jobs:
             examples/python3/gpu_test.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
-      - name: Test embedded runtime and prompt substitution without network access
+      - name: Test compact notebook and runtime prompt retrieval without network access
         run: |
           python3 - <<'PY'
           import __main__
+          import json
           import sys
+          import tempfile
           from pathlib import Path
           from unittest.mock import patch
-          from urllib.parse import urlparse
 
           # Dummy launcher values only for import-time wiring validation.
           # Never read or print the real credential values.
@@ -48,30 +49,25 @@ jobs:
           sys.path.insert(0, str(Path("examples/python3").resolve()))
           import pi_impl
 
-          class FakeResponse:
-              def __init__(self, body):
-                  self.body = body
-              def __enter__(self):
-                  return self
-              def __exit__(self, *args):
-                  return False
-              def read(self):
-                  return self.body.encode("utf-8")
+          runtime_source = Path("examples/python3/kaggle_runtime.py").read_text(encoding="utf-8")
+          compile(runtime_source, "<kaggle-runtime>", "exec")
+          assert "api.github.com/repos/RikiyaT/lm_understand-logs/contents/" in runtime_source
+          assert "PROMPT_FETCH_RETRY" in runtime_source
+          assert "raw_github_fallback" in runtime_source
 
-          def fake_urlopen(request, timeout=60):
-              path = urlparse(request.full_url).path
-              if path.endswith("/examples/python3/kaggle_runtime.py"):
-                  return FakeResponse(Path("examples/python3/kaggle_runtime.py").read_text(encoding="utf-8"))
-              game = path.split("/")[-2]
-              return FakeResponse("TEST_PROMPT_" + game.upper())
+          with tempfile.TemporaryDirectory() as temp:
+              temp_path = Path(temp)
+              notebook_path = temp_path / "probe.ipynb"
+              metadata_path = temp_path / "kernel-metadata.json"
+              with patch.object(pi_impl, "NOTEBOOK_FILE", notebook_path), \
+                   patch.object(pi_impl, "METADATA_FILE", metadata_path), \
+                   patch.object(pi_impl, "fetch_runtime_source", return_value=runtime_source):
+                  pi_impl.write_notebook()
 
-          with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-              embedded = pi_impl.build_embedded_runtime()
-
-          compile(embedded, "<embedded-kaggle-runtime>", "exec")
-          for game in ("pacman", "pong", "breakout", "freeway"):
-              assert "TEST_PROMPT_" + game.upper() in embedded, "missing embedded prompt: " + game
-          assert "prompt = PROMPTS[game]" in embedded
-          assert "requests.get(prompt_url" not in embedded
-          print("EMBEDDED_RUNTIME_TEST_OK")
+              notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+              cell_source = "".join(notebook["cells"][1]["source"])
+              assert cell_source == runtime_source
+              assert notebook_path.stat().st_size < 40000, "notebook payload is not compact"
+              assert metadata_path.is_file()
+          print("COMPACT_NOTEBOOK_RUNTIME_FETCH_TEST_OK")
           PY
