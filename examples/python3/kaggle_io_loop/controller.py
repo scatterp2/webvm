@@ -61,7 +61,7 @@ def make_message():
 
 def make_notebook(agent_source):
     return {
-        "cells": [{"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
+        "cells": [{"cell_type": "code", "id": "io-loop-agent", "execution_count": None, "metadata": {}, "outputs": [],
                    "source": agent_source.splitlines(keepends=True)}],
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
