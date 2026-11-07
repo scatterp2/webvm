@@ -42,10 +42,11 @@ def log(message):
 
 
 def publish(stage, details=""):
-    """Publish a public diagnostic paste. Never include credentials or env dumps."""
+    """Publish diagnostics with up to ten logged attempts; never include credentials."""
     global FEEDBACK_AVAILABLE
     if not FEEDBACK_AVAILABLE:
         return
+    from urllib.error import HTTPError, URLError
     content = (
         f"{FEEDBACK_TAG}\n"
         f"source=KAGGLE\n"
@@ -53,33 +54,40 @@ def publish(stage, details=""):
         f"stage={stage}\n"
         f"{details}\n"
     )
-    try:
-        payload = json.dumps({
-            "content": content[:90000],
-            "language": "text",
-            "expires_in": "1m",
-        }).encode("utf-8")
-        request = Request(
-            FEEDBACK_URL,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "webvm-qwen-weight-space-feedback/1.0",
-            },
-            method="POST",
-        )
-        with urlopen(request, timeout=5) as response:
-            result = json.loads(response.read().decode("utf-8", errors="replace"))
-        paste_url = result.get("url") or result.get("paste_url")
-        paste_id = result.get("id") or result.get("key")
-        log(f"FEEDBACK_UPLOAD_OK stage={stage} url={paste_url or paste_id or 'created'}")
-    except Exception as exc:
-        log(f"FEEDBACK_UPLOAD_FAILED stage={stage} error={type(exc).__name__}: {exc}")
-        message = str(exc).lower()
-        if "temporary failure in name resolution" in message or "name or service not known" in message:
-            FEEDBACK_AVAILABLE = False
-            log("FEEDBACK_DISABLED reason=dns_failure; continuing with Kaggle log/output collection")
+    payload = json.dumps({
+        "content": content[:90000],
+        "language": "text",
+        "expires_in": "1m",
+    }).encode("utf-8")
+    last_error = None
+    for attempt in range(1, 11):
+        try:
+            request = Request(
+                FEEDBACK_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "webvm-qwen-weight-space-feedback/1.0",
+                },
+                method="POST",
+            )
+            with urlopen(request, timeout=5) as response:
+                result = json.loads(response.read().decode("utf-8", errors="replace"))
+            paste_url = result.get("url") or result.get("paste_url")
+            paste_id = result.get("id") or result.get("key")
+            log(f"FEEDBACK_UPLOAD_ATTEMPT stage={stage} attempt={attempt}/10 result=ok")
+            log(f"FEEDBACK_UPLOAD_OK stage={stage} url={paste_url or paste_id or 'created'}")
+            return
+        except Exception as exc:
+            last_error = exc
+            log(f"FEEDBACK_UPLOAD_ATTEMPT stage={stage} attempt={attempt}/10 result=failed error={type(exc).__name__}: {exc}")
+            if attempt < 10:
+                time.sleep(min(attempt, 5))
+    log(f"FEEDBACK_UPLOAD_EXHAUSTED stage={stage} attempts=10 last_error={type(last_error).__name__ if last_error else 'unknown'}")
+    FEEDBACK_AVAILABLE = False
+    log("FEEDBACK_DISABLED reason=10 consecutive upload failures; continuing with Kaggle log/output collection")
+
 
 
 def run_diagnostic_command(command, timeout=10):
