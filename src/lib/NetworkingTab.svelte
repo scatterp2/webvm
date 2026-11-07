@@ -5,6 +5,7 @@
 	var dispatch = createEventDispatcher();
 	var connectionState = networkData.connectionState;
 	var exitNode = networkData.exitNode;
+	var kaggleTcpLink = networkData.kaggleTcpLink;
 
 	function handleConnect() {
 		connectionState.set("DOWNLOADING");
@@ -20,5 +21,13 @@
 		<i class='fas fa-circle fa-xs ml-auto {$exitNode ? 'text-green-500' : 'text-amber-500'}' title={$exitNode ? 'Ready' : 'No exit node'}></i>
 	{/if}
 </PanelButton>
-<p>WebVM can connect to the Internet via Tailscale</p>
-<p>Using Tailscale is required since browser do not support TCP/UDP sockets (yet!)</p>
+<p>WebVM can connect to other devices over Tailscale.</p>
+<p>Using Tailscale is required since browsers do not expose raw TCP/UDP sockets.</p>
+{#if $kaggleTcpLink}
+	<div class="mt-3 rounded border border-green-500/40 p-2 text-sm">
+		<p class="font-semibold">Kaggle TCP bridge online</p>
+		<p>Peer: {$kaggleTcpLink.ip}:{$kaggleTcpLink.port}</p>
+		<p class="break-all">SOCKS5 proxy: socks5h://{$kaggleTcpLink.ip}:{$kaggleTcpLink.port}</p>
+		<p class="mt-1 text-xs">New shell prompts load the proxy settings from /data/kaggle-tcp-link.env.</p>
+	</div>
+{/if}
