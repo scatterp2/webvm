@@ -85,7 +85,7 @@ for _wvm_pid in _wvm_candidates:
         break
 
 if _wvm_base_url:
-    _wvm_match = _wvm_re.search(r"/k/\\d+/([^/]+)/proxy/?$", _wvm_base_url)
+    _wvm_match = _wvm_re.search(r"/k/\d+/([^/]+)/proxy/?$", _wvm_base_url)
     if _wvm_match:
         _wvm_proxy_url = "https://kkb-production.jupyter-proxy.kaggle.net?token=" + _wvm_match.group(1)
         _wvm_log("PROXY_URL_DISCOVERED", pid=_wvm_server_pid, base_url=_wvm_base_url, proxy_url=_wvm_proxy_url)
@@ -99,15 +99,12 @@ _wvm_rule = [
     "iptables", "-t", "nat", "-A", "PREROUTING", "-s", _wvm_source_ip,
     "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
 ]
-_wvm_rule_check = _wvm_rule.copy()
-_wvm_rule_check[4] = "-C"
-_wvm_rule_check.pop(5)
 # Build the exact idempotency check independently to avoid argument-index ambiguity.
 _wvm_check = [
     "iptables", "-t", "nat", "-C", "PREROUTING", "-s", _wvm_source_ip,
     "-p", "tcp", "--dport", "8888", "-j", "REDIRECT", "--to-ports", "8889"
 ]
-if not _wvm_re.fullmatch(r"(?:\\d{1,3}\\.){3}\\d{1,3}", _wvm_source_ip):
+if not _wvm_re.fullmatch(r"(?:\d{1,3}\\.){3}\d{1,3}", _wvm_source_ip):
     _wvm_log("NAT_RULE_SKIPPED_INVALID_SOURCE_IP", source_ip=_wvm_source_ip)
 elif not _wvm_shutil.which("iptables"):
     _wvm_log("IPTABLES_UNAVAILABLE", source_ip=_wvm_source_ip)
