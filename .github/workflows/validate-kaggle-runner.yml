@@ -69,7 +69,9 @@ jobs:
 
               notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
               cell_source = "".join(notebook["cells"][1]["source"])
-              assert cell_source == runtime_source
+              assert cell_source.startswith(pi_impl.PROXY_DIAGNOSTIC_SOURCE + "\n\n")
+              assert cell_source.endswith(runtime_source)
+              compile(cell_source, "<generated-kaggle-notebook-cell>", "exec")
               assert notebook_path.stat().st_size < 40000, "notebook payload is not compact"
               assert metadata_path.is_file()
           print("COMPACT_NOTEBOOK_RUNTIME_FETCH_TEST_OK")
