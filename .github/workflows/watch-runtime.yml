@@ -108,7 +108,7 @@ jobs:
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
                       for line in safe_lines(body):
                           print(line, flush=True)
-                      if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)")', body, re.I):
+                      if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)"|TCP_LINK_CONTROLLER_EXIT.*returncode=1|TCP_LINK_STATUS_ARTIFACT_MISSING|TCP_LINK_STARTUP_PENDING)', body, re.I):
                           terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
                   if terminal_stage_seen:
