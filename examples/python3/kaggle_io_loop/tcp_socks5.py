@@ -26,7 +26,8 @@ LOCAL_SOCKS_HOST = "127.0.0.1"
 LOCAL_SOCKS_PORT = 8889
 TAILNET_PORT = 8888
 SOCKET_PATH = "/tmp/webvm-tailscaled.sock"
-WORK = Path("/kaggle/working/webvm-tcp-link")
+WORK_BASE = Path("/kaggle/working") if Path("/kaggle/working").is_dir() else Path(os.environ.get("TMPDIR", "/tmp"))
+WORK = Path(os.environ.get("WEBVM_TCP_LINK_WORK_DIR", str(WORK_BASE / "webvm-tcp-link")))
 WORK.mkdir(parents=True, exist_ok=True)
 
 
