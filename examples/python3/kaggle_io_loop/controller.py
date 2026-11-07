@@ -223,6 +223,8 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--poll-seconds", type=int, default=10)
     parser.add_argument("--prepare-only", action="store_true", help="Generate inputs/notebook and run local validation without Kaggle API calls")
+    parser.add_argument("--serve-tcp-link", action="store_true",
+                        help="Submit a long-running Tailscale-backed TCP/SOCKS5 service and return after submission")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+", args.dataset_id):
         parser.error("invalid --dataset-id; expected owner/slug")
@@ -250,6 +252,13 @@ def main():
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
     notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
+    if args.serve_tcp_link:
+        service_path = HERE / "tcp_socks5.py"
+        if not service_path.is_file():
+            raise RuntimeError("TCP link service source is missing: " + str(service_path))
+        service_source = service_path.read_text(encoding="utf-8")
+        compile(service_source, str(service_path), "exec")
+        notebook_source += "\n\n" + service_source
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
@@ -325,6 +334,13 @@ def main():
         raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
     command(log, ["kaggle", "kernels", "push", "-p", str(kernel_dir)], timeout=300, check=True)
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
+    if args.serve_tcp_link:
+        log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
+                  service="tailscale-serve-tcp-to-socks5", local_port=8889,
+                  tailnet_port=8888, wait_for_completion=False)
+        print("TCP_LINK_KERNEL_SUBMITTED kernel_id=" + args.kernel_id +
+              " local_port=8889 tailnet_port=8888", flush=True)
+        return
     deadline, final_status = time.monotonic() + args.timeout_seconds, None
     while time.monotonic() < deadline:
         status = command(log, ["kaggle", "kernels", "status", args.kernel_id], timeout=60, check=False)
