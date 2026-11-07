@@ -125,6 +125,8 @@ def main():
         "description": "Private harmless fixed-message RX resource for WebVM Kaggle IO loop proof.",
     })
     agent_source = AGENT.read_text(encoding="utf-8")
+    dataset_slug = args.dataset_id.split("/", 1)[1]
+    agent_source = agent_source.replace("/kaggle/input/webvm-io-loop-rx/rx_message.json", "/kaggle/input/" + dataset_slug + "/rx_message.json")
     compile(agent_source, str(AGENT), "exec")
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
