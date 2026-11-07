@@ -187,7 +187,7 @@ jobs:
                   host = b"test.invalid"
                   sock.sendall(b"\x05\x01\x00\x03" + bytes([len(host)]) + host + target_port.to_bytes(2, "big"))
                   reply = recv_exact(sock, 10)
-              assert reply[:2] == b"\x05\x00", "SOCKS5 CONNECT reply was {!r}".format(reply)
+                  assert reply[:2] == b"\x05\x00", "SOCKS5 CONNECT reply was {!r}".format(reply)
                   sock.sendall(b"ping")
                   assert recv_exact(sock, 4) == b"ping", "SOCKS5 byte echo failed"
 
@@ -197,7 +197,7 @@ jobs:
                       ("CONNECT test.invalid:{} HTTP/1.1\r\nHost: test.invalid:{}\r\n\r\n".format(target_port, target_port)).encode()
                   )
                   status_line = read_line(sock)
-              assert status_line.startswith("HTTP/1.1 200 "), "HTTP CONNECT reply was {!r}".format(status_line)
+                  assert status_line.startswith("HTTP/1.1 200 "), "HTTP CONNECT reply was {!r}".format(status_line)
                   while read_line(sock):
                       pass
                   sock.sendall(b"pong")
