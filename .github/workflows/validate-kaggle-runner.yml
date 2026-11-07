@@ -123,6 +123,8 @@ jobs:
           assert '"serve"' in source and "TAILNET_PORT = 8888" in source
           assert not re.search(r"tskey-auth-[A-Za-z0-9_-]{20,}", source)
           assert metadata["id"] == "ci-user/webvm-tcp-link"
+          assert metadata["title"] == "WebVM TCP Link"
+          assert re.sub(r"[^a-z0-9]+", "-", metadata["title"].lower()).strip("-") == "webvm-tcp-link"
           assert metadata["is_private"] is True
           assert metadata["dataset_sources"] == []
           assert "def collect_network_diagnostics" not in source
