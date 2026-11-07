@@ -215,9 +215,12 @@ def main():
         existing = command(log, ["kaggle", "kernels", "status", args.kernel_id],
                            timeout=60, check=False)
         existing_text = (existing.stdout or "").upper()
-        if existing.returncode == 0 and "RUNNING" in existing_text:
+        active_state = any(state in existing_text for state in
+                           ("RUNNING", "QUEUED", "PENDING", "INITIALIZING", "SUBMITTED"))
+        if existing.returncode == 0 and active_state:
             log.event("TCP_LINK_ALREADY_RUNNING", kernel_id=args.kernel_id,
-                      note="Keeping the existing long-running TCP link; not pushing another version")
+                      status_shape="active",
+                      note="Keeping the existing queued or running TCP link; not pushing another version")
             print("TCP_LINK_ALREADY_RUNNING kernel_id=" + args.kernel_id, flush=True)
             return
     message = make_message()
