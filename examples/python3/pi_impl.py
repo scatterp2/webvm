@@ -80,26 +80,7 @@ for _wvm_pid in _wvm_candidates:
         for _a in _wvm_args
     ):
         _wvm_jupyter_args = list(_wvm_args)
-    # Log the launch argv only after redacting proxy routes and secret-bearing flags.
-    _wvm_safe_args = []
-    _wvm_redact_next = False
-    for _wvm_arg in _wvm_args:
-        _wvm_lower_arg = _wvm_arg.lower()
-        if _wvm_redact_next:
-            _wvm_safe_args.append("[REDACTED]")
-            _wvm_redact_next = False
-            continue
-        if any(_w in _wvm_lower_arg for _w in ("token", "password", "secret", "credential", "cookie", "auth", "api_key", "apikey", "base_url")):
-            if "=" in _wvm_arg:
-                _wvm_safe_args.append(_wvm_arg.split("=", 1)[0] + "=[REDACTED]")
-            else:
-                _wvm_safe_args.append(_wvm_arg)
-                _wvm_redact_next = True
-        elif "/proxy/" in _wvm_lower_arg or "/proxy?" in _wvm_lower_arg:
-            _wvm_safe_args.append("[REDACTED_PROXY_ROUTE]")
-        else:
-            _wvm_safe_args.append(_wvm_arg)
-    _wvm_log("JUPYTER_LAUNCH_ARGV_REDACTED", pid=_wvm_pid, argv=_wvm_safe_args)
+    _wvm_log("JUPYTER_LAUNCH_ARGV", pid=_wvm_pid, argv=_wvm_args)
     for _wvm_i, _wvm_arg in enumerate(_wvm_args):
         if _wvm_arg.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
             _wvm_base_url = _wvm_arg.split("=", 1)[1]
