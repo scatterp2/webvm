@@ -299,9 +299,9 @@ def emit(stage, **fields):
     record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "stage": stage, **fields}
     print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
-    body = (TAG + "\\nsource=WEBVM\\nstage=PI_TCP_LINK_" + stage +
-            "\\ntime=" + record["time"] + "\\n" +
-            json.dumps(fields, sort_keys=True) + "\\n")
+    body = (TAG + "\nsource=WEBVM\nstage=PI_TCP_LINK_" + stage +
+            "\ntime=" + record["time"] + "\n" +
+            json.dumps(fields, sort_keys=True) + "\n")
     try:
         payload = json.dumps({"content": body[:8000], "language": "text",
                               "expires_in": "1h"}).encode("utf-8")
@@ -355,7 +355,7 @@ main()
 '''
         compile(notebook_source, str(notebook_path), "exec")
     else:
-        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\\n\\n" + agent_source
+        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
