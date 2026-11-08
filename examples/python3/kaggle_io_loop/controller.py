@@ -374,9 +374,9 @@ def main():
     if args.serve_tcp_link:
         log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
                   service="tailscale-serve-tcp-to-http-connect-socks5", local_port=8889,
-                  tailnet_port=8888, wait_for_completion=False)
+                  tailnet_port=18088, wait_for_completion=False)
         print("TCP_LINK_KERNEL_SUBMITTED kernel_id=" + args.kernel_id +
-              " local_port=8889 tailnet_port=8888", flush=True)
+              " local_port=8889 tailnet_port=18088", flush=True)
 
         # A missing Kaggle Secret makes the notebook finish quickly. Retrieve
         # its status artifact in that case; if it stays running, leave the
