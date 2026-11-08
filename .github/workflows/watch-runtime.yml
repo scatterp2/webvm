@@ -31,6 +31,7 @@ jobs:
           seen = set()
           details_attempted = set()
           started = time.monotonic()
+          tcp_controller_started_at = None
 
           def get_json(url, timeout=15):
               req = Request(url, headers={"Accept":"application/json","User-Agent":"webvm-active-runtime-watch/1.0"})
@@ -70,7 +71,7 @@ jobs:
           def safe_lines(body):
               keep = []
               for line in body.splitlines():
-                  if re.search(r'(FATAL|ERROR|Traceback|RuntimeError|Exception|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|LOOP_PROOF_PASS|OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|API_REQUEST_EXHAUSTED|API_REQUEST_TIMEOUT|RX_PUBLICATION_VERIFIED|DIAGNOSTICS|WEBVM_PROXY_DIAGNOSTIC|PROXY_URL_DISCOVERED|NAT_RULE_|IPTABLES_CAPABILITY_PROBE|LOCAL_TARGET_LISTENER|TCP_LINK|tailscale_ip|SOCKS5|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
+                  if re.search(r'(FATAL|ERROR|Traceback|RuntimeError|Exception|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|LOOP_PROOF_PASS|OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|API_REQUEST_EXHAUSTED|API_REQUEST_TIMEOUT|RX_PUBLICATION_VERIFIED|DIAGNOSTICS|WEBVM_PROXY_DIAGNOSTIC|PROXY_URL_DISCOVERED|NAT_RULE_|IPTABLES_CAPABILITY_PROBE|INTERCEPT_CAPABILITY_PROBE|NAT_INTERCEPT|LOCAL_PORT_PROBE|LOCAL_TARGET_LISTENER|TCP_LINK|tailscale_ip|SOCKS5|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
                       keep.append(
                           line[:5000] if re.search(r"OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|TCP_LINK_STARTUP_STATUS", line, re.I)
                           else line[:1000]
@@ -111,13 +112,15 @@ jobs:
                           print(line, flush=True)
                       if re.search(r"TCP_LINK_CONTROLLER_START", body, re.I):
                           tcp_controller_seen = True
+                          if tcp_controller_started_at is None:
+                              tcp_controller_started_at = time.monotonic()
                       if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)"|TCP_LINK_CONTROLLER_EXIT.*returncode=1|TCP_LINK_STATUS_ARTIFACT_MISSING|TCP_LINK_STARTUP_PENDING)', body, re.I):
                           terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
                   if terminal_stage_seen:
                       print("WATCH_EARLY_STOP terminal TCP link status found", flush=True)
                       break
-                  if tcp_controller_seen and time.monotonic() - started >= 180:
+                  if tcp_controller_seen and tcp_controller_started_at is not None and time.monotonic() - tcp_controller_started_at >= 180:
                       print("WATCH_EARLY_STOP TCP controller was observed for 180 seconds without a terminal status", flush=True)
                       break
               except Exception as e:
