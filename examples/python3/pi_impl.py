@@ -37,160 +37,54 @@ GAMES = ["pacman", "pong", "breakout", "freeway"]
 
 # Run inside Kaggle's notebook runtime before the workload.
 # This reports route/capability facts; TCP forwarding is handled by Tailscale Serve.
-PROXY_DIAGNOSTIC_SOURCE = r'''# WEBVM Kaggle proxy route diagnostic
-import glob as _wvm_glob
-import os as _wvm_os
-import re as _wvm_re
-import shutil as _wvm_shutil
-import socket as _wvm_socket
-import subprocess as _wvm_subprocess
-import time as _wvm_time
-
-def _wvm_log(event, **fields):
-    print("WEBVM_PROXY_DIAGNOSTIC " + __import__("json").dumps(
-        {"event": event, **fields}, sort_keys=True
-    ), flush=True)
-
-def _wvm_cmdline(pid):
-    with open("/proc/{}/cmdline".format(pid), "rb") as _f:
-        return [x.decode(errors="replace") for x in _f.read().split(b"\0") if x]
-
-_wvm_base_url = None
-_wvm_server_pid = None
-_wvm_jupyter_args = None
-_wvm_candidates = [12]
-_wvm_candidates += [
-    int(_p.split("/")[2]) for _p in _wvm_glob.glob("/proc/[0-9]*/cmdline")
-    if _p.split("/")[2].isdigit() and int(_p.split("/")[2]) != 12
-]
-for _wvm_pid in _wvm_candidates:
-    try:
-        _wvm_args = _wvm_cmdline(_wvm_pid)
-    except (OSError, PermissionError):
-        continue
-    _wvm_is_jupyter = any(
-        "jupyter" in _a.lower() or "notebook" in _a.lower()
-        for _a in _wvm_args
-    )
-    if not _wvm_is_jupyter:
-        continue
-    if _wvm_jupyter_args is None and any(
-        "jupyter-server" in _a.lower() or "jupyter server" in _a.lower()
-        or "notebookapp" in _a.lower() or "serverapp" in _a.lower()
-        for _a in _wvm_args
-    ):
-        _wvm_jupyter_args = list(_wvm_args)
-    _wvm_log("JUPYTER_LAUNCH_ARGV", pid=_wvm_pid, argv=_wvm_args)
-    for _wvm_i, _wvm_arg in enumerate(_wvm_args):
-        if _wvm_arg.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
-            _wvm_base_url = _wvm_arg.split("=", 1)[1]
-            _wvm_server_pid = _wvm_pid
-            break
-        if _wvm_arg in ("--NotebookApp.base_url", "--ServerApp.base_url") and _wvm_i + 1 < len(_wvm_args):
-            _wvm_base_url = _wvm_args[_wvm_i + 1]
-            _wvm_server_pid = _wvm_pid
-            break
-    if _wvm_base_url:
-        break
-
-if _wvm_base_url:
-    _wvm_match = _wvm_re.search(r"/k/\d+/([^/]+)/proxy/?$", _wvm_base_url)
-    if _wvm_match:
-        _wvm_log("PROXY_URL_DISCOVERED", pid=_wvm_server_pid,
-                 proxy_host="kkb-production.jupyter-proxy.kaggle.net",
-                 proxy_route_shape="/k/{}/<redacted>/proxy".format(
-                     _wvm_re.search(r"/k/(\d+)/", _wvm_base_url).group(1)),
-                 token_present=bool(_wvm_match.group(1)))
-    else:
-        _wvm_log("BASE_URL_FOUND_UNEXPECTED_FORMAT", pid=_wvm_server_pid,
-                 base_url_shape="present_unrecognized_format")
-else:
-    _wvm_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
-
-_wvm_iptables = _wvm_shutil.which("iptables")
-if not _wvm_iptables:
-    _wvm_log("IPTABLES_CAPABILITY_PROBE", available=False)
-else:
-    _wvm_capability = _wvm_subprocess.run(
-        [_wvm_iptables, "-t", "nat", "-S", "PREROUTING"],
-        capture_output=True, text=True
-    )
-    _wvm_log("IPTABLES_CAPABILITY_PROBE", available=True,
-             returncode=_wvm_capability.returncode,
-             permitted=(_wvm_capability.returncode == 0),
-             stderr=(_wvm_capability.stderr or "")[-1000:],
-             rules=(_wvm_capability.stdout or "")[-2000:])
-
-_wvm_source_ip_configured = bool(_wvm_os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip())
-_wvm_log("NAT_RULE_NOT_USED", source_ip_configured=_wvm_source_ip_configured,
-         note="The TCP link uses authenticated Tailscale Serve; no PREROUTING redirect is required")
-
+PROXY_DIAGNOSTIC_SOURCE = r'''
+import glob as g, json as j, os as o, re as r, shutil as sh, socket as so, subprocess as sp, time as tm
+def log(e, **k): print("WEBVM_PROXY_DIAGNOSTIC "+j.dumps({"event":e,**k},sort_keys=True),flush=True)
+args=None; pid=None; base=None
+for p in [12]+[int(x.split("/")[2]) for x in g.glob("/proc/[0-9]*/cmdline") if x.split("/")[2].isdigit() and int(x.split("/")[2])!=12]:
+ try: a=[x.decode(errors="replace") for x in open("/proc/%d/cmdline"%p,"rb").read().split(b"\0") if x]
+ except OSError: continue
+ if any("jupyter" in x.lower() or "notebook" in x.lower() for x in a):
+  if args is None and any(("jupyter-server" in x.lower() or "serverapp" in x.lower() or "notebookapp" in x.lower()) for x in a): args=a; pid=p
+  log("JUPYTER_LAUNCH_ARGV",pid=p,argv=a)
+  for i,x in enumerate(a):
+   if x.startswith(("--ServerApp.base_url=","--NotebookApp.base_url=")): base=x.split("=",1)[1]
+   elif x in ("--ServerApp.base_url","--NotebookApp.base_url") and i+1<len(a): base=a[i+1]
+  if base: break
+log("JUPYTER_BASE_URL",found=bool(base),base_url=base)
+ip=sh.which("iptables")
+if ip:
+ q=sp.run([ip,"-t","nat","-S","PREROUTING"],capture_output=True,text=True,timeout=3)
+ log("IPTABLES_CAPABILITY_PROBE",available=True,returncode=q.returncode,stderr=q.stderr[-500:],rules=q.stdout[-1000:])
+else: log("IPTABLES_CAPABILITY_PROBE",available=False)
+def listening(port):
+ try:
+  with so.create_connection(("127.0.0.1",port),timeout=1): return True
+ except OSError: return False
+log("LOCAL_TARGET_LISTENER",port=8889,listening=listening(8889))
+if args:
+ try:
+  na=list(args); flags=("--ServerApp.port","--NotebookApp.port","--port"); replaced=False; i=0
+  while i<len(na):
+   if any(na[i].startswith(f+"=") for f in flags): na[i]=na[i].split("=",1)[0]+"=8889"; replaced=True
+   elif na[i] in flags and i+1<len(na): na[i+1]="8889"; replaced=True; i+=1
+   i+=1
+  if not replaced: na.append("--ServerApp.port=8889")
+  na += ["--ServerApp.open_browser=False","--ServerApp.runtime_dir=/tmp/webvm-jupyter-8889-runtime"]
+  if listening(8889): log("SECOND_JUPYTER_SERVER",status="already_listening")
+  else:
+   child=sp.Popen(na,stdin=sp.DEVNULL,stdout=sp.DEVNULL,stderr=sp.DEVNULL,start_new_session=True,close_fds=True)
+   tm.sleep(3); log("SECOND_JUPYTER_SERVER",status="listening" if listening(8889) else "not_listening",pid=child.pid,returncode=child.poll())
+ except Exception as e: log("SECOND_JUPYTER_SERVER",status="failed",error=type(e).__name__,detail=str(e)[:160])
+else: log("SECOND_JUPYTER_SERVER",status="not_started",reason="server_process_not_found")
 try:
-    with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=2):
-        _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=True)
-except OSError as _wvm_exc:
-    _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
-             error=type(_wvm_exc).__name__ + ": " + str(_wvm_exc))
-
-# Clone the discovered Jupyter server on 8889 without stopping 8888.
-if _wvm_jupyter_args:
-    try:
-        _wvm_new_args = list(_wvm_jupyter_args)
-        _wvm_flags = ("--ServerApp.port", "--NotebookApp.port", "--port")
-        for _wvm_i, _wvm_a in enumerate(_wvm_new_args):
-            if any(_wvm_a.startswith(_f + "=") for _f in _wvm_flags):
-                _wvm_new_args[_wvm_i] = _wvm_a.split("=", 1)[0] + "=8889"
-            elif _wvm_a in _wvm_flags and _wvm_i + 1 < len(_wvm_new_args):
-                _wvm_new_args[_wvm_i + 1] = "8889"
-        if not any(any(_a.startswith(_f + "=") for _f in _wvm_flags) for _a in _wvm_new_args):
-            _wvm_new_args.append("--ServerApp.port=8889")
-        _wvm_new_args += ["--ServerApp.open_browser=False",
-                          "--ServerApp.runtime_dir=/tmp/webvm-jupyter-8889-runtime"]
-        try:
-            with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=1):
-                _wvm_log("SECOND_JUPYTER_SERVER", status="already_listening")
-        except OSError:
-            _wvm_child = _wvm_subprocess.Popen(
-                _wvm_new_args, stdin=_wvm_subprocess.DEVNULL,
-                stdout=_wvm_subprocess.DEVNULL, stderr=_wvm_subprocess.DEVNULL,
-                start_new_session=True, close_fds=True)
-            _wvm_time.sleep(3)
-            try:
-                with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=1):
-                    _wvm_log("SECOND_JUPYTER_SERVER", status="listening", pid=_wvm_child.pid)
-            except OSError:
-                _wvm_log("SECOND_JUPYTER_SERVER", status="not_listening",
-                         pid=_wvm_child.pid, returncode=_wvm_child.poll())
-    except Exception as _wvm_exc:
-        _wvm_log("SECOND_JUPYTER_SERVER", status="failed",
-                 error=type(_wvm_exc).__name__, detail=str(_wvm_exc)[:180])
-else:
-    _wvm_log("SECOND_JUPYTER_SERVER", status="not_started", reason="server_process_not_found")
-
-# Verify GPU health in this GPU-enabled diagnostic kernel after the local-only fallback.
-try:
-    _wvm_torch = __import__("torch")
-    _wvm_cuda_available = bool(_wvm_torch.cuda.is_available())
-    _wvm_gpu_report = {
-        "torch_version": str(_wvm_torch.__version__),
-        "cuda_available": _wvm_cuda_available,
-        "device_count": int(_wvm_torch.cuda.device_count()),
-    }
-    if _wvm_cuda_available:
-        _wvm_props = _wvm_torch.cuda.get_device_properties(0)
-        _wvm_gpu_report["device_name"] = str(_wvm_torch.cuda.get_device_name(0))
-        _wvm_gpu_report["vram_gib"] = round(_wvm_props.total_memory / (1024 ** 3), 2)
-        _wvm_x = _wvm_torch.randn((256, 256), device="cuda")
-        _wvm_y = _wvm_x @ _wvm_x
-        _wvm_torch.cuda.synchronize()
-        _wvm_gpu_report["matrix_test"] = "PASS"
-        _wvm_gpu_report["matrix_shape"] = list(_wvm_y.shape)
-    else:
-        _wvm_gpu_report["matrix_test"] = "SKIPPED_NO_CUDA"
-    _wvm_log("GPU_HEALTH_CHECK", **_wvm_gpu_report)
-except Exception as _wvm_gpu_exc:
-    _wvm_log("GPU_HEALTH_CHECK", result="ERROR",
-             error_type=type(_wvm_gpu_exc).__name__)
+ t=__import__("torch"); ok=bool(t.cuda.is_available()); d={"torch_version":str(t.__version__),"cuda_available":ok,"device_count":int(t.cuda.device_count())}
+ if ok:
+  p=t.cuda.get_device_properties(0); d.update(device_name=str(t.cuda.get_device_name(0)),vram_gib=round(p.total_memory/1073741824,2))
+  x=t.randn((256,256),device="cuda"); y=x@x; t.cuda.synchronize(); d.update(matrix_test="PASS",matrix_shape=list(y.shape))
+ else: d["matrix_test"]="SKIPPED_NO_CUDA"
+ log("GPU_HEALTH_CHECK",**d)
+except Exception as e: log("GPU_HEALTH_CHECK",result="ERROR",error_type=type(e).__name__,detail=str(e)[:160])
 '''
 
 KERNEL_SLUG = "automated-gpu-test"
