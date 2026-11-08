@@ -874,9 +874,26 @@ def run_io_loop_proof():
     ]
     print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
         USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
-    run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
-    print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
-          flush=True)
+    import fcntl
+    command_lock_path = target_dir / "rx_tx_kernel.lock"
+    command_lock_path.touch(exist_ok=True)
+
+    def _run_initial_rx_tx_proof():
+        with open(command_lock_path, "r+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+                print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
+                      flush=True)
+            except Exception as exc:
+                print("RX_TX_INITIAL_PROOF_FAILED error={}: {}".format(
+                    type(exc).__name__, str(exc)[:300]), flush=True)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    threading.Thread(target=_run_initial_rx_tx_proof,
+                     name="webvm-initial-rx-tx-proof", daemon=True).start()
+    print("RX_TX_INITIAL_PROOF_BACKGROUND_STARTED command_channel=available", flush=True)
 
     # Local telnet-style terminal: each command is carried through the same
     # Kaggle RX dataset -> notebook agent -> TX output artifact channel.
