@@ -547,6 +547,7 @@ main()
         startup_started = time.monotonic()
         startup_deadline = startup_started + 300
         last_status_text = ""
+        diagnostic_listener_running = False
         while time.monotonic() < startup_deadline:
             try:
                 status_result = command(
@@ -598,16 +599,28 @@ main()
                               output_tail=safe_text(output_result.stdout)[-1000:])
                 return
             if active_state and time.monotonic() - startup_started >= 35:
+                if args.serve_tcp_link and not args.use_existing_tailscale_bridge:
+                    # The plain listener writes a status artifact immediately.
+                    # Fetch it even while the kernel remains active so the
+                    # diagnostic records READY and host capability facts.
+                    diagnostic_listener_running = True
+                    log.event("TCP_LINK_DIAGNOSTIC_RUNNING_FETCH_ARTIFACT",
+                              kernel_id=args.kernel_id,
+                              waited_seconds=round(time.monotonic() - startup_started, 1))
+                    print("TCP_LINK_DIAGNOSTIC_RUNNING_FETCH_ARTIFACT kernel_id=" +
+                          args.kernel_id, flush=True)
+                    break
                 log.event("TCP_LINK_KERNEL_RUNNING", kernel_id=args.kernel_id,
                           waited_seconds=round(time.monotonic() - startup_started, 1),
                           status_shape="active")
                 print("TCP_LINK_KERNEL_RUNNING kernel_id=" + args.kernel_id, flush=True)
                 return
             time.sleep(5)
-        log.event("TCP_LINK_STARTUP_PENDING", kernel_id=args.kernel_id,
-                  waited_seconds=round(time.monotonic() - startup_started, 1),
-                  status_tail=last_status_text[-300:])
-        print("TCP_LINK_STARTUP_PENDING kernel_id=" + args.kernel_id, flush=True)
+        if not diagnostic_listener_running:
+            log.event("TCP_LINK_STARTUP_PENDING", kernel_id=args.kernel_id,
+                      waited_seconds=round(time.monotonic() - startup_started, 1),
+                      status_tail=last_status_text[-300:])
+            print("TCP_LINK_STARTUP_PENDING kernel_id=" + args.kernel_id, flush=True)
 
         # Status polling can time out while Kaggle's output API is still usable.
         # Make one best-effort artifact request so an already-finished notebook
