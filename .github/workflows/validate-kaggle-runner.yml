@@ -33,8 +33,8 @@ jobs:
             examples/python3/gpu_test.py \
             examples/python3/kaggle_io_loop/controller.py \
             examples/python3/kaggle_io_loop/agent.py \
-            examples/python3/kaggle_io_loop/tcp_socks5.py \\
-            examples/python3/kaggle_io_loop/terminal_service.py \\
+            examples/python3/kaggle_io_loop/tcp_socks5.py \
+            examples/python3/kaggle_io_loop/terminal_service.py \
             examples/python3/kaggle_io_loop/remote_shell.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
