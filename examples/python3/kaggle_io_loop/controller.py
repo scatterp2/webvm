@@ -478,6 +478,25 @@ def main():
                       kernel_id=args.kernel_id,
                       output_exit_code=output_result.returncode,
                       output_tail=safe_text(output_result.stdout)[-1000:])
+            # Kaggle may return the notebook log even when no JSON output was
+            # saved. Extract only bounded, relevant diagnostic lines from it.
+            log_files = sorted(path for path in status_dir.rglob("*.log") if path.is_file())
+            for log_path in log_files[-2:]:
+                try:
+                    log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    continue
+                relevant = []
+                for line in log_lines:
+                    if re.search(r"(WEBVM_TCP_LINK|AUTH_KEY_MISSING|tailscale up failed|Traceback|RuntimeError|Exception|Error:|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|TCP_LINK)", line, re.I):
+                        safe_line = safe_text(line)
+                        safe_line = re.sub(r"tskey-auth-[A-Za-z0-9_-]+", "[REDACTED]", safe_line)
+                        relevant.append(safe_line[-1000:])
+                log.event("TCP_LINK_KERNEL_LOG_DIAGNOSTICS",
+                          kernel_id=args.kernel_id, log_file=log_path.name,
+                          selected_line_count=len(relevant), lines=relevant[-35:])
+                for safe_line in relevant[-35:]:
+                    print("TCP_LINK_KERNEL_LOG " + safe_line, flush=True)
             return
         try:
             status_doc = json.loads(status_files[0].read_text(encoding="utf-8"))
