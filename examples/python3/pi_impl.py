@@ -924,7 +924,6 @@ def run_io_loop_proof():
         "--timeout-seconds", "900",
         "--poll-seconds", "10",
         "--serve-tcp-link",
-        "--use-existing-tailscale-bridge",
     ]
     print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
         USERNAME + "/webvm-tcp-link"), flush=True)
