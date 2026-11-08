@@ -1,46 +1,72 @@
 #!/usr/bin/env python3
-"""Remote probe executed through the WebVM -> Kaggle RX/TX command envelope.
+"""Bounded network probe executed through the WebVM -> Kaggle RX/TX envelope.
 
-This intentionally avoids changing firewall rules or touching Jupyter. It reports
-whether Kaggle can reach the public network and the WebVM-side proxy endpoint.
+Every DNS/connection check runs in a child process with a hard wall-clock limit,
+so a resolver stall cannot block the RX/TX acknowledgement. This does not change
+firewall rules or touch Jupyter.
 """
-import json, os, socket, shutil, subprocess, sys, time
+import json, os, subprocess, sys, time
+
+PROBE_CODE = r"""
+import json, socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+addresses = sorted({item[4][0] for item in socket.getaddrinfo(
+    host, port, type=socket.SOCK_STREAM
+)})
+with socket.create_connection((host, port), timeout=2):
+    pass
+print(json.dumps({"dns": True, "address_count": len(addresses), "tcp": True}))
+"""
+
+HTTPS_CODE = r"""
+import json
 from urllib.request import urlopen, Request
+req = Request("https://example.com/", headers={"User-Agent": "webvm-rx-tx-probe/1"})
+with urlopen(req, timeout=3) as response:
+    print(json.dumps({"ok": True, "status": response.status,
+                      "bytes": len(response.read(256))}))
+"""
+
+def run_bounded(code, args, timeout):
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", code, *args],
+            capture_output=True, text=True, timeout=timeout, check=False
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": "ProbeFailed",
+                    "detail": (result.stderr or "")[-180:]}
+        try:
+            return json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"ok": False, "error": "InvalidProbeOutput"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "ProbeTimeout"}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:160]}
 
 def probe_host(host, port=443):
+    result = run_bounded(PROBE_CODE, [host, str(port)], 5)
     row = {"host": host, "port": port}
-    try:
-        addrs = sorted({x[4][0] for x in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
-        row["dns"] = True
-        row["address_count"] = len(addrs)
-    except Exception as exc:
-        row.update(dns=False, error=type(exc).__name__ + ": " + str(exc)[:180])
-        return row
-    try:
-        with socket.create_connection((host, port), timeout=4):
-            row["tcp"] = True
-    except Exception as exc:
-        row.update(tcp=False, tcp_error=type(exc).__name__ + ": " + str(exc)[:180])
-        return row
-    row["tcp"] = True
+    if result.get("ok") is False:
+        row.update(dns_or_tcp=False, error=result.get("error", "ProbeFailed"))
+        if result.get("detail"):
+            row["detail"] = result["detail"]
+    else:
+        row.update(result)
     return row
 
 report = {
-    "probe": "webvm-rx-tx-remote-probe-v1",
+    "probe": "webvm-rx-tx-remote-probe-v2",
     "time": time.time(),
-    "hostname": socket.gethostname(),
+    "hostname": os.uname().nodename if hasattr(os, "uname") else None,
     "uid": os.geteuid() if hasattr(os, "geteuid") else None,
-    "network": [probe_host(h) for h in (
+    "network": [probe_host(host) for host in (
         "raw.githubusercontent.com", "api.kaggle.com",
         "kkb-production.jupyter-proxy.kaggle.net", "pste.us"
     )],
     "jupyter_8888_untouched": True,
     "firewall_changed": False,
 }
-try:
-    req = Request("https://example.com/", headers={"User-Agent": "webvm-rx-tx-probe/1"})
-    with urlopen(req, timeout=6) as r:
-        report["https_example"] = {"ok": True, "status": r.status, "bytes": len(r.read(256))}
-except Exception as exc:
-    report["https_example"] = {"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:200]}
+report["https_example"] = run_bounded(HTTPS_CODE, [], 7)
 print("REMOTE_PROBE_RESULT " + json.dumps(report, sort_keys=True), flush=True)
