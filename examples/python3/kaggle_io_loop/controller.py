@@ -55,16 +55,55 @@ if base_url:
 else:
     _proxy_log("JUPYTER_BASE_URL_NOT_FOUND", checked_pid_12=True, proc_scan=True)
 
-source_ip_configured = bool(os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip())
-_proxy_log("NAT_RULE_NOT_USED", source_ip_configured=source_ip_configured,
-           note="The TCP link uses authenticated Tailscale Serve; no PREROUTING redirect is required")
+# Probe the namespace before attempting any transparent interception. Do not
+# mutate firewall rules automatically: Kaggle may proxy browser traffic outside
+# this namespace, and a broad redirect could break Jupyter.
+def _probe_command(argv):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=3)
+        return {"available": True, "returncode": result.returncode,
+                "output": (result.stdout or "")[-1600:],
+                "error": (result.stderr or "")[-800:]}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"available": False, "error": type(exc).__name__ + ": " + str(exc)[:300]}
 
+_cap_eff = None
 try:
-    with socket.create_connection(("127.0.0.1", 8889), timeout=2):
-        _proxy_log("LOCAL_TARGET_LISTENER", port=8889, listening=True)
-except OSError as exc:
-    _proxy_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
-               error=type(exc).__name__ + ": " + str(exc))
+    with open("/proc/self/status", "r", encoding="utf-8") as _f:
+        for _line in _f:
+            if _line.startswith("CapEff:"):
+                _cap_eff = _line.split(":", 1)[1].strip()
+                break
+except OSError:
+    pass
+try:
+    _jupyter_sock = socket.create_connection(("127.0.0.1", 8888), timeout=1)
+    _jupyter_sock.close()
+    _jupyter_listening = True
+except OSError:
+    _jupyter_listening = False
+
+_iptables = shutil.which("iptables")
+_proxy_log("INTERCEPT_CAPABILITY_PROBE",
+           uid=os.geteuid(), cap_eff=_cap_eff,
+           jupyter_port_8888_listening=_jupyter_listening,
+           iptables_binary=bool(_iptables),
+           nat_prerouting=_probe_command([_iptables, "-t", "nat", "-S", "PREROUTING"]) if _iptables else {"available": False},
+           nat_output=_probe_command([_iptables, "-t", "nat", "-S", "OUTPUT"]) if _iptables else {"available": False},
+           route_table=_probe_command(["ip", "route", "show"]) if shutil.which("ip") else {"available": False},
+           ss_listeners=_probe_command(["ss", "-ltnp"]) if shutil.which("ss") else {"available": False})
+
+source_ip_configured = bool(os.environ.get("WEBVM_PROXY_SOURCE_IP", "").strip())
+_proxy_log("NAT_INTERCEPT_NOT_CONFIGURED", source_ip_configured=source_ip_configured,
+           note="No firewall rules changed. First establish whether packets traverse this namespace and whether CAP_NET_ADMIN is available.")
+
+for _port in (8888, 8889):
+    try:
+        with socket.create_connection(("127.0.0.1", _port), timeout=1):
+            _proxy_log("LOCAL_PORT_PROBE", port=_port, listening=True)
+    except OSError as exc:
+        _proxy_log("LOCAL_PORT_PROBE", port=_port, listening=False,
+                   error=type(exc).__name__ + ": " + str(exc)[:200])
 '''
 
 def now():
