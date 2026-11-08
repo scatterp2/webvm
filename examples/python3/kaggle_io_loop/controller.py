@@ -251,17 +251,21 @@ def main():
     log.event("RUN_BEGIN", dataset_id=args.dataset_id, kernel_id=args.kernel_id,
               timeout_seconds=args.timeout_seconds, poll_seconds=args.poll_seconds)
     if args.serve_tcp_link and not args.prepare_only:
-        existing = command(log, ["kaggle", "kernels", "status", args.kernel_id],
-                           timeout=60, check=False)
-        existing_text = (existing.stdout or "").upper()
-        active_state = any(state in existing_text for state in
-                           ("RUNNING", "QUEUED", "PENDING", "INITIALIZING", "SUBMITTED"))
-        if existing.returncode == 0 and active_state:
-            log.event("TCP_LINK_ALREADY_RUNNING", kernel_id=args.kernel_id,
-                      status_shape="active",
-                      note="Keeping the existing queued or running TCP link; not pushing another version")
-            print("TCP_LINK_ALREADY_RUNNING kernel_id=" + args.kernel_id, flush=True)
-            return
+        # A reset is an explicit redeployment request. Never silently keep an
+        # older active notebook version after changing the transport port or
+        # bridge code. Status is diagnostic only; a transient status timeout
+        # must not prevent the intended new version from being pushed.
+        try:
+            existing = command(log, ["kaggle", "kernels", "status", args.kernel_id],
+                               timeout=20, check=False)
+            log.event("TCP_LINK_PREDEPLOY_STATUS",
+                      kernel_id=args.kernel_id,
+                      exit_code=existing.returncode,
+                      status_tail=safe_text(existing.stdout)[-500:])
+        except TimeoutError as exc:
+            log.event("TCP_LINK_PREDEPLOY_STATUS_UNKNOWN",
+                      kernel_id=args.kernel_id, error=str(exc)[:500],
+                      note="Continuing with the explicit deployment request")
     if args.serve_tcp_link:
         message = None
         agent_source = ""
