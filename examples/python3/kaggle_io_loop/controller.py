@@ -284,115 +284,14 @@ def main():
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
     if args.serve_tcp_link:
-        # Minimal port-connectivity milestone: no Tailscale binary, DNS download,
-        # or external service is required. Listen on a non-Jupyter port and
-        # prove a real TCP request/reply on that port before staying alive.
-        notebook_source = r'''import json, os, shutil, socket, socketserver, subprocess, threading, time
-from datetime import datetime, timezone
-from urllib.request import Request, urlopen
-
-HOST = "0.0.0.0"
-PORT = 8889
-TAG = "WEBVM_TCP_LINK"
-STATUS_PATH = "/kaggle/working/tcp_link_status.json"
-
-def emit(stage, **fields):
-    record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-              "stage": stage, **fields}
-    # Persist status when the runtime exposes Kaggle's working directory.
-    # Do not make outbound HTTP calls from the listener: that path is blocked or
-    # slow in this runtime and previously delayed each heartbeat by over a minute.
-    try:
-        os.makedirs(os.path.dirname(STATUS_PATH), exist_ok=True)
-        with open(STATUS_PATH + ".tmp", "w", encoding="utf-8") as status_file:
-            json.dump(record, status_file, sort_keys=True)
-        os.replace(STATUS_PATH + ".tmp", STATUS_PATH)
-    except Exception as exc:
-        print("WEBVM_TCP_LINK_STATUS_WRITE_UNAVAILABLE " + type(exc).__name__ + ": " + str(exc)[:180], flush=True)
-    print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
-
-class Handler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.request.settimeout(10)
-        data = self.request.recv(4096)
-        if not data:
-            return
-        reply = b"ACK:" + data
-        self.request.sendall(reply)
-        emit("TCP_ECHO_REQUEST", received_bytes=len(data), reply_bytes=len(reply),
-             payload=data[:128].decode("utf-8", "replace"))
-
-class Server(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
-    daemon_threads = True
-
-def probe(argv):
-    try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=3)
-        return {"available": True, "returncode": p.returncode,
-                "stdout": (p.stdout or "")[-1200:],
-                "stderr": (p.stderr or "")[-600:]}
-    except Exception as exc:
-        return {"available": False, "error": type(exc).__name__ + ": " + str(exc)[:250]}
-
-def main():
-    # Emit a minimal startup marker before any potentially slow host probes.
-    # This distinguishes "not scheduled" from "running but diagnostics slow".
-    emit("BOOT", uid=os.geteuid(), local_port=PORT, bind_host=HOST)
-    # Report identity and whether this sandbox exposes packet-interception
-    # capability. These are read-only probes; do not modify firewall rules.
-    try:
-        with open("/proc/self/status", encoding="utf-8") as f:
-            cap_eff = next((line.split(":", 1)[1].strip() for line in f
-                            if line.startswith("CapEff:")), None)
-    except OSError:
-        cap_eff = None
-    try:
-        local_ips = sorted({x[4][0] for x in socket.getaddrinfo(
-            socket.gethostname(), None, family=socket.AF_INET)})
-    except OSError:
-        local_ips = []
-    emit("HOST_CAPABILITY_DIAGNOSTICS",
-         uid=os.geteuid(), username=probe(["whoami"]),
-         sudo_list=probe(["sudo", "-n", "-l"]),
-         sudo_identity=probe(["sudo", "-n", "id"]),
-         cap_eff=cap_eff, local_ipv4=local_ips,
-         ip_addr=probe(["ip", "-brief", "address"]) if shutil.which("ip") else {"available": False},
-         ip_route=probe(["ip", "route", "show"]) if shutil.which("ip") else {"available": False},
-         iptables_binary=bool(shutil.which("iptables")),
-         iptables_nat_prerouting=probe(["iptables", "-t", "nat", "-S", "PREROUTING"]) if shutil.which("iptables") else {"available": False},
-         iptables_nat_output=probe(["iptables", "-t", "nat", "-S", "OUTPUT"]) if shutil.which("iptables") else {"available": False},
-         nft_binary=bool(shutil.which("nft")),
-         ss_listeners=probe(["ss", "-ltnp"]) if shutil.which("ss") else {"available": False})
-    server = Server((HOST, PORT), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    # Real client/server round trip against the listener, using TCP port 8889.
-    with socket.create_connection(("127.0.0.1", PORT), timeout=5) as client:
-        client.sendall(b"WEBVM_PORT_TEST_V1")
-        reply = client.recv(4096)
-    if reply != b"ACK:WEBVM_PORT_TEST_V1":
-        raise RuntimeError("TCP echo round-trip mismatch")
-    emit("TCP_LISTENER_SELF_TEST_PASS", bind_host=HOST, local_port=PORT,
-         client_host="127.0.0.1", exact_reply=reply.decode("ascii"))
-    emit("READY", transport="plain Python TCP echo listener; no Tailscale download",
-         local_port=PORT, bind_host=HOST, self_test="pass")
-    started = time.monotonic()
-    try:
-        # Keep this diagnostic iteration short so Kaggle publishes its status
-        # artifact and kernel log promptly even when status polling is sluggish.
-        while time.monotonic() - started < 180:
-            time.sleep(20)
-            emit("HEARTBEAT", uptime_seconds=round(time.monotonic() - started),
-                 local_port=PORT, listener_alive=thread.is_alive())
-        emit("STOPPING", uptime_seconds=round(time.monotonic() - started),
-             reason="3-minute diagnostic window complete")
-    finally:
-        server.shutdown()
-        server.server_close()
-
-main()
-'''
+        # Use the existing Tailscale bridge implementation unchanged. The WebVM
+        # client discovers this peer by hostname and connects on tailnet port
+        # 18088; a standalone 8889 listener would not create that route.
+        tcp_proxy_source = HERE / "tcp_socks5.py"
+        if not tcp_proxy_source.is_file():
+            raise FileNotFoundError("tcp_socks5.py is required for the live TCP bridge")
+        notebook_source = tcp_proxy_source.read_text(encoding="utf-8")
+        compile(notebook_source, str(tcp_proxy_source), "exec")
         compile(notebook_source, str(notebook_path), "exec")
     else:
         notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
