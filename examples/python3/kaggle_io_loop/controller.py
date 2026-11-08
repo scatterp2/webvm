@@ -326,20 +326,20 @@ def main():
         shell_anchor = '        ip_result = cli("ip", "-4", timeout=15)'
         if shell_anchor not in notebook_source:
             raise RuntimeError("Could not find the Tailscale startup point for the shell port")
-        notebook_source = shell_source + "\\n\\n" + notebook_source
+        notebook_source = shell_source + "\n\n" + notebook_source
         notebook_source = notebook_source.replace(
             shell_anchor,
-            '        shell_server = start_remote_shell(cli, _emit, _ThreadedServer)\\n\\n' + shell_anchor,
+            '        shell_server = start_remote_shell(cli, _emit, _ThreadedServer)\n\n' + shell_anchor,
             1,
         )
-        cleanup_anchor = '        try:\\n            if "server" in locals():'
+        cleanup_anchor = '        try:\n            if "server" in locals():'
         shell_cleanup = (
-            '        try:\\n'
-            '            if "shell_server" in locals():\\n'
-            '                shell_server.shutdown()\\n'
-            '                shell_server.server_close()\\n'
-            '        except Exception:\\n'
-            '            pass\\n'
+            '        try:\n'
+            '            if "shell_server" in locals():\n'
+            '                shell_server.shutdown()\n'
+            '                shell_server.server_close()\n'
+            '        except Exception:\n'
+            '            pass\n'
         )
         if cleanup_anchor not in notebook_source:
             raise RuntimeError("Could not find shell cleanup point")
