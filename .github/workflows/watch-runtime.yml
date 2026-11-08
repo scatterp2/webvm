@@ -111,7 +111,9 @@ jobs:
                       if event_time_match:
                           try:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
-                              if event_time < started_at:
+                              # Runtime feedback can arrive just after a previous watcher exits.
+                              # Recheck recent events for up to ten minutes, but ignore older runs.
+                              if event_time < started_at - __import__("datetime").timedelta(minutes=10):
                                   continue
                           except ValueError:
                               pass
@@ -123,7 +125,7 @@ jobs:
                           tcp_controller_seen = True
                           if tcp_controller_started_at is None:
                               tcp_controller_started_at = time.monotonic()
-                      if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)"|TCP_LINK_CONTROLLER_EXIT.*returncode=1|TCP_LINK_STATUS_ARTIFACT_MISSING|TCP_LINK_STARTUP_PENDING)', body, re.I):
+                      if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)"|TCP_LINK_CONTROLLER_EXIT.*returncode=1|TCP_LINK_STATUS_ARTIFACT_MISSING|TCP_LINK_KERNEL_LOG_DIAGNOSTICS)', body, re.I):
                           terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
                   if terminal_stage_seen:
