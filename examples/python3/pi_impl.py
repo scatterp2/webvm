@@ -867,7 +867,7 @@ def run_io_loop_proof():
     base = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("controller.py", "agent.py", "tcp_socks5.py"):
+    for filename in ("controller.py", "agent.py", "tcp_socks5.py", "remote_probe.py"):
         last_error = None
         for attempt in range(1, 11):
             try:
@@ -905,6 +905,7 @@ def run_io_loop_proof():
         "--work-dir", "/home/user/kaggle-io-loop-run",
         "--timeout-seconds", "900",
         "--poll-seconds", "10",
+        "--payload-file", str(target_dir / "remote_probe.py"),
     ]
     print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
         USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
