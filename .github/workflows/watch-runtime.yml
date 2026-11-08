@@ -107,7 +107,7 @@ jobs:
                           continue
                       if not re.search(marker, body, re.I):
                           continue
-                      event_time_match = re.search(r"^time=(\\d{4}-\\d\\d-\\d\\dT[^\\s]+)", body, re.M)
+                      event_time_match = re.search(r"^time=(\d{4}-\d\d-\d\dT[^\s]+)", body, re.M)
                       if event_time_match:
                           try:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
