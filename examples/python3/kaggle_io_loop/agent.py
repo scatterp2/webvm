@@ -138,15 +138,38 @@ def collect_network_diagnostics():
     except OSError:
         pass
 
+    # DNS resolution can block indefinitely in the notebook process on some
+    # restricted runtimes. Isolate each probe so the parent agent always reaches
+    # TX_WRITTEN and the RX/TX controller can observe a response.
+    probe_source = (
+        "import json,socket,sys; "
+        "host=sys.argv[1]; "
+        "addresses=sorted({x[4][0] for x in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)}); "
+        "conn=socket.create_connection((host,443),timeout=3); conn.close(); "
+        "print(json.dumps({'dns':True,'tcp':True,'address_count':len(addresses)}))"
+    )
     for host in ("kkb-production.jupyter-proxy.kaggle.net", "pste.us"):
         try:
-            addresses = sorted({item[4][0] for item in socket.getaddrinfo(
-                host, 443, type=socket.SOCK_STREAM
-            )})
-            with socket.create_connection((host, 443), timeout=3):
+            probe = subprocess.run(
+                [sys.executable, "-I", "-c", probe_source, host],
+                capture_output=True, text=True, timeout=6, check=False
+            )
+            if probe.returncode == 0:
+                try:
+                    report["outbound_tcp_443"][host] = json.loads(probe.stdout.strip())
+                except (ValueError, TypeError):
+                    report["outbound_tcp_443"][host] = {
+                        "error": "InvalidProbeOutput", "dns_or_tcp": False
+                    }
+            else:
                 report["outbound_tcp_443"][host] = {
-                    "dns": True, "tcp": True, "address_count": len(addresses)
+                    "error": "ProbeFailed", "dns_or_tcp": False,
+                    "detail": (probe.stderr or "")[-180:]
                 }
+        except subprocess.TimeoutExpired:
+            report["outbound_tcp_443"][host] = {
+                "error": "ProbeTimeout", "dns_or_tcp": False
+            }
         except Exception as exc:
             report["outbound_tcp_443"][host] = {
                 "error": type(exc).__name__, "dns_or_tcp": False
