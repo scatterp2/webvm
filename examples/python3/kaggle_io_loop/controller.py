@@ -379,14 +379,14 @@ def main():
          local_port=PORT, bind_host=HOST, self_test="pass")
     started = time.monotonic()
     try:
-        # Keep the listener available long enough for external diagnostics, but
-        # terminate cleanly so Kaggle publishes tcp_link_status.json and its log.
-        while time.monotonic() - started < 600:
+        # Keep this diagnostic iteration short so Kaggle publishes its status
+        # artifact and kernel log promptly even when status polling is sluggish.
+        while time.monotonic() - started < 180:
             time.sleep(20)
             emit("HEARTBEAT", uptime_seconds=round(time.monotonic() - started),
                  local_port=PORT, listener_alive=thread.is_alive())
         emit("STOPPING", uptime_seconds=round(time.monotonic() - started),
-             reason="10-minute diagnostic window complete")
+             reason="3-minute diagnostic window complete")
     finally:
         server.shutdown()
         server.server_close()
