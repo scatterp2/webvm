@@ -418,7 +418,7 @@ def main():
                 output_result = command(
                     log,
                     ["kaggle", "kernels", "output", args.kernel_id, "-p",
-                     str(status_dir), "-o", "--file-pattern", r"^tcp_link_status\.json$"],
+                 str(status_dir), "-o", "--file-pattern", r"^tcp_link_status\.json$"],
                     timeout=120, check=False)
                 status_files = sorted(
                     path for path in status_dir.rglob("tcp_link_status.json") if path.is_file())
