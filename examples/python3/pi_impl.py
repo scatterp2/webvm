@@ -7,6 +7,7 @@ import json
 import time
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 # ============================================================
@@ -972,8 +973,23 @@ def run_io_loop_proof():
     ]
     print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
         USERNAME + "/webvm-tcp-link"), flush=True)
-    run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
-    print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
+
+    # The TCP controller can take many minutes when Kaggle's status API stalls.
+    # Run it in the background so the RX/TX command channel starts immediately.
+    def _run_tcp_controller_background():
+        try:
+            run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
+            print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
+        except Exception as exc:
+            print("TCP_LINK_BACKGROUND_FAILED error={}: {}".format(
+                type(exc).__name__, str(exc)[:300]), flush=True)
+
+    threading.Thread(
+        target=_run_tcp_controller_background,
+        name="webvm-tcp-link-controller",
+        daemon=True,
+    ).start()
+    print("TCP_LINK_CONTROLLER_BACKGROUND_STARTED command_channel=unblocked", flush=True)
 
     # Keep a command channel alive for the lifetime of this WebVM process.
     # Editing remote_probe.py on GitHub delivers a new Python payload over RX/TX;
