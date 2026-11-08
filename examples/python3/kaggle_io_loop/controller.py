@@ -308,9 +308,9 @@ def emit(stage, **fields):
     except Exception as exc:
         print("WEBVM_TCP_LINK_STATUS_WRITE_UNAVAILABLE " + type(exc).__name__, flush=True)
     print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
-    body = (TAG + "\\nsource=WEBVM\\nstage=PI_TCP_LINK_" + stage+
-            "\\ntime=" + record["time"] + "\\n" +
-            json.dumps(fields, sort_keys=True) + "\\n")
+    body = (TAG + "\nsource=WEBVM\nstage=PI_TCP_LINK_" + stage+
+            "\ntime=" + record["time"] + "\n" +
+            json.dumps(fields, sort_keys=True) + "\n")
     # Retry telemetry once; Kaggle's first outbound request can fail during startup.
     for attempt in range(2):
         try:
