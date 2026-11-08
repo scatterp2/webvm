@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Controller for the Kaggle RX/TX proof and optional live Tailscale TCP link."""
-import argparse, hashlib, json, os, re, subprocess, sys, time
+import argparse, base64, hashlib, json, os, re, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -182,11 +182,11 @@ def command(logger, argv, *, timeout=120, check=False):
         raise TimeoutError("Kaggle read-only API command timed out in configured and proxy-bypass attempts: " + " ".join(argv))
     raise RuntimeError("Kaggle command failed without a result")
 
-def make_message():
+def make_message(payload=FIXED_PAYLOAD, message_type="echo"):
     # A per-run request ID proves the published Dataset version is current.
     request_id = "io-loop-proof-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     core = {"version": 1, "sequence": 1, "request_id": request_id,
-            "type": "echo", "payload_length": len(FIXED_PAYLOAD.encode("utf-8")), "payload": FIXED_PAYLOAD}
+            "type": message_type, "payload_length": len(payload.encode("utf-8")), "payload": payload}
     return {**core, "checksum": digest(core)}
 
 def make_notebook(agent_source):
@@ -217,9 +217,21 @@ def validate_output(path, message, logger):
         "request_id": response.get("request_id") == message["request_id"],
         "ack_state": response.get("ack_state") == "processed_once",
         "received_checksum": response.get("received_checksum") == message["checksum"],
-        "payload": response.get("payload") == "ACK:" + message["payload"],
+        "payload": (
+            response.get("payload") == "ACK:" + message["payload"]
+            if message["type"] == "echo"
+            else isinstance(response.get("payload"), str)
+                 and response.get("payload", "").startswith("EXEC:")
+                 and isinstance(response.get("execution"), dict)
+                 and response["execution"].get("sha256") == __import__("hashlib").sha256(
+                     base64.b64decode(message["payload"]).decode("utf-8").encode("utf-8")
+                 ).hexdigest()
+        ),
         "payload_length": response.get("payload_length") == len(response.get("payload", "").encode("utf-8")),
     }
+    if message["type"] == "python_b64":
+        checks["execution_succeeded"] = response.get("execution", {}).get("exit_code") == 0
+        checks["execution_not_timed_out"] = response.get("execution", {}).get("timed_out") is False
     logger.event("OUTPUT_VALIDATION", checks=checks, response=response)
     if not all(checks.values()):
         raise RuntimeError("TX response validation failed: " + repr(checks))
@@ -235,6 +247,7 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--poll-seconds", type=int, default=10)
     parser.add_argument("--prepare-only", action="store_true", help="Generate inputs/notebook and run local validation without Kaggle API calls")
+    parser.add_argument("--payload-file", type=Path, help="Transmit a Python script as a base64 RX payload and execute it in the Kaggle agent")
     parser.add_argument("--serve-tcp-link", action="store_true",
                         help="Submit a long-running plain Python TCP echo listener and return after submission")
     parser.add_argument("--use-existing-tailscale-bridge", action="store_true",
@@ -272,7 +285,22 @@ def main():
         message = None
         agent_source = ""
     else:
-        message = make_message()
+        if args.payload_file:
+            payload_bytes = args.payload_file.read_bytes()
+            if not payload_bytes or len(payload_bytes) > 65536:
+                parser.error("--payload-file must contain between 1 byte and 65536 bytes")
+            try:
+                payload_source = payload_bytes.decode("utf-8")
+                compile(payload_source, str(args.payload_file), "exec")
+            except (UnicodeDecodeError, SyntaxError) as exc:
+                parser.error("--payload-file must be valid UTF-8 Python source: " + str(exc))
+            payload = base64.b64encode(payload_bytes).decode("ascii")
+            message = make_message(payload, "python_b64")
+            log.event("PYTHON_PAYLOAD_ENCODED", path=str(args.payload_file),
+                      source_bytes=len(payload_bytes), encoded_bytes=len(payload),
+                      sha256=hashlib.sha256(payload_bytes).hexdigest())
+        else:
+            message = make_message()
         write_json(dataset_dir / "rx_message.json", message)
         write_json(dataset_dir / "dataset-metadata.json", {
             "title": "WebVM IO Loop RX", "id": args.dataset_id,
