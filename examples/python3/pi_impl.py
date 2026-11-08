@@ -832,7 +832,7 @@ def run_io_loop_proof():
     base = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("controller.py", "agent.py", "tcp_socks5.py", "remote_probe.py", "terminal_service.py"):
+    for filename in ("controller.py", "agent.py", "tcp_socks5.py", "remote_probe.py", "terminal_service.py", "remote_shell.py"):
         last_error = None
         for attempt in range(1, 11):
             try:
