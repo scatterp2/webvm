@@ -829,7 +829,7 @@ def verify_tcp_link_from_webvm():
         try:
             contents = env_file.read_text(encoding="utf-8")
             match = re.search(
-                r'^export WEBVM_KAGGLE_TCP_LINK_HTTP_PROXY="(http://[^"]+)",
+                r'WEBVM_KAGGLE_TCP_LINK_HTTP_PROXY="(http://[^"]+)"',
                 contents, re.M
             )
             if match:
