@@ -588,12 +588,14 @@ main()
                           consecutive_timeouts=consecutive_status_timeouts,
                           error=str(exc)[:500],
                           note="Will switch to artifact diagnostics after three consecutive status timeouts")
-                # The status endpoint can be unavailable while kernel output is
-                # still retrievable. Do not burn the full five-minute startup
-                # window repeatedly waiting on the same failing status request.
-                if consecutive_status_timeouts >= 3:
+                # A single full status timeout is enough evidence that this
+                # endpoint is unreliable. Try the independent output/artifact
+                # path immediately instead of spending another minute retrying
+                # the same endpoint before diagnostics.
+                if consecutive_status_timeouts >= 1:
                     log.event("TCP_LINK_STATUS_UNAVAILABLE_FALLBACK",
                               kernel_id=args.kernel_id, waited_seconds=waited,
+                              consecutive_timeouts=consecutive_status_timeouts,
                               action="try output artifact and notebook log diagnostics")
                     break
                 time.sleep(5)
