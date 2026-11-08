@@ -38,7 +38,7 @@ jobs:
           RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
-          WINDOW_SECONDS = 420
+          WINDOW_SECONDS = 780
 
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -54,7 +54,7 @@ jobs:
               return result.stdout
 
           print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
-          print(f"[{stamp()}] Polling pste.us recent-pastes page for up to {WINDOW_SECONDS}s", flush=True)
+          print(f"[{stamp()}] Polling pste.us recent-pastes page for up to {WINDOW_SECONDS}s; accepting direct or relayed Kaggle diagnostics", flush=True)
 
           while time.monotonic() - START < WINDOW_SECONDS:
               matches = 0
@@ -76,13 +76,24 @@ jobs:
                       if TAG not in body:
                           SEEN.add(pid)
                           continue
-                      if "source=KAGGLE" not in body or not any(marker in body for marker in GPU_MARKERS):
+                      has_gpu_diagnostic = any(marker in body for marker in GPU_MARKERS)
+                      source_kaggle = "source=KAGGLE" in body
+                      # Kaggle may be unable to resolve pste.us. In that case pi.py
+                      # can relay the authoritative Kaggle notebook log in a WebVM
+                      # snapshot. Require the collection boundary to reject wrapper-
+                      # only messages that merely mention GPU configuration.
+                      source_collected_logs = (
+                          "source=WEBVM" in body
+                          and "KAGGLE_DIAGNOSTICS_BEGIN" in body
+                      )
+                      if not has_gpu_diagnostic or not (source_kaggle or source_collected_logs):
                           SEEN.add(pid)
                           ignored += 1
                           print(f"[{stamp()}] NON_GPU_FEEDBACK_IGNORED id={pid}", flush=True)
                           continue
                       SEEN.add(pid)
-                      print(f"\n===== GPU_FEEDBACK_MATCH id={pid} =====", flush=True)
+                      source_kind = "KAGGLE" if source_kaggle else "WEBVM_COLLECTED_KAGGLE_LOGS"
+                      print(f"\n===== GPU_FEEDBACK_MATCH id={pid} source={source_kind} =====", flush=True)
                       print(body[-18000:], flush=True)
                       print("===== END_GPU_FEEDBACK_MATCH =====\n", flush=True)
                       matches += 1
