@@ -236,7 +236,7 @@ def main():
     parser.add_argument("--poll-seconds", type=int, default=10)
     parser.add_argument("--prepare-only", action="store_true", help="Generate inputs/notebook and run local validation without Kaggle API calls")
     parser.add_argument("--serve-tcp-link", action="store_true",
-                        help="Submit a long-running Tailscale-backed TCP/SOCKS5 service and return after submission")
+                        help="Submit a long-running plain Python TCP echo listener and return after submission")
     args = parser.parse_args()
     if not re.fullmatch(r"[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+", args.dataset_id):
         parser.error("invalid --dataset-id; expected owner/slug")
@@ -284,43 +284,78 @@ def main():
     notebook_path = kernel_dir / "io_loop_proof.ipynb"
     metadata_path = kernel_dir / "kernel-metadata.json"
     if args.serve_tcp_link:
-        service_path = HERE / "tcp_socks5.py"
-        if not service_path.is_file():
-            raise RuntimeError("TCP link service source is missing: " + str(service_path))
-        service_source = service_path.read_text(encoding="utf-8")
-        # Patch the fetched notebook source at submission time so transient
-        # Kaggle DNS failures do not abort the first Tailscale download attempt.
-        # Keep the auth-key source itself untouched.
-        old_download = '''    with urlopen(request, timeout=90) as response:
-        archive_bytes = response.read()
+        # Minimal port-connectivity milestone: no Tailscale binary, DNS download,
+        # or external service is required. Listen on a non-Jupyter port and
+        # prove a real TCP request/reply on that port before staying alive.
+        notebook_source = r'''import json, socket, socketserver, threading, time
+from datetime import datetime, timezone
+from urllib.request import Request, urlopen
+
+HOST = "0.0.0.0"
+PORT = 8889
+TAG = "WEBVM_TCP_LINK"
+
+def emit(stage, **fields):
+    record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              "stage": stage, **fields}
+    print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
+    body = (TAG + "\\nsource=WEBVM\\nstage=PI_TCP_LINK_" + stage +
+            "\\ntime=" + record["time"] + "\\n" +
+            json.dumps(fields, sort_keys=True) + "\\n")
+    try:
+        payload = json.dumps({"content": body[:8000], "language": "text",
+                              "expires_in": "1h"}).encode("utf-8")
+        req = Request("https://pste.us/api/v1/pastes", data=payload,
+                      headers={"Content-Type": "application/json",
+                               "Accept": "application/json",
+                               "User-Agent": "webvm-kaggle-port-listener/1.0"},
+                      method="POST")
+        with urlopen(req, timeout=4) as response:
+            response.read(512)
+    except Exception as exc:
+        print("WEBVM_TCP_LINK_TELEMETRY_UNAVAILABLE " + type(exc).__name__, flush=True)
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(10)
+        data = self.request.recv(4096)
+        if not data:
+            return
+        reply = b"ACK:" + data
+        self.request.sendall(reply)
+        emit("TCP_ECHO_REQUEST", received_bytes=len(data), reply_bytes=len(reply),
+             payload=data[:128].decode("utf-8", "replace"))
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+def main():
+    server = Server((HOST, PORT), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    # Real client/server round trip against the listener, using TCP port 8889.
+    with socket.create_connection(("127.0.0.1", PORT), timeout=5) as client:
+        client.sendall(b"WEBVM_PORT_TEST_V1")
+        reply = client.recv(4096)
+    if reply != b"ACK:WEBVM_PORT_TEST_V1":
+        raise RuntimeError("TCP echo round-trip mismatch")
+    emit("TCP_LISTENER_SELF_TEST_PASS", bind_host=HOST, local_port=PORT,
+         client_host="127.0.0.1", exact_reply=reply.decode("ascii"))
+    emit("READY", transport="plain Python TCP echo listener; no Tailscale download",
+         local_port=PORT, bind_host=HOST, self_test="pass")
+    try:
+        while True:
+            time.sleep(20)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+main()
 '''
-        retry_download = '''    archive_bytes = None
-    last_download_error = None
-    for attempt in range(1, 7):
-        try:
-            with urlopen(request, timeout=45) as response:
-                archive_bytes = response.read()
-            _emit("INSTALL_DOWNLOAD_COMPLETE", attempt=attempt, bytes=len(archive_bytes))
-            break
-        except Exception as exc:
-            last_download_error = exc
-            _emit("INSTALL_DOWNLOAD_RETRY", attempt=attempt, max_attempts=6,
-                  error_type=type(exc).__name__, message=str(exc)[:300])
-            if attempt < 6:
-                time.sleep(min(10 * attempt, 45))
-    if archive_bytes is None:
-        raise RuntimeError("Tailscale archive download failed after 6 attempts: "
-                           + type(last_download_error).__name__ + ": "
-                           + str(last_download_error)[:500])
-'''
-        if old_download not in service_source:
-            raise RuntimeError("Tailscale installer download block did not match; refusing to submit an unpatched notebook")
-        service_source = service_source.replace(old_download, retry_download, 1)
-        print("TCP_LINK_INSTALL_RETRY_PATCH_APPLIED attempts=6", flush=True)
-        compile(service_source, str(service_path), "exec")
-        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + service_source
+        compile(notebook_source, str(notebook_path), "exec")
     else:
-        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + agent_source
+        notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\\n\\n" + agent_source
     compile(notebook_source, str(notebook_path), "exec")
     write_json(notebook_path, make_notebook(notebook_source))
     write_json(metadata_path, {
@@ -331,7 +366,7 @@ def main():
     })
     if args.serve_tcp_link:
         log.event("POC_FILES_WRITTEN", notebook_bytes=notebook_path.stat().st_size,
-                  service="tailscale-serve-tcp-to-http-connect-socks5")
+                  service="plain-python-tcp-echo-listener")
     else:
         log.event("POC_FILES_WRITTEN", rx_bytes=(dataset_dir / "rx_message.json").stat().st_size,
                   notebook_bytes=notebook_path.stat().st_size, payload=message["payload"],
