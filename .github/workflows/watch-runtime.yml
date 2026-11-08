@@ -113,7 +113,7 @@ jobs:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
                               # Runtime feedback can arrive just after a previous watcher exits.
                               # Recheck recent events for up to ten minutes, but ignore older runs.
-                              if event_time < started_at - __import__("datetime").timedelta(minutes=2):
+                              if event_time < started_at - __import__("datetime").timedelta(minutes=10):
                                   continue
                           except ValueError:
                               pass
@@ -130,9 +130,6 @@ jobs:
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
                   if terminal_stage_seen:
                       print("WATCH_EARLY_STOP terminal TCP link status found", flush=True)
-                      break
-                  if tcp_controller_seen and tcp_controller_started_at is not None and time.monotonic() - tcp_controller_started_at >= 180:
-                      print("WATCH_EARLY_STOP TCP controller was observed for 180 seconds without a terminal status", flush=True)
                       break
               except Exception as e:
                   print("POLL_ERROR", repr(e), flush=True)
