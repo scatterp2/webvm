@@ -878,11 +878,15 @@ def run_io_loop_proof():
     command_lock_path = target_dir / "rx_tx_kernel.lock"
     command_lock_path.touch(exist_ok=True)
 
+    proof_finished = threading.Event()
+    proof_result = {"passed": False}
+
     def _run_initial_rx_tx_proof():
         with open(command_lock_path, "r+") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
                 run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+                proof_result["passed"] = True
                 print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
                       flush=True)
             except Exception as exc:
@@ -890,6 +894,7 @@ def run_io_loop_proof():
                     type(exc).__name__, str(exc)[:300]), flush=True)
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                proof_finished.set()
 
     threading.Thread(target=_run_initial_rx_tx_proof,
                      name="webvm-initial-rx-tx-proof", daemon=True).start()
@@ -1005,6 +1010,15 @@ def run_io_loop_proof():
     # The TCP controller can take many minutes when Kaggle's status API stalls.
     # Run it in the background so the RX/TX command channel starts immediately.
     def _run_tcp_controller_background():
+        # Do not launch a second Kaggle CPU session while the RX/TX proof is
+        # still publishing and validating its own kernel. This also prevents
+        # a rejected proof push from being obscured by a concurrent bridge push.
+        if not proof_finished.wait(timeout=1210):
+            print("TCP_LINK_START_SKIPPED reason=initial RX_TX proof did not finish", flush=True)
+            return
+        if not proof_result["passed"]:
+            print("TCP_LINK_START_SKIPPED reason=initial RX_TX proof failed", flush=True)
+            return
         try:
             run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
             print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
