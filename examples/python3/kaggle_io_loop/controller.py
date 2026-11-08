@@ -375,6 +375,7 @@ def main():
             raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
     command(log, ["kaggle", "kernels", "push", "-p", str(kernel_dir)], timeout=300, check=True)
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
+    submitted_at = datetime.now(timezone.utc)
     if args.serve_tcp_link:
         log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
                   service="tailscale-serve-tcp-to-http-connect-socks5", local_port=8889,
@@ -449,6 +450,53 @@ def main():
                   waited_seconds=round(time.monotonic() - startup_started, 1),
                   status_tail=last_status_text[-300:])
         print("TCP_LINK_STARTUP_PENDING kernel_id=" + args.kernel_id, flush=True)
+
+        # Status polling can time out while Kaggle's output API is still usable.
+        # Make one best-effort artifact request so an already-finished notebook
+        # can report AUTH_KEY_MISSING or FAILED instead of leaving us guessing.
+        status_dir = output_dir / "tcp_link_status_pending"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        for stale_status in status_dir.rglob("tcp_link_status.json"):
+            try:
+                stale_status.unlink()
+            except OSError:
+                pass
+        try:
+            output_result = command(
+                log,
+                ["kaggle", "kernels", "output", args.kernel_id, "-p",
+                 str(status_dir), "-o", "--file-pattern", r"^tcp_link_status\\.json$"],
+                timeout=45, check=False)
+        except TimeoutError as exc:
+            log.event("TCP_LINK_PENDING_ARTIFACT_TIMEOUT",
+                      kernel_id=args.kernel_id, error=str(exc)[:500])
+            return
+        status_files = sorted(
+            path for path in status_dir.rglob("tcp_link_status.json") if path.is_file())
+        if not status_files:
+            log.event("TCP_LINK_PENDING_ARTIFACT_MISSING",
+                      kernel_id=args.kernel_id,
+                      output_exit_code=output_result.returncode,
+                      output_tail=safe_text(output_result.stdout)[-1000:])
+            return
+        try:
+            status_doc = json.loads(status_files[0].read_text(encoding="utf-8"))
+            status_time = datetime.fromisoformat(
+                str(status_doc.get("time", "")).replace("Z", "+00:00"))
+            if status_time < submitted_at:
+                log.event("TCP_LINK_PENDING_ARTIFACT_STALE",
+                          kernel_id=args.kernel_id,
+                          artifact_time=status_doc.get("time"),
+                          stage=status_doc.get("stage", "UNKNOWN"))
+                return
+            log.event("TCP_LINK_STARTUP_STATUS", kernel_id=args.kernel_id,
+                      status=status_doc.get("stage", "UNKNOWN"), details=status_doc,
+                      source="pending_state_artifact")
+            print("TCP_LINK_STARTUP_STATUS " +
+                  json.dumps(status_doc, sort_keys=True)[:2500], flush=True)
+        except (OSError, ValueError, TypeError) as exc:
+            log.event("TCP_LINK_STATUS_PARSE_ERROR",
+                      error=type(exc).__name__ + ": " + str(exc))
         return
     deadline, final_status = time.monotonic() + args.timeout_seconds, None
     while time.monotonic() < deadline:
