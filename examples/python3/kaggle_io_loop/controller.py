@@ -319,6 +319,31 @@ def main():
         if not tcp_proxy_source.is_file():
             raise FileNotFoundError("tcp_socks5.py is required for the live TCP bridge")
         notebook_source = tcp_proxy_source.read_text(encoding="utf-8")
+        remote_shell_source = HERE / "remote_shell.py"
+        if not remote_shell_source.is_file():
+            raise FileNotFoundError("remote_shell.py is required for the WebVM shell port")
+        shell_source = remote_shell_source.read_text(encoding="utf-8")
+        shell_anchor = '        ip_result = cli("ip", "-4", timeout=15)'
+        if shell_anchor not in notebook_source:
+            raise RuntimeError("Could not find the Tailscale startup point for the shell port")
+        notebook_source = shell_source + "\\n\\n" + notebook_source
+        notebook_source = notebook_source.replace(
+            shell_anchor,
+            '        shell_server = start_remote_shell(cli, _emit, _ThreadedServer)\\n\\n' + shell_anchor,
+            1,
+        )
+        cleanup_anchor = '        try:\\n            if "server" in locals():'
+        shell_cleanup = (
+            '        try:\\n'
+            '            if "shell_server" in locals():\\n'
+            '                shell_server.shutdown()\\n'
+            '                shell_server.server_close()\\n'
+            '        except Exception:\\n'
+            '            pass\\n'
+        )
+        if cleanup_anchor not in notebook_source:
+            raise RuntimeError("Could not find shell cleanup point")
+        notebook_source = notebook_source.replace(cleanup_anchor, shell_cleanup + cleanup_anchor, 1)
         if args.use_existing_tailscale_bridge:
             # Bound remote bridge lifetime to release limited Kaggle CPU slots.
             # SIGINT allows tcp_socks5.py to run its existing cleanup handlers.
