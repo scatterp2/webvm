@@ -573,19 +573,32 @@ main()
         startup_deadline = startup_started + 300
         last_status_text = ""
         diagnostic_listener_running = False
+        consecutive_status_timeouts = 0
         while time.monotonic() < startup_deadline:
             try:
                 status_result = command(
                     log, ["kaggle", "kernels", "status", args.kernel_id],
                     timeout=15, check=False)
             except TimeoutError as exc:
+                consecutive_status_timeouts += 1
+                waited = round(time.monotonic() - startup_started, 1)
                 log.event("TCP_LINK_STATUS_POLL_TIMEOUT",
                           kernel_id=args.kernel_id,
-                          waited_seconds=round(time.monotonic() - startup_started, 1),
+                          waited_seconds=waited,
+                          consecutive_timeouts=consecutive_status_timeouts,
                           error=str(exc)[:500],
-                          note="Retrying until the startup deadline instead of aborting the controller")
+                          note="Will switch to artifact diagnostics after three consecutive status timeouts")
+                # The status endpoint can be unavailable while kernel output is
+                # still retrievable. Do not burn the full five-minute startup
+                # window repeatedly waiting on the same failing status request.
+                if consecutive_status_timeouts >= 3:
+                    log.event("TCP_LINK_STATUS_UNAVAILABLE_FALLBACK",
+                              kernel_id=args.kernel_id, waited_seconds=waited,
+                              action="try output artifact and notebook log diagnostics")
+                    break
                 time.sleep(5)
                 continue
+            consecutive_status_timeouts = 0
             last_status_text = (status_result.stdout or "").upper()
             active_state = any(state in last_status_text for state in
                                ("RUNNING", "QUEUED", "PENDING", "INITIALIZING", "SUBMITTED"))
