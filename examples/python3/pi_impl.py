@@ -895,24 +895,22 @@ def run_io_loop_proof():
     env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
     env["HOME"] = str(HOME)
 
-    # The live RX/TX round-trip was already validated. Avoid repeating its
-    # several-minute Kaggle run on every reset; set WEBVM_RUN_RX_TX_PROOF=1
-    # only when a fresh data-loop diagnostic is actually needed.
-    if os.environ.get("WEBVM_RUN_RX_TX_PROOF", "").strip() == "1":
-        proof_command = [
-            sys.executable, str(target_dir / "controller.py"),
-            "--dataset-id", USERNAME + "/webvm-io-loop-rx",
-            "--kernel-id", USERNAME + "/webvm-io-loop-proof",
-            "--work-dir", "/home/user/kaggle-io-loop-run",
-            "--timeout-seconds", "900",
-            "--poll-seconds", "10",
-        ]
-        print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
-            USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
-        run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
-    else:
-        print("RX_TX_PROOF_SKIPPED already_validated=1 override=WEBVM_RUN_RX_TX_PROOF=1",
-              flush=True)
+    # Prove the API-mediated RX/TX round trip on this deployment before
+    # attempting any direct TCP or Tailscale transport. A historical pass is
+    # not evidence that the current runtime can communicate.
+    proof_command = [
+        sys.executable, str(target_dir / "controller.py"),
+        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--kernel-id", USERNAME + "/webvm-io-loop-proof",
+        "--work-dir", "/home/user/kaggle-io-loop-run",
+        "--timeout-seconds", "900",
+        "--poll-seconds", "10",
+    ]
+    print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
+        USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
+    run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+    print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
+          flush=True)
 
     # Submit the existing long-running Tailscale bridge. Authentication is
     # handled inside that bridge; no auth material is sent through RX/TX.
