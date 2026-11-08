@@ -71,6 +71,26 @@ for _wvm_pid in _wvm_candidates:
     )
     if not _wvm_is_jupyter:
         continue
+    # Log the launch argv only after redacting proxy routes and secret-bearing flags.
+    _wvm_safe_args = []
+    _wvm_redact_next = False
+    for _wvm_arg in _wvm_args:
+        _wvm_lower_arg = _wvm_arg.lower()
+        if _wvm_redact_next:
+            _wvm_safe_args.append("[REDACTED]")
+            _wvm_redact_next = False
+            continue
+        if any(_w in _wvm_lower_arg for _w in ("token", "password", "secret", "credential", "cookie", "auth", "api_key", "apikey", "base_url")):
+            if "=" in _wvm_arg:
+                _wvm_safe_args.append(_wvm_arg.split("=", 1)[0] + "=[REDACTED]")
+            else:
+                _wvm_safe_args.append(_wvm_arg)
+                _wvm_redact_next = True
+        elif "/proxy/" in _wvm_lower_arg or "/proxy?" in _wvm_lower_arg:
+            _wvm_safe_args.append("[REDACTED_PROXY_ROUTE]")
+        else:
+            _wvm_safe_args.append(_wvm_arg)
+    _wvm_log("JUPYTER_LAUNCH_ARGV_REDACTED", pid=_wvm_pid, argv=_wvm_safe_args)
     for _wvm_i, _wvm_arg in enumerate(_wvm_args):
         if _wvm_arg.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
             _wvm_base_url = _wvm_arg.split("=", 1)[1]
@@ -121,6 +141,31 @@ try:
 except OSError as _wvm_exc:
     _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
              error=type(_wvm_exc).__name__ + ": " + str(_wvm_exc))
+
+# Verify GPU health in this GPU-enabled diagnostic kernel without changing Jupyter.
+try:
+    _wvm_torch = __import__("torch")
+    _wvm_cuda_available = bool(_wvm_torch.cuda.is_available())
+    _wvm_gpu_report = {
+        "torch_version": str(_wvm_torch.__version__),
+        "cuda_available": _wvm_cuda_available,
+        "device_count": int(_wvm_torch.cuda.device_count()),
+    }
+    if _wvm_cuda_available:
+        _wvm_props = _wvm_torch.cuda.get_device_properties(0)
+        _wvm_gpu_report["device_name"] = str(_wvm_torch.cuda.get_device_name(0))
+        _wvm_gpu_report["vram_gib"] = round(_wvm_props.total_memory / (1024 ** 3), 2)
+        _wvm_x = _wvm_torch.randn((256, 256), device="cuda")
+        _wvm_y = _wvm_x @ _wvm_x
+        _wvm_torch.cuda.synchronize()
+        _wvm_gpu_report["matrix_test"] = "PASS"
+        _wvm_gpu_report["matrix_shape"] = list(_wvm_y.shape)
+    else:
+        _wvm_gpu_report["matrix_test"] = "SKIPPED_NO_CUDA"
+    _wvm_log("GPU_HEALTH_CHECK", **_wvm_gpu_report)
+except Exception as _wvm_gpu_exc:
+    _wvm_log("GPU_HEALTH_CHECK", result="ERROR",
+             error_type=type(_wvm_gpu_exc).__name__)
 '''
 
 KERNEL_SLUG = "automated-gpu-test"
