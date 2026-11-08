@@ -44,6 +44,7 @@ import re as _wvm_re
 import shutil as _wvm_shutil
 import socket as _wvm_socket
 import subprocess as _wvm_subprocess
+import time as _wvm_time
 
 def _wvm_log(event, **fields):
     print("WEBVM_PROXY_DIAGNOSTIC " + __import__("json").dumps(
@@ -56,6 +57,7 @@ def _wvm_cmdline(pid):
 
 _wvm_base_url = None
 _wvm_server_pid = None
+_wvm_jupyter_args = None
 _wvm_candidates = [12]
 _wvm_candidates += [
     int(_p.split("/")[2]) for _p in _wvm_glob.glob("/proc/[0-9]*/cmdline")
@@ -72,6 +74,12 @@ for _wvm_pid in _wvm_candidates:
     )
     if not _wvm_is_jupyter:
         continue
+    if _wvm_jupyter_args is None and any(
+        "jupyter-server" in _a.lower() or "jupyter server" in _a.lower()
+        or "notebookapp" in _a.lower() or "serverapp" in _a.lower()
+        for _a in _wvm_args
+    ):
+        _wvm_jupyter_args = list(_wvm_args)
     # Log the launch argv only after redacting proxy routes and secret-bearing flags.
     _wvm_safe_args = []
     _wvm_redact_next = False
@@ -143,7 +151,72 @@ except OSError as _wvm_exc:
     _wvm_log("LOCAL_TARGET_LISTENER", port=8889, listening=False,
              error=type(_wvm_exc).__name__ + ": " + str(_wvm_exc))
 
-# Verify GPU health in this GPU-enabled diagnostic kernel without changing Jupyter.
+# Fallback: clone the live Jupyter server on 8889 without stopping or editing 8888.
+# This is intentionally local-only; NAT redirection is a separate, source-guarded step.
+if _wvm_jupyter_args:
+    try:
+        import pathlib as _wvm_pathlib
+        _wvm_runtime_dir = "/tmp/webvm-jupyter-8889-runtime"
+        _wvm_pathlib.Path(_wvm_runtime_dir).mkdir(parents=True, exist_ok=True)
+        _wvm_new_args = list(_wvm_jupyter_args)
+        _wvm_port_flags = ("--ServerApp.port", "--NotebookApp.port", "--port")
+        _wvm_port_replaced = False
+        _wvm_i = 0
+        while _wvm_i < len(_wvm_new_args):
+            _wvm_arg = _wvm_new_args[_wvm_i]
+            if any(_wvm_arg.startswith(_f + "=") for _f in _wvm_port_flags):
+                _wvm_new_args[_wvm_i] = _wvm_arg.split("=", 1)[0] + "=8889"
+                _wvm_port_replaced = True
+            elif _wvm_arg in _wvm_port_flags and _wvm_i + 1 < len(_wvm_new_args):
+                _wvm_new_args[_wvm_i + 1] = "8889"
+                _wvm_port_replaced = True
+                _wvm_i += 1
+            _wvm_i += 1
+        if not _wvm_port_replaced:
+            _wvm_new_args.append("--ServerApp.port=8889")
+        _wvm_new_args.extend([
+            "--ServerApp.open_browser=False",
+            "--ServerApp.runtime_dir=" + _wvm_runtime_dir,
+        ])
+        with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=1):
+            _wvm_log("SECOND_JUPYTER_SERVER", status="already_listening", port=8889)
+    except OSError:
+        try:
+            _wvm_log("SECOND_JUPYTER_SERVER_START", status="attempting", port=8889,
+                     source_pid=_wvm_server_pid, command=_wvm_new_args)
+            _wvm_logfile = open("/tmp/webvm-jupyter-8889.log", "ab", buffering=0)
+            _wvm_child = _wvm_subprocess.Popen(
+                _wvm_new_args, stdin=_wvm_subprocess.DEVNULL,
+                stdout=_wvm_logfile, stderr=_wvm_subprocess.STDOUT,
+                start_new_session=True, close_fds=True,
+            )
+            _wvm_log("SECOND_JUPYTER_SERVER_START", status="spawned",
+                     port=8889, pid=_wvm_child.pid)
+            _wvm_started = False
+            for _wvm_attempt in range(8):
+                _wvm_time.sleep(1)
+                try:
+                    with _wvm_socket.create_connection(("127.0.0.1", 8889), timeout=1):
+                        _wvm_started = True
+                        break
+                except OSError:
+                    if _wvm_child.poll() is not None:
+                        break
+            _wvm_log("SECOND_JUPYTER_SERVER", status="listening" if _wvm_started else "not_listening",
+                     port=8889, pid=_wvm_child.pid, returncode=_wvm_child.poll())
+            if not _wvm_started:
+                try:
+                    with open("/tmp/webvm-jupyter-8889.log", "rb") as _wvm_f:
+                        _wvm_log("SECOND_JUPYTER_SERVER_LOG", tail=_wvm_f.read()[-3000:].decode(errors="replace"))
+                except OSError:
+                    pass
+        except Exception as _wvm_exc:
+            _wvm_log("SECOND_JUPYTER_SERVER", status="failed",
+                     error_type=type(_wvm_exc).__name__, detail=str(_wvm_exc)[:400])
+else:
+    _wvm_log("SECOND_JUPYTER_SERVER", status="not_started", reason="jupyter_server_process_not_found")
+
+# Verify GPU health in this GPU-enabled diagnostic kernel after the local-only fallback.
 try:
     _wvm_torch = __import__("torch")
     _wvm_cuda_available = bool(_wvm_torch.cuda.is_available())
