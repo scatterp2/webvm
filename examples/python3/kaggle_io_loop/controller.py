@@ -294,26 +294,41 @@ from urllib.request import Request, urlopen
 HOST = "0.0.0.0"
 PORT = 8889
 TAG = "WEBVM_TCP_LINK"
+STATUS_PATH = "/kaggle/working/tcp_link_status.json"
 
 def emit(stage, **fields):
     record = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "stage": stage, **fields}
-    print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
-    body = (TAG + "\nsource=WEBVM\nstage=PI_TCP_LINK_" + stage +
-            "\ntime=" + record["time"] + "\n" +
-            json.dumps(fields, sort_keys=True) + "\n")
+    # Persist the latest state as a Kaggle output artifact as well as telemetry.
+    # It becomes downloadable if the notebook exits or reaches its time limit.
     try:
-        payload = json.dumps({"content": body[:8000], "language": "text",
-                              "expires_in": "1h"}).encode("utf-8")
-        req = Request("https://pste.us/api/v1/pastes", data=payload,
-                      headers={"Content-Type": "application/json",
-                               "Accept": "application/json",
-                               "User-Agent": "webvm-kaggle-port-listener/1.0"},
-                      method="POST")
-        with urlopen(req, timeout=4) as response:
-            response.read(512)
+        with open(STATUS_PATH + ".tmp", "w", encoding="utf-8") as status_file:
+            json.dump(record, status_file, sort_keys=True)
+        os.replace(STATUS_PATH + ".tmp", STATUS_PATH)
     except Exception as exc:
-        print("WEBVM_TCP_LINK_TELEMETRY_UNAVAILABLE " + type(exc).__name__, flush=True)
+        print("WEBVM_TCP_LINK_STATUS_WRITE_UNAVAILABLE " + type(exc).__name__, flush=True)
+    print(TAG + " " + json.dumps(record, sort_keys=True), flush=True)
+    body = (TAG + "\\nsource=WEBVM\\nstage=PI_TCP_LINK_" + stage+
+            "\\ntime=" + record["time"] + "\\n" +
+            json.dumps(fields, sort_keys=True) + "\\n")
+    # Retry telemetry once; Kaggle's first outbound request can fail during startup.
+    for attempt in range(2):
+        try:
+            payload = json.dumps({"content": body[:8000], "language": "text",
+                                  "expires_in": "1h"}).encode("utf-8")
+            req = Request("https://pste.us/api/v1/pastes", data=payload,
+                          headers={"Content-Type": "application/json",
+                                   "Accept": "application/json",
+                                   "User-Agent": "webvm-kaggle-port-listener/1.0"},
+                          method="POST")
+            with urlopen(req, timeout=6) as response:
+                response.read(512)
+            return
+        except Exception as exc:
+            if attempt == 1:
+                print("WEBVM_TCP_LINK_TELEMETRY_UNAVAILABLE " + type(exc).__name__, flush=True)
+            else:
+                time.sleep(2)
 
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -381,9 +396,16 @@ def main():
          client_host="127.0.0.1", exact_reply=reply.decode("ascii"))
     emit("READY", transport="plain Python TCP echo listener; no Tailscale download",
          local_port=PORT, bind_host=HOST, self_test="pass")
+    started = time.monotonic()
     try:
-        while True:
+        # Keep the listener available long enough for external diagnostics, but
+        # terminate cleanly so Kaggle publishes tcp_link_status.json and its log.
+        while time.monotonic() - started < 600:
             time.sleep(20)
+            emit("HEARTBEAT", uptime_seconds=round(time.monotonic() - started),
+                 local_port=PORT, listener_alive=thread.is_alive())
+        emit("STOPPING", uptime_seconds=round(time.monotonic() - started),
+             reason="10-minute diagnostic window complete")
     finally:
         server.shutdown()
         server.server_close()
@@ -488,7 +510,7 @@ main()
         # its status artifact in that case; if it stays running, leave the
         # live TCP service alone and let runtime telemetry report readiness.
         startup_started = time.monotonic()
-        startup_deadline = startup_started + 75
+        startup_deadline = startup_started + 300
         last_status_text = ""
         while time.monotonic() < startup_deadline:
             try:
