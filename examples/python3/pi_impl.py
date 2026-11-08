@@ -832,7 +832,7 @@ def run_io_loop_proof():
     base = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/kaggle_io_loop/"
     target_dir = Path("/home/user/kaggle-io-loop")
     target_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("controller.py", "agent.py", "tcp_socks5.py", "remote_probe.py"):
+    for filename in ("controller.py", "agent.py", "tcp_socks5.py", "remote_probe.py", "terminal_service.py"):
         last_error = None
         for attempt in range(1, 11):
             try:
@@ -877,6 +877,97 @@ def run_io_loop_proof():
     run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
     print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
           flush=True)
+
+    # Local telnet-style terminal: each command is carried through the same
+    # Kaggle RX dataset -> notebook agent -> TX output artifact channel.
+    # Keep it on loopback; it is a command endpoint for the WebVM terminal.
+    import fcntl
+    import json as _json
+    import re as _re
+    import uuid as _uuid
+    import terminal_service
+
+    command_lock_path = target_dir / "rx_tx_kernel.lock"
+    command_lock_path.touch(exist_ok=True)
+    terminal_runs = Path("/home/user/kaggle-terminal-runs")
+    terminal_runs.mkdir(parents=True, exist_ok=True)
+
+    def _terminal_command(command, client_socket):
+        request_id = _uuid.uuid4().hex
+        command_dir = terminal_runs / request_id
+        command_dir.mkdir(parents=True, exist_ok=True)
+        payload_path = command_dir / "terminal_command.py"
+        payload_path.write_text(terminal_service.make_payload(command), encoding="utf-8")
+        command_work = command_dir / "controller-work"
+        command = [
+            sys.executable, str(target_dir / "controller.py"),
+            "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+            "--kernel-id", USERNAME + "/webvm-io-loop-proof",
+            "--work-dir", str(command_work),
+            "--timeout-seconds", "900",
+            "--poll-seconds", "10",
+            "--payload-file", str(payload_path),
+        ]
+        try:
+            client_socket.sendall(b"[RX/TX] waiting for exclusive command-channel slot...\\r\\n")
+        except OSError:
+            pass
+        with open(command_lock_path, "r+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1, env=env
+                )
+                tail = []
+                while True:
+                    line = process.stdout.readline()
+                    if line:
+                        tail.append(line.rstrip())
+                        if len(tail) > 100:
+                            tail = tail[-100:]
+                        if any(tag in line for tag in (
+                            "RX_RESOURCE_PUBLISHED", "KERNEL_SUBMITTED",
+                            "STATUS_POLL", "OUTPUT_DOWNLOADED",
+                            "OUTPUT_VALIDATION_PASSED", "RUN_COMPLETE",
+                        )):
+                            try:
+                                client_socket.sendall(("[RX/TX] " + line.strip() + "\\r\\n").encode("utf-8", "replace"))
+                            except OSError:
+                                pass
+                        continue
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                returncode = process.wait()
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        tx_path = command_work / "output" / "tx_response.json"
+        if tx_path.is_file():
+            try:
+                tx = _json.loads(tx_path.read_text(encoding="utf-8"))
+                output = tx.get("execution", {}).get("output", "")
+                match = _re.search(r"WEBVM_TERMINAL_RESULT=(\\{[^\\n]*\\})", output)
+                if match:
+                    result = _json.loads(match.group(1))
+                    stdout = result.get("stdout", "")
+                    stderr = result.get("stderr", "")
+                    exit_code = result.get("exit_code")
+                    rendered = stdout
+                    if stderr:
+                        rendered += ("\\n" if rendered else "") + stderr
+                    rendered += ("\\n" if rendered else "") + "[exit code {}]".format(exit_code)
+                    return rendered
+                if output:
+                    return output
+            except Exception as exc:
+                tail.append("TX_PARSE_ERROR {}: {}".format(type(exc).__name__, str(exc)[:180]))
+        summary = "\\n".join(tail[-18:])
+        raise RuntimeError("No readable TX result (controller exit {}). {}".format(
+            returncode, summary[-1800:]))
+
+    terminal_service.start_server(_terminal_command, host="127.0.0.1", port=2323)
 
     # Submit the existing long-running Tailscale bridge. Authentication is
     # handled inside that bridge; no auth material is sent through RX/TX.
@@ -948,8 +1039,13 @@ def run_io_loop_proof():
             print("RX_TX_REMOTE_COMMAND_RECEIVED sha256={} bytes={} transport=github-fetch-then-kaggle-rx-tx".format(
                 candidate_sha, len(candidate)), flush=True)
             try:
-                run_streamed_subprocess(
-                    proof_command, env, "RX_TX_REMOTE_COMMAND", timeout=1200)
+                with open(command_lock_path, "r+") as lock_file:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                    try:
+                        run_streamed_subprocess(
+                            proof_command, env, "RX_TX_REMOTE_COMMAND", timeout=1200)
+                    finally:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 print("RX_TX_REMOTE_COMMAND_COMPLETED sha256={}".format(
                     candidate_sha), flush=True)
             except Exception as exc:
