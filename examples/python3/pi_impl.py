@@ -885,6 +885,7 @@ def run_io_loop_proof():
     import json as _json
     import re as _re
     import uuid as _uuid
+    sys.path.insert(0, str(target_dir))
     import terminal_service
 
     command_lock_path = target_dir / "rx_tx_kernel.lock"
