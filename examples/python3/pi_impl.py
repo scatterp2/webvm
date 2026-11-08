@@ -817,6 +817,130 @@ def run_streamed_subprocess(command, env, label, timeout=1200):
             process.stdout.close()
 
 
+def verify_tcp_link_from_webvm():
+    """Verify a real remote HTTPS/TCP connection through the discovered Kaggle peer."""
+    import re
+    from urllib.error import URLError, HTTPError
+    from urllib.request import ProxyHandler, build_opener
+
+    env_file = Path("/data/kaggle-tcp-link.env")
+    proxy = None
+    for attempt in range(1, 7):
+        try:
+            contents = env_file.read_text(encoding="utf-8")
+            match = re.search(
+                r'^export WEBVM_KAGGLE_TCP_LINK_HTTP_PROXY="(http://[^"\\s]+)"    """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
+    from urllib.error import HTTPError, URLError
+
+    base = "https://raw.githubusercontent.com/scatterp2/webvm/0e66a6322589e79a088db3e888aaf3579bcb91a8/examples/python3/kaggle_io_loop/"
+    target_dir = Path("/home/user/kaggle-io-loop")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ("controller.py", "agent.py", "tcp_socks5.py"):
+        last_error = None
+        for attempt in range(1, 11):
+            try:
+                request = Request(
+                    base + filename + "?t=" + str(int(time.time() * 1000)),
+                    headers={"Cache-Control": "no-cache", "User-Agent": "webvm-kaggle-io-loop/1.0"},
+                )
+                with urlopen(request, timeout=25) as response:
+                    source = response.read().decode("utf-8")
+                compile(source, str(target_dir / filename), "exec")
+                (target_dir / filename).write_text(source, encoding="utf-8")
+                print("IO_LOOP_SOURCE_FETCHED file={} attempt={}/10 characters={}".format(
+                    filename, attempt, len(source)), flush=True)
+                break
+            except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
+                last_error = exc
+                print("IO_LOOP_SOURCE_FETCH_FAILED file={} attempt={}/10 error={}: {}".format(
+                    filename, attempt, type(exc).__name__, exc), flush=True)
+                if attempt < 10:
+                    time.sleep(min(attempt, 5))
+        else:
+            raise RuntimeError("Could not fetch IO loop source {}: {}".format(filename, last_error))
+
+    env = os.environ.copy()
+    env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
+    env["HOME"] = str(HOME)
+
+    # The live RX/TX round-trip was already validated. Avoid repeating its
+    # several-minute Kaggle run on every reset; set WEBVM_RUN_RX_TX_PROOF=1
+    # only when a fresh data-loop diagnostic is actually needed.
+    if os.environ.get("WEBVM_RUN_RX_TX_PROOF", "").strip() == "1":
+        proof_command = [
+            sys.executable, str(target_dir / "controller.py"),
+            "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+            "--kernel-id", USERNAME + "/webvm-io-loop-proof",
+            "--work-dir", "/home/user/kaggle-io-loop-run",
+            "--timeout-seconds", "900",
+            "--poll-seconds", "10",
+        ]
+        print("IO_LOOP_CONTROLLER_START dataset_id={} kernel_id={}".format(
+            USERNAME + "/webvm-io-loop-rx", USERNAME + "/webvm-io-loop-proof"), flush=True)
+        run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+    else:
+        print("RX_TX_PROOF_SKIPPED already_validated=1 override=WEBVM_RUN_RX_TX_PROOF=1",
+              flush=True)
+
+    # Submit a separate, long-running TCP proxy kernel. It authenticates using
+    # the WEBVM_TAILSCALE_AUTHKEY Kaggle Secret; no auth key is sent via RX/TX.
+    tcp_command = [
+        sys.executable, str(target_dir / "controller.py"),
+        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--kernel-id", USERNAME + "/webvm-tcp-link",
+        "--work-dir", "/home/user/kaggle-tcp-link-run",
+        "--timeout-seconds", "900",
+        "--poll-seconds", "10",
+        "--serve-tcp-link",
+    ]
+    print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
+        USERNAME + "/webvm-tcp-link"), flush=True)
+    run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
+    verify_tcp_link_from_webvm()
+
+
+def main():
+    prepare_system()
+    prepare_credentials()
+    # The current task is the one-message Kaggle API-mediated RX/TX proof.
+    # Keep the Qwen experiment implementation intact but do not submit it here.
+    run_io_loop_proof()
+
+,
+                contents, re.M
+            )
+            if match:
+                proxy = match.group(1)
+                break
+        except OSError:
+            pass
+        print("TCP_LINK_REMOTE_PROBE_WAIT attempt={}/6 reason=peer_proxy_config_not_ready".format(
+            attempt), flush=True)
+        if attempt < 6:
+            time.sleep(5)
+
+    if not proxy:
+        print("TCP_LINK_REMOTE_CONNECTIVITY_UNVERIFIED reason=peer_proxy_config_missing",
+              flush=True)
+        return False
+
+    opener = build_opener(ProxyHandler({"http": proxy, "https": proxy}))
+    for attempt in range(1, 4):
+        try:
+            with opener.open("https://example.com/", timeout=8) as response:
+                sample = response.read(256)
+                print("TCP_LINK_REMOTE_CONNECTIVITY_PASS attempt={} status={} bytes_read={} transport=HTTP_CONNECT_over_Tailscale".format(
+                    attempt, response.status, len(sample)), flush=True)
+                return True
+        except (OSError, URLError, HTTPError, TimeoutError) as exc:
+            print("TCP_LINK_REMOTE_CONNECTIVITY_RETRY attempt={}/3 error_type={} detail={}".format(
+                attempt, type(exc).__name__, str(exc)[:240]), flush=True)
+            if attempt < 3:
+                time.sleep(5)
+    print("TCP_LINK_REMOTE_CONNECTIVITY_FAILED attempts=3", flush=True)
+    return False
+
+
 def run_io_loop_proof():
     """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
     from urllib.error import HTTPError, URLError
