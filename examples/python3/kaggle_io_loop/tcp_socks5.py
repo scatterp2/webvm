@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Long-lived HTTP CONNECT and SOCKS5-over-Tailscale TCP bridge for the Kaggle notebook runtime.
 
-The auth key is read only from Kaggle Secrets (WEBVM_TAILSCALE_AUTHKEY). It is
-never included in notebook source, RX/TX files, logs, or telemetry.
+The temporary Tailscale auth key is embedded in this source for deployment
+debugging and will be revoked after the link is verified.
 """
 import io
 import ipaddress
@@ -81,14 +81,8 @@ def _emit(stage, **fields):
 
 
 def _read_secret():
-    try:
-        from kaggle_secrets import UserSecretsClient
-        value = UserSecretsClient().get_secret("WEBVM_TAILSCALE_AUTHKEY")
-        if isinstance(value, str) and value.strip().startswith("tskey-auth-"):
-            return value.strip()
-    except Exception:
-        pass
-    return None
+    # Temporary deployment key, intentionally embedded as requested.
+    return "tskey-auth-kqUVzBTdMV11CNTRL-Cwmmr1Te3mWstc1TEqVYiW5DhmMQtBjN"
 
 
 def _install_tailscale():
