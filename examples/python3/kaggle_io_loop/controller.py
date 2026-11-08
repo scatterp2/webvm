@@ -597,7 +597,7 @@ main()
                           waited_seconds=waited,
                           consecutive_timeouts=consecutive_status_timeouts,
                           error=str(exc)[:500],
-                          note="Will switch to artifact diagnostics after three consecutive status timeouts")
+                          note="Will switch to artifact diagnostics after the first full status timeout")
                 # A single full status timeout is enough evidence that this
                 # endpoint is unreliable. Try the independent output/artifact
                 # path immediately instead of spending another minute retrying
