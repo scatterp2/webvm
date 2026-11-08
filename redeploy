@@ -36,3 +36,5 @@ Install live Kaggle runtime loader; subsequent kaggle_runtime.py edits will be p
 
 Install runtime-loaded pi_impl.py bootstrap so submitter fixes activate on browser reset without future image rebuilds.
 Update WebVM networking panel to use dedicated Kaggle TCP bridge port 18088.
+
+Deploy RX/TX terminal service and private Kaggle shell port; expose connection instructions in Networking tab.
