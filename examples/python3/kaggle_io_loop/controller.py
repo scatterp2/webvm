@@ -595,7 +595,8 @@ main()
                     if re.search(r"(WEBVM_TCP_LINK|AUTH_KEY_MISSING|tailscale up failed|Traceback|RuntimeError|Exception|Error:|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|TCP_LINK)", line, re.I):
                         safe_line = safe_text(line)
                         safe_line = re.sub(r"tskey-auth-[A-Za-z0-9_-]+", "[REDACTED]", safe_line)
-                        relevant.append(safe_line[-1000:])
+                        limit = 5000 if "HOST_CAPABILITY_DIAGNOSTICS" in safe_line else 1000
+                        relevant.append(safe_line[-limit:])
                 log.event("TCP_LINK_KERNEL_LOG_DIAGNOSTICS",
                           kernel_id=args.kernel_id, log_file=log_path.name,
                           selected_line_count=len(relevant), lines=relevant[-35:])
