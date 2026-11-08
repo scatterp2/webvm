@@ -340,6 +340,9 @@ def probe(argv):
         return {"available": False, "error": type(exc).__name__ + ": " + str(exc)[:250]}
 
 def main():
+    # Emit a minimal startup marker before any potentially slow host probes.
+    # This distinguishes "not scheduled" from "running but diagnostics slow".
+    emit("BOOT", uid=os.geteuid(), local_port=PORT, bind_host=HOST)
     # Report identity and whether this sandbox exposes packet-interception
     # capability. These are read-only probes; do not modify firewall rules.
     try:
@@ -476,10 +479,10 @@ main()
     submitted_at = datetime.now(timezone.utc)
     if args.serve_tcp_link:
         log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
-                  service="tailscale-serve-tcp-to-http-connect-socks5", local_port=8889,
-                  tailnet_port=18088, wait_for_completion=False)
+                  service="plain-python-tcp-echo-listener", local_port=8889,
+                  wait_for_completion=False)
         print("TCP_LINK_KERNEL_SUBMITTED kernel_id=" + args.kernel_id +
-              " local_port=8889 tailnet_port=18088", flush=True)
+              " local_port=8889 service=plain-python-tcp-echo-listener", flush=True)
 
         # A missing Kaggle Secret makes the notebook finish quickly. Retrieve
         # its status artifact in that case; if it stays running, leave the
