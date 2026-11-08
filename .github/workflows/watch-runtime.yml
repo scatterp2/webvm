@@ -16,7 +16,7 @@ permissions:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 17
     steps:
       - name: Poll WebVM runtime feedback
         shell: bash
@@ -82,7 +82,7 @@ jobs:
           print("WATCH_STARTED", datetime.now(timezone.utc).isoformat(), flush=True)
           terminal_stage_seen = False
           tcp_controller_seen = False
-          while time.monotonic() - started < 600:
+          while time.monotonic() - started < 900:
               try:
                   data = unwrap(get_json(BASE + "?" + urlencode({"limit":20,"offset":0}), timeout=10))
                   items = data if isinstance(data,list) else (data.get("pastes") or data.get("items") or data.get("results") or []) if isinstance(data,dict) else []
