@@ -588,7 +588,7 @@ main()
             output_result = command(
                 log,
                 ["kaggle", "kernels", "output", args.kernel_id, "-p",
-                 str(status_dir), "-o", "--file-pattern", r"^tcp_link_status\\.json$"],
+                 str(status_dir), "-o", "--file-pattern", r"^tcp_link_status[.]json$"],
                 timeout=45, check=False)
         except TimeoutError as exc:
             log.event("TCP_LINK_PENDING_ARTIFACT_TIMEOUT",
