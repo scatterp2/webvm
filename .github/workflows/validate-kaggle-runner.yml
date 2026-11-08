@@ -3,7 +3,7 @@ name: Validate Kaggle runner
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, rx-tx-terminal-service]
     paths:
       - 'examples/python3/pi.py'
       - 'examples/python3/pi_impl.py'
