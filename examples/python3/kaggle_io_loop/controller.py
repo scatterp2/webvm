@@ -385,9 +385,18 @@ def main():
         startup_deadline = startup_started + 75
         last_status_text = ""
         while time.monotonic() < startup_deadline:
-            status_result = command(
-                log, ["kaggle", "kernels", "status", args.kernel_id],
-                timeout=15, check=False)
+            try:
+                status_result = command(
+                    log, ["kaggle", "kernels", "status", args.kernel_id],
+                    timeout=15, check=False)
+            except TimeoutError as exc:
+                log.event("TCP_LINK_STATUS_POLL_TIMEOUT",
+                          kernel_id=args.kernel_id,
+                          waited_seconds=round(time.monotonic() - startup_started, 1),
+                          error=str(exc)[:500],
+                          note="Retrying until the startup deadline instead of aborting the controller")
+                time.sleep(5)
+                continue
             last_status_text = (status_result.stdout or "").upper()
             active_state = any(state in last_status_text for state in
                                ("RUNNING", "QUEUED", "PENDING", "INITIALIZING", "SUBMITTED"))
