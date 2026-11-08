@@ -288,6 +288,35 @@ def main():
         if not service_path.is_file():
             raise RuntimeError("TCP link service source is missing: " + str(service_path))
         service_source = service_path.read_text(encoding="utf-8")
+        # Patch the fetched notebook source at submission time so transient
+        # Kaggle DNS failures do not abort the first Tailscale download attempt.
+        # Keep the auth-key source itself untouched.
+        old_download = '''    with urlopen(request, timeout=90) as response:
+        archive_bytes = response.read()
+'''
+        retry_download = '''    archive_bytes = None
+    last_download_error = None
+    for attempt in range(1, 7):
+        try:
+            with urlopen(request, timeout=45) as response:
+                archive_bytes = response.read()
+            _emit("INSTALL_DOWNLOAD_COMPLETE", attempt=attempt, bytes=len(archive_bytes))
+            break
+        except Exception as exc:
+            last_download_error = exc
+            _emit("INSTALL_DOWNLOAD_RETRY", attempt=attempt, max_attempts=6,
+                  error_type=type(exc).__name__, message=str(exc)[:300])
+            if attempt < 6:
+                time.sleep(min(10 * attempt, 45))
+    if archive_bytes is None:
+        raise RuntimeError("Tailscale archive download failed after 6 attempts: "
+                           + type(last_download_error).__name__ + ": "
+                           + str(last_download_error)[:500])
+'''
+        if old_download not in service_source:
+            raise RuntimeError("Tailscale installer download block did not match; refusing to submit an unpatched notebook")
+        service_source = service_source.replace(old_download, retry_download, 1)
+        print("TCP_LINK_INSTALL_RETRY_PATCH_APPLIED attempts=6", flush=True)
         compile(service_source, str(service_path), "exec")
         notebook_source = PROXY_DIAGNOSTIC_SOURCE + "\n\n" + service_source
     else:
