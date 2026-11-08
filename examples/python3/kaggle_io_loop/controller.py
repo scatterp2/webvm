@@ -552,7 +552,17 @@ main()
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if metadata["dataset_sources"] != [args.dataset_id]:
             raise RuntimeError("Notebook dataset_sources does not match published RX Dataset")
-    command(log, ["kaggle", "kernels", "push", "-p", str(kernel_dir)], timeout=300, check=True)
+    push_result = command(log, ["kaggle", "kernels", "push", "-p", str(kernel_dir)],
+                          timeout=300, check=True)
+    # Kaggle CLI can return exit code 0 for server-side push failures. Never
+    # continue to status/output polling in that case: an older COMPLETE kernel
+    # version can expose stale tx_response.json and falsely look like this run.
+    push_text = (push_result.stdout or "").strip()
+    if re.search(r"(?im)^\\s*(?:Kernel push error|Error:|Exception:)", push_text):
+        log.event("KERNEL_SUBMISSION_REJECTED", kernel_id=args.kernel_id,
+                  output_tail=safe_text(push_text),
+                  action="abort rather than validate stale output from an earlier kernel version")
+        raise RuntimeError("Kaggle rejected kernel submission: " + safe_text(push_text))
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
     submitted_at = datetime.now(timezone.utc)
     if args.serve_tcp_link:
