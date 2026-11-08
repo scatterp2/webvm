@@ -1,8 +1,9 @@
 name: Validate Kaggle runner
 
 on:
+  pull_request:
   push:
-    branches: [main]
+    branches: [main, rx-tx-terminal-service]
     paths:
       - 'examples/python3/pi.py'
       - 'examples/python3/pi_impl.py'
@@ -32,7 +33,9 @@ jobs:
             examples/python3/gpu_test.py \
             examples/python3/kaggle_io_loop/controller.py \
             examples/python3/kaggle_io_loop/agent.py \
-            examples/python3/kaggle_io_loop/tcp_socks5.py
+            examples/python3/kaggle_io_loop/tcp_socks5.py \
+            examples/python3/kaggle_io_loop/terminal_service.py \
+            examples/python3/kaggle_io_loop/remote_shell.py
           echo "PYTHON_SOURCE_SYNTAX_OK"
 
       - name: Test compact notebook and runtime prompt retrieval without network access
@@ -135,6 +138,44 @@ jobs:
           assert 'link.ip + ":" + link.port' in network_source
           assert 'link.ip + ":8888"' not in network_source
           print("KAGGLE_TCP_LINK_NOTEBOOK_BUILD_OK")
+          PY
+
+      - name: Validate RX/TX terminal and private Tailscale shell generation
+        run: |
+          python3 -m py_compile \
+            examples/python3/kaggle_io_loop/terminal_service.py \
+            examples/python3/kaggle_io_loop/remote_shell.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          path = Path("examples/python3/kaggle_io_loop/terminal_service.py")
+          spec = importlib.util.spec_from_file_location("terminal_service", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          payload = module.make_payload("pwd")
+          compile(payload, "<terminal-payload>", "exec")
+          assert "WEBVM_TERMINAL_RESULT=" in payload
+          assert module.HOST == "127.0.0.1" and module.PORT == 2323
+          shell = Path("examples/python3/kaggle_io_loop/remote_shell.py").read_text()
+          compile(shell, "<remote-shell>", "exec")
+          assert "SHELL_TAILNET_PORT = 18089" in shell
+          print("RX_TX_TERMINAL_HELPERS_OK")
+          PY
+          python3 examples/python3/kaggle_io_loop/controller.py \
+            --dataset-id ci-user/webvm-io-loop-rx \
+            --kernel-id ci-user/webvm-tcp-link \
+            --prepare-only --serve-tcp-link --use-existing-tailscale-bridge \
+            --work-dir "$RUNNER_TEMP/tcp-shell-test"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "tcp-shell-test"
+          notebook = json.loads((root / "kernel" / "io_loop_proof.ipynb").read_text())
+          source = "".join(notebook["cells"][0]["source"])
+          assert "SHELL_TAILNET_PORT = 18089" in source
+          assert "SHELL_TAILNET_FORWARD_READY" in source
+          assert "start_remote_shell(cli, _emit, _ThreadedServer)" in source
+          print("KAGGLE_PRIVATE_SHELL_NOTEBOOK_BUILD_OK")
           PY
 
       - name: Test SOCKS5 and HTTP CONNECT byte forwarding locally
