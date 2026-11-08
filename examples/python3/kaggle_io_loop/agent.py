@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Self-contained Kaggle notebook agent for the one-message RX/TX loop proof."""
-import hashlib, json, os, time
+import base64, hashlib, json, os, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -186,18 +186,59 @@ def main():
         raise ValueError("RX checksum mismatch")
     log("RX_VALIDATED", source_path=str(rx_path), sequence=message["sequence"], request_id=message["request_id"],
         payload_length=payload_length, checksum=actual_checksum)
-    # One message per execution in stage 1. No durable exactly-once claim across restarts.
+    # One message per execution; command payloads are base64 Python source from
+    # the controlled repository. Keep the payload bounded and execution timed.
     processed_ids = set()
     delivery_key = (message["request_id"], message["sequence"])
+    execution = None
     if delivery_key in processed_ids:
         delivery_state, response_payload = "duplicate", ""
     else:
         processed_ids.add(delivery_key)
-        delivery_state, response_payload = "processed_once", "ACK:" + message["payload"]
+        delivery_state = "processed_once"
+        if message["type"] == "python_b64":
+            encoded = message["payload"]
+            if len(encoded) > 90000:
+                raise ValueError("Python payload exceeds 64 KiB encoded safety limit")
+            try:
+                source = base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf-8")
+            except Exception as exc:
+                raise ValueError("Invalid base64 UTF-8 Python payload: " + type(exc).__name__)
+            if not source.strip():
+                raise ValueError("Python payload is empty")
+            started_exec = time.monotonic()
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-I", "-c", source],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, timeout=45, check=False, env={"PATH": os.environ.get("PATH", "")}
+                )
+                execution = {
+                    "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                    "exit_code": result.returncode,
+                    "elapsed_ms": round((time.monotonic() - started_exec) * 1000, 2),
+                    "output": (result.stdout or "")[-7000:],
+                    "timed_out": False,
+                }
+            except subprocess.TimeoutExpired as exc:
+                output = exc.stdout or ""
+                if isinstance(output, bytes):
+                    output = output.decode("utf-8", "replace")
+                execution = {
+                    "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                    "exit_code": None,
+                    "elapsed_ms": round((time.monotonic() - started_exec) * 1000, 2),
+                    "output": str(output)[-7000:],
+                    "timed_out": True,
+                }
+            response_payload = "EXEC:" + execution["sha256"] + ":" + str(execution["exit_code"])
+        else:
+            response_payload = "ACK:" + message["payload"]
     network_diagnostics = collect_network_diagnostics()
     log("NETWORK_DIAGNOSTICS", report=network_diagnostics)
     response_core = {
         "network_diagnostics": network_diagnostics,
+        "execution": execution,
         "version": PROTOCOL_VERSION, "sequence": message["sequence"],
         "request_id": message["request_id"], "type": "ack",
         "payload_length": len(response_payload.encode("utf-8")), "payload": response_payload,
