@@ -644,6 +644,40 @@ main()
             return
         status_files = sorted(
             path for path in status_dir.rglob("tcp_link_status.json") if path.is_file())
+        # Make the downloaded runtime evidence visible even if status polling
+        # is timing out or the watcher only captures paste logs. Include paths
+        # and sizes, never credentials or environment values.
+        log.event("TCP_LINK_PENDING_ARTIFACT_SCAN",
+                  kernel_id=args.kernel_id,
+                  status_files=[{"path": str(p), "bytes": p.stat().st_size}
+                                for p in status_files],
+                  log_files=[{"path": str(p), "bytes": p.stat().st_size}
+                             for p in sorted(status_dir.rglob("*.log")) if p.is_file()])
+        print("TCP_LINK_PENDING_ARTIFACT_SCAN " + json.dumps({
+            "status_files": [{"path": str(p), "bytes": p.stat().st_size}
+                             for p in status_files],
+            "log_files": [{"path": str(p), "bytes": p.stat().st_size}
+                          for p in sorted(status_dir.rglob("*.log")) if p.is_file()]
+        }, sort_keys=True), flush=True)
+        # Always emit relevant notebook log lines, including when JSON exists.
+        for log_path in sorted(p for p in status_dir.rglob("*.log") if p.is_file())[-2:]:
+            try:
+                log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError as exc:
+                log.event("TCP_LINK_LOG_READ_ERROR", path=str(log_path),
+                          error=type(exc).__name__)
+                continue
+            relevant = []
+            for line in log_lines:
+                if re.search(r"(WEBVM_TCP_LINK|AUTH_KEY_MISSING|tailscale up failed|Traceback|RuntimeError|Exception|Error:|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|TCP_LINK)", line, re.I):
+                    safe_line = safe_text(line)
+                    safe_line = re.sub(r"tskey-auth-[A-Za-z0-9_-]+", "[REDACTED]", safe_line)
+                    relevant.append(safe_line[-3000:])
+            log.event("TCP_LINK_KERNEL_LOG_DIAGNOSTICS",
+                      kernel_id=args.kernel_id, log_file=log_path.name,
+                      selected_line_count=len(relevant), lines=relevant[-35:])
+            for safe_line in relevant[-35:]:
+                print("TCP_LINK_KERNEL_LOG " + safe_line, flush=True)
         if not status_files:
             log.event("TCP_LINK_PENDING_ARTIFACT_MISSING",
                       kernel_id=args.kernel_id,
