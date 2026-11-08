@@ -490,11 +490,15 @@ main()
     log.event("KERNEL_SUBMITTED", kernel_id=args.kernel_id)
     submitted_at = datetime.now(timezone.utc)
     if args.serve_tcp_link:
+        service_name = ("tailscale-socks5-http-connect-bridge"
+                        if args.use_existing_tailscale_bridge
+                        else "plain-python-tcp-echo-listener")
+        advertised_port = 18088 if args.use_existing_tailscale_bridge else 8889
         log.event("TCP_LINK_KERNEL_SUBMITTED", kernel_id=args.kernel_id,
-                  service="plain-python-tcp-echo-listener", local_port=8889,
+                  service=service_name, local_port=advertised_port,
                   wait_for_completion=False)
-        print("TCP_LINK_KERNEL_SUBMITTED kernel_id=" + args.kernel_id +
-              " local_port=8889 service=plain-python-tcp-echo-listener", flush=True)
+        print("TCP_LINK_KERNEL_SUBMITTED kernel_id={} local_port={} service={}".format(
+            args.kernel_id, advertised_port, service_name), flush=True)
 
         # A missing Kaggle Secret makes the notebook finish quickly. Retrieve
         # its status artifact in that case; if it stays running, leave the
