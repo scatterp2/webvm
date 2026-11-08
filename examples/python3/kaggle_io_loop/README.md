@@ -54,7 +54,7 @@ The RX/TX proof above is only a file/message round trip. The live transport is a
 2. Open the private Kaggle notebook at `https://www.kaggle.com/code/USERNAME/webvm-tcp-link`.
 3. In the notebook's Secrets settings, add `WEBVM_TAILSCALE_AUTHKEY` with a reusable ephemeral Tailscale auth key for the same tailnet as WebVM (so the node can rejoin after a Kaggle runtime restart). Do not paste the key into source code, the RX dataset, the TX response, or logs.
 4. Reload WebVM or run `pi.py` again. It reuses the running service if one is already active. The notebook reads the key directly from Kaggle Secrets and keeps the service alive.
-5. In WebVM's Networking panel, wait for `webvm-kaggle-tcp-link` and its Tailscale IPv4 address to appear. The browser writes `/data/kaggle-tcp-link.env`; new shell prompts load it and set `ALL_PROXY=socks5h://<peer-ip>:8888` if the user has not configured another proxy.
+5. In WebVM's Networking panel, wait for `webvm-kaggle-tcp-link` and its Tailscale IPv4 address to appear. The browser writes `/data/kaggle-tcp-link.env`; new shell prompts load it and set `ALL_PROXY=socks5h://<peer-ip>:18088` if the user has not configured another proxy.
 
 The notebook reports non-secret stages through the existing runtime telemetry: installation, local SOCKS5 TCP self-test, Tailscale Serve status, the peer IPv4 address, and any startup error. The auth key is never returned over RX/TX or included in telemetry.
 
