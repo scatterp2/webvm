@@ -30,6 +30,7 @@ jobs:
           BASE = "https://pste.us/api/v1/pastes"
           seen = set()
           details_attempted = set()
+          started_at = datetime.now(timezone.utc)
           started = time.monotonic()
           tcp_controller_started_at = None
 
@@ -106,6 +107,14 @@ jobs:
                           continue
                       if not re.search(marker, body, re.I):
                           continue
+                      event_time_match = re.search(r"^time=(\\d{4}-\\d\\d-\\d\\dT[^\\s]+)", body, re.M)
+                      if event_time_match:
+                          try:
+                              event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
+                              if event_time < started_at:
+                                  continue
+                          except ValueError:
+                              pass
                       seen.add(pid or str(hash(body)))
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
                       for line in safe_lines(body):
