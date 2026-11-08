@@ -914,8 +914,8 @@ def run_io_loop_proof():
         print("RX_TX_PROOF_SKIPPED already_validated=1 override=WEBVM_RUN_RX_TX_PROOF=1",
               flush=True)
 
-    # Submit a separate, long-running TCP proxy kernel. It authenticates using
-    # the WEBVM_TAILSCALE_AUTHKEY Kaggle Secret; no auth key is sent via RX/TX.
+    # Submit the existing long-running Tailscale bridge. Authentication is
+    # handled inside that bridge; no auth material is sent through RX/TX.
     tcp_command = [
         sys.executable, str(target_dir / "controller.py"),
         "--dataset-id", USERNAME + "/webvm-io-loop-rx",
