@@ -319,6 +319,16 @@ def main():
         if not tcp_proxy_source.is_file():
             raise FileNotFoundError("tcp_socks5.py is required for the live TCP bridge")
         notebook_source = tcp_proxy_source.read_text(encoding="utf-8")
+        if args.use_existing_tailscale_bridge:
+            # Bound remote bridge lifetime to release limited Kaggle CPU slots.
+            # SIGINT allows tcp_socks5.py to run its existing cleanup handlers.
+            session_watchdog = "import os, signal, threading\n"
+            session_watchdog += "def _webvm_session_ttl_expired():\n"
+            session_watchdog += "    print('KAGGLE_SESSION_WATCHDOG_EXPIRED max_runtime_seconds=2700 action=SIGINT', flush=True)\n"
+            session_watchdog += "    try:\n        os.kill(os.getpid(), signal.SIGINT)\n"
+            session_watchdog += "    except OSError as exc:\n        print('KAGGLE_SESSION_WATCHDOG_SIGNAL_ERROR ' + type(exc).__name__, flush=True)\n"
+            session_watchdog += "threading.Timer(2700, _webvm_session_ttl_expired).start()\n"
+            notebook_source = session_watchdog + notebook_source
         compile(notebook_source, str(tcp_proxy_source), "exec")
     elif args.serve_tcp_link:
         # Minimal port-connectivity milestone: no Tailscale binary, DNS download,
