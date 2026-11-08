@@ -113,7 +113,7 @@ jobs:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
                               # Runtime feedback can arrive just after a previous watcher exits.
                               # Recheck recent events for up to ten minutes, but ignore older runs.
-                              if event_time < started_at - __import__("datetime").timedelta(minutes=10):
+                              if event_time < started_at - __import__("datetime").timedelta(minutes=2):
                                   continue
                           except ValueError:
                               pass
