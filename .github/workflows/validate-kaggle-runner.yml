@@ -128,6 +128,10 @@ jobs:
           assert metadata["is_private"] is True
           assert metadata["dataset_sources"] == []
           assert "def collect_network_diagnostics" not in source
+          network_source = Path("src/lib/network.js").read_text()
+          assert "port: 18088" in network_source
+          assert 'link.ip + ":" + link.port' in network_source
+          assert 'link.ip + ":8888"' not in network_source
           print("KAGGLE_TCP_LINK_NOTEBOOK_BUILD_OK")
           PY
 
