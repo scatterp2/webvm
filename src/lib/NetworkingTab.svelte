@@ -29,6 +29,10 @@
 		<p>Peer: {$kaggleTcpLink.ip}:{$kaggleTcpLink.port}</p>
 		<p class="break-all">SOCKS5: socks5h://{$kaggleTcpLink.ip}:{$kaggleTcpLink.port}</p>
 		<p class="break-all">HTTP/HTTPS proxy: http://{$kaggleTcpLink.ip}:{$kaggleTcpLink.port}</p>
-		<p class="mt-1 text-xs">New shell prompts load the proxy settings from /data/kaggle-tcp-link.env.</p>
+		<p class="mt-2 font-semibold">Interactive Kaggle shell</p>
+		<p class="break-all"><code>nc {$kaggleTcpLink.ip} 18089</code></p>
+		<p class="mt-2 font-semibold">RX/TX terminal service</p>
+		<p><code>telnet 127.0.0.1 2323</code></p>
+		<p class="mt-1 text-xs">RX/TX runs one command per Kaggle job and may take minutes. The shell port is the interactive option. New shell prompts load proxy settings from /data/kaggle-tcp-link.env.</p>
 	</div>
 {/if}
