@@ -910,7 +910,7 @@ def run_io_loop_proof():
             "--payload-file", str(payload_path),
         ]
         try:
-            client_socket.sendall(b"[RX/TX] waiting for exclusive command-channel slot...\\r\\n")
+            client_socket.sendall(b"[RX/TX] waiting for exclusive command-channel slot...\r\n")
         except OSError:
             pass
         with open(command_lock_path, "r+") as lock_file:
@@ -933,7 +933,7 @@ def run_io_loop_proof():
                             "OUTPUT_VALIDATION_PASSED", "RUN_COMPLETE",
                         )):
                             try:
-                                client_socket.sendall(("[RX/TX] " + line.strip() + "\\r\\n").encode("utf-8", "replace"))
+                                client_socket.sendall(("[RX/TX] " + line.strip() + "\r\n").encode("utf-8", "replace"))
                             except OSError:
                                 pass
                         continue
@@ -949,7 +949,7 @@ def run_io_loop_proof():
             try:
                 tx = _json.loads(tx_path.read_text(encoding="utf-8"))
                 output = tx.get("execution", {}).get("output", "")
-                match = _re.search(r"WEBVM_TERMINAL_RESULT=(\\{[^\\n]*\\})", output)
+                match = _re.search(r"WEBVM_TERMINAL_RESULT=(\{[^\n]*\})", output)
                 if match:
                     result = _json.loads(match.group(1))
                     stdout = result.get("stdout", "")
@@ -957,14 +957,14 @@ def run_io_loop_proof():
                     exit_code = result.get("exit_code")
                     rendered = stdout
                     if stderr:
-                        rendered += ("\\n" if rendered else "") + stderr
-                    rendered += ("\\n" if rendered else "") + "[exit code {}]".format(exit_code)
+                        rendered += ("\n" if rendered else "") + stderr
+                    rendered += ("\n" if rendered else "") + "[exit code {}]".format(exit_code)
                     return rendered
                 if output:
                     return output
             except Exception as exc:
                 tail.append("TX_PARSE_ERROR {}: {}".format(type(exc).__name__, str(exc)[:180]))
-        summary = "\\n".join(tail[-18:])
+        summary = "\n".join(tail[-18:])
         raise RuntimeError("No readable TX result (controller exit {}). {}".format(
             returncode, summary[-1800:]))
 
