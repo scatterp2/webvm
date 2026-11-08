@@ -287,7 +287,7 @@ def main():
         # Minimal port-connectivity milestone: no Tailscale binary, DNS download,
         # or external service is required. Listen on a non-Jupyter port and
         # prove a real TCP request/reply on that port before staying alive.
-        notebook_source = r'''import json, socket, socketserver, threading, time
+        notebook_source = r'''import json, os, shutil, socket, socketserver, subprocess, threading, time
 from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 
@@ -330,7 +330,41 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
+def probe(argv):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=3)
+        return {"available": True, "returncode": p.returncode,
+                "stdout": (p.stdout or "")[-1200:],
+                "stderr": (p.stderr or "")[-600:]}
+    except Exception as exc:
+        return {"available": False, "error": type(exc).__name__ + ": " + str(exc)[:250]}
+
 def main():
+    # Report identity and whether this sandbox exposes packet-interception
+    # capability. These are read-only probes; do not modify firewall rules.
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            cap_eff = next((line.split(":", 1)[1].strip() for line in f
+                            if line.startswith("CapEff:")), None)
+    except OSError:
+        cap_eff = None
+    try:
+        local_ips = sorted({x[4][0] for x in socket.getaddrinfo(
+            socket.gethostname(), None, family=socket.AF_INET)})
+    except OSError:
+        local_ips = []
+    emit("HOST_CAPABILITY_DIAGNOSTICS",
+         uid=os.geteuid(), username=probe(["whoami"]),
+         sudo_list=probe(["sudo", "-n", "-l"]),
+         sudo_identity=probe(["sudo", "-n", "id"]),
+         cap_eff=cap_eff, local_ipv4=local_ips,
+         ip_addr=probe(["ip", "-brief", "address"]) if shutil.which("ip") else {"available": False},
+         ip_route=probe(["ip", "route", "show"]) if shutil.which("ip") else {"available": False},
+         iptables_binary=bool(shutil.which("iptables")),
+         iptables_nat_prerouting=probe(["iptables", "-t", "nat", "-S", "PREROUTING"]) if shutil.which("iptables") else {"available": False},
+         iptables_nat_output=probe(["iptables", "-t", "nat", "-S", "OUTPUT"]) if shutil.which("iptables") else {"available": False},
+         nft_binary=bool(shutil.which("nft")),
+         ss_listeners=probe(["ss", "-ltnp"]) if shutil.which("ss") else {"available": False})
     server = Server((HOST, PORT), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
