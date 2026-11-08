@@ -486,7 +486,7 @@ main()
             dataset_exists = probe.returncode == 0
             log.event("RX_DATASET_EXISTENCE_PROBE", dataset_id=args.dataset_id, exists=dataset_exists)
         publish_cmd = (["kaggle", "datasets", "version", "-p", str(dataset_dir),
-                        "-m", "WebVM IO loop RX message sequence 1", "-r", "skip"]
+                        "-m", "WebVM RX " + message["request_id"], "-r", "skip"]
                        if dataset_exists else
                        ["kaggle", "datasets", "create", "-p", str(dataset_dir), "-r", "skip"])
         command(log, publish_cmd, timeout=300, check=True)
