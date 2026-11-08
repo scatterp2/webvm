@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Self-contained Kaggle notebook agent for the one-message RX/TX loop proof."""
-import base64, hashlib, json, os, subprocess, sys, time
+import base64, hashlib, json, os, re, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
