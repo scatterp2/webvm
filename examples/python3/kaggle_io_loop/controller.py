@@ -558,7 +558,7 @@ main()
     # continue to status/output polling in that case: an older COMPLETE kernel
     # version can expose stale tx_response.json and falsely look like this run.
     push_text = (push_result.stdout or "").strip()
-    if re.search(r"(?im)^\\s*(?:Kernel push error|Error:|Exception:)", push_text):
+    if re.search(r"(?im)^\s*(?:Kernel push error|Error:|Exception:)", push_text):
         log.event("KERNEL_SUBMISSION_REJECTED", kernel_id=args.kernel_id,
                   output_tail=safe_text(push_text),
                   action="abort rather than validate stale output from an earlier kernel version")
