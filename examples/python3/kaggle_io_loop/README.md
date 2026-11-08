@@ -46,7 +46,7 @@ Kaggle's current notebook documentation states 12 hours maximum execution time f
 
 ## Stage 2: live TCP bridge over Tailscale
 
-The RX/TX proof above is only a file/message round trip. The live transport is a separate, long-running private Kaggle notebook, `USERNAME/webvm-tcp-link`, which runs an HTTP CONNECT + SOCKS5 proxy on local port 8889 and exposes it to the tailnet through Tailscale Serve on port 8888. No `iptables` PREROUTING rule is required.
+The RX/TX proof above is only a file/message round trip. The live transport is a separate, long-running private Kaggle notebook, `USERNAME/webvm-tcp-link`, which runs an HTTP CONNECT + SOCKS5 proxy on local port 8889 and exposes it to the tailnet through Tailscale Serve on port 18088, keeping it distinct from Jupyter's port 8888. WebVM configures applications to use this explicit SOCKS5/HTTP proxy. This is not transparent packet interception: the Kaggle runtime runs unprivileged and cannot change NAT rules, so transparent `iptables` redirection is unavailable there.
 
 ### One-time setup
 
