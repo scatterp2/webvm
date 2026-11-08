@@ -415,7 +415,9 @@ main()
     })
     if args.serve_tcp_link:
         log.event("POC_FILES_WRITTEN", notebook_bytes=notebook_path.stat().st_size,
-                  service="plain-python-tcp-echo-listener")
+                  service=("tailscale-socks5-http-connect-bridge"
+                           if args.use_existing_tailscale_bridge
+                           else "plain-python-tcp-echo-listener"))
     else:
         log.event("POC_FILES_WRITTEN", rx_bytes=(dataset_dir / "rx_message.json").stat().st_size,
                   notebook_bytes=notebook_path.stat().st_size, payload=message["payload"],
@@ -500,9 +502,9 @@ main()
         print("TCP_LINK_KERNEL_SUBMITTED kernel_id={} local_port={} service={}".format(
             args.kernel_id, advertised_port, service_name), flush=True)
 
-        # A missing Kaggle Secret makes the notebook finish quickly. Retrieve
-        # its status artifact in that case; if it stays running, leave the
-        # live TCP service alone and let runtime telemetry report readiness.
+        # If bridge startup fails, retrieve its status artifact; if the kernel
+        # stays running, leave the live TCP service alone and let telemetry
+        # report readiness.
         startup_started = time.monotonic()
         startup_deadline = startup_started + 300
         last_status_text = ""
