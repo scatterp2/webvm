@@ -859,7 +859,8 @@ def verify_tcp_link_from_webvm():
 
 
 def run_io_loop_proof():
-    """Fetch and run the isolated API-mediated RX/TX proof instead of the Qwen experiment."""
+    """Run RX/TX commands fetched from GitHub without requiring a WebVM reset."""
+    import hashlib
     from urllib.error import HTTPError, URLError
 
     # Fetch the current repository version so the deployed TCP service matches the
@@ -929,6 +930,56 @@ def run_io_loop_proof():
         USERNAME + "/webvm-tcp-link"), flush=True)
     run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
     print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
+
+    # Keep a command channel alive for the lifetime of this WebVM process.
+    # Editing remote_probe.py on GitHub delivers a new Python payload over RX/TX;
+    # it does not require changing the reset marker or restarting WebVM.
+    probe_path = target_dir / "remote_probe.py"
+    last_probe_sha = hashlib.sha256(probe_path.read_bytes()).hexdigest()
+    probe_url = base + "remote_probe.py"
+    print("RX_TX_REMOTE_COMMAND_POLL_STARTED interval_seconds=30 current_sha256={}".format(
+        last_probe_sha), flush=True)
+    while True:
+        time.sleep(30)
+        try:
+            request = Request(
+                probe_url + "?poll=" + str(int(time.time() * 1000)),
+                headers={"Cache-Control": "no-cache", "User-Agent": "webvm-kaggle-rx-tx/1.0"},
+            )
+            with urlopen(request, timeout=20) as response:
+                candidate = response.read(65537)
+            if not candidate or len(candidate) > 65536:
+                print("RX_TX_REMOTE_COMMAND_REJECTED reason=payload_size bytes={}".format(
+                    len(candidate)), flush=True)
+                continue
+            candidate_sha = hashlib.sha256(candidate).hexdigest()
+            if candidate_sha == last_probe_sha:
+                continue
+            try:
+                candidate_source = candidate.decode("utf-8")
+                compile(candidate_source, str(probe_path), "exec")
+            except (UnicodeDecodeError, SyntaxError) as exc:
+                print("RX_TX_REMOTE_COMMAND_REJECTED sha256={} reason={}: {}".format(
+                    candidate_sha, type(exc).__name__, str(exc)[:180]), flush=True)
+                last_probe_sha = candidate_sha
+                continue
+            temporary_path = probe_path.with_suffix(".py.new")
+            temporary_path.write_bytes(candidate)
+            os.replace(temporary_path, probe_path)
+            last_probe_sha = candidate_sha
+            print("RX_TX_REMOTE_COMMAND_RECEIVED sha256={} bytes={} transport=github-fetch-then-kaggle-rx-tx".format(
+                candidate_sha, len(candidate)), flush=True)
+            try:
+                run_streamed_subprocess(
+                    proof_command, env, "RX_TX_REMOTE_COMMAND", timeout=1200)
+                print("RX_TX_REMOTE_COMMAND_COMPLETED sha256={}".format(
+                    candidate_sha), flush=True)
+            except Exception as exc:
+                print("RX_TX_REMOTE_COMMAND_FAILED sha256={} error={}: {}".format(
+                    candidate_sha, type(exc).__name__, str(exc)[:300]), flush=True)
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            print("RX_TX_REMOTE_COMMAND_POLL_ERROR error={}: {}".format(
+                type(exc).__name__, str(exc)[:220]), flush=True)
 
 
 def main():
