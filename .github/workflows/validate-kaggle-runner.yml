@@ -118,12 +118,12 @@ jobs:
           notebook = json.loads((root / "kernel" / "io_loop_proof.ipynb").read_text())
           source = "".join(notebook["cells"][0]["source"])
           metadata = json.loads((root / "kernel" / "kernel-metadata.json").read_text())
-          assert "WEBVM_TAILSCALE_AUTHKEY" in source
+          assert "TCP_LISTENER_SELF_TEST_PASS" in source
+          assert "PORT = 8889" in source
+          assert "ACK:WEBVM_PORT_TEST_V1" in source
           assert "TCP_LINK_KERNEL_SUBMITTED" not in source
-          assert '"serve"' in source and "TAILNET_PORT = 18088" in source
-          # The temporary auth key is intentionally embedded in the generated notebook for this deployment.
-          # Check for a key-shaped literal without printing its value into CI logs.
-          assert re.search(r"tskey-auth-[A-Za-z0-9_-]{20,}", source)
+          assert "tailscale_latest_amd64.tgz" not in source
+          assert "tskey-auth-" not in source
           assert metadata["id"] == "ci-user/webvm-tcp-link"
           assert metadata["title"] == "WebVM TCP Link"
           assert re.sub(r"[^a-z0-9]+", "-", metadata["title"].lower()).strip("-") == "webvm-tcp-link"
