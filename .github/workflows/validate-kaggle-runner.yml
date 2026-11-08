@@ -120,7 +120,7 @@ jobs:
           metadata = json.loads((root / "kernel" / "kernel-metadata.json").read_text())
           assert "WEBVM_TAILSCALE_AUTHKEY" in source
           assert "TCP_LINK_KERNEL_SUBMITTED" not in source
-          assert '"serve"' in source and "TAILNET_PORT = 8888" in source
+          assert '"serve"' in source and "TAILNET_PORT = 18088" in source
           assert not re.search(r"tskey-auth-[A-Za-z0-9_-]{20,}", source)
           assert metadata["id"] == "ci-user/webvm-tcp-link"
           assert metadata["title"] == "WebVM TCP Link"
