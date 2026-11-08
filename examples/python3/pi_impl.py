@@ -924,13 +924,12 @@ def run_io_loop_proof():
         "--timeout-seconds", "900",
         "--poll-seconds", "10",
         "--serve-tcp-link",
+        "--use-existing-tailscale-bridge",
     ]
     print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
         USERNAME + "/webvm-tcp-link"), flush=True)
     run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
-    # The current Kaggle kernel is a plain TCP listener, not a Tailscale proxy.
-    # Do not probe the obsolete /data/kaggle-tcp-link.env proxy configuration.
-    print("TCP_LINK_REMOTE_PROBE_SKIPPED reason=plain_listener_has_no_tunnel_or_route_configured", flush=True)
+    print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
 
 
 def main():
