@@ -116,7 +116,10 @@ jobs:
                       if event_time_match:
                           try:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
-                              if event_time < started_at - __import__("datetime").timedelta(minutes=10):
+                              # Keep terminal-test logs even if the runtime itself started earlier:
+                              # the same paste is updated in place with later progress/results.
+                              terminal_telemetry = re.search(r"WEBVM_TERMINAL_(?:SELFTEST|RESULT_SELFTEST)", body, re.I)
+                              if event_time < started_at - __import__("datetime").timedelta(minutes=10) and not terminal_telemetry:
                                   continue
                           except ValueError:
                               pass
