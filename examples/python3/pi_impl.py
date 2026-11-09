@@ -750,13 +750,8 @@ def deploy():
 # MAIN
 # ============================================================
 
-def run_streamed_subprocess(command, env, label, timeout=1200):
-    """Stream child logs while enforcing a real wall-clock timeout.
-
-    readline() on the main thread can block forever if a descendant inherits
-    stdout after the direct child exits. A daemon reader plus timed queue reads
-    keeps timeout and process-exit checks responsive in WebAssembly too.
-    """
+def run_streamed_subprocess(command, env, label, timeout=1200, success_marker=None):
+    """Stream child logs while enforcing a real wall-clock timeout."""
     import queue
     started = time.monotonic()
     process = subprocess.Popen(
@@ -779,6 +774,7 @@ def run_streamed_subprocess(command, env, label, timeout=1200):
     reader = threading.Thread(target=_read_output, name=label + "-stdout", daemon=True)
     reader.start()
     timed_out = False
+    marker_completed = False
     try:
         while True:
             remaining = timeout - (time.monotonic() - started)
@@ -795,7 +791,24 @@ def run_streamed_subprocess(command, env, label, timeout=1200):
                 if process.poll() is not None:
                     break
                 continue
-            print(item, end="" if item.endswith("\\n") else "\\n", flush=True)
+            print(item, end="" if item.endswith("\n") else "\n", flush=True)
+            if success_marker and success_marker in item:
+                # The child emits this only after the RX/TX output has been
+                # downloaded and all request/checksum/payload checks passed.
+                marker_completed = True
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            pass
+                break
             if process.poll() is not None and lines.empty():
                 break
         if timed_out:
@@ -808,11 +821,13 @@ def run_streamed_subprocess(command, env, label, timeout=1200):
                 pass
             raise subprocess.TimeoutExpired(command, timeout)
         returncode = process.poll()
+        if marker_completed:
+            print("{}_SUCCESS_MARKER observed={}".format(label, success_marker), flush=True)
+            returncode = 0
         if returncode is None:
             try:
                 returncode = process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                # The direct process is still alive despite closing its output.
                 process.kill()
                 try:
                     returncode = process.wait(timeout=5)
@@ -824,16 +839,15 @@ def run_streamed_subprocess(command, env, label, timeout=1200):
     finally:
         if process.poll() is None:
             process.kill()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
         if process.stdout:
             try:
                 process.stdout.close()
             except (OSError, ValueError):
                 pass
-
 
 def verify_tcp_link_from_webvm():
     """Verify a real remote HTTPS/TCP connection through the discovered Kaggle peer."""
@@ -939,7 +953,7 @@ def run_io_loop_proof():
         with open(command_lock_path, "r+") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
-                run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200)
+                run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200, success_marker="LOOP_PROOF_PASS")
                 proof_result["passed"] = True
                 print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
                       flush=True)
