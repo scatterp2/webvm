@@ -1058,7 +1058,53 @@ def run_io_loop_proof():
         raise RuntimeError("No readable TX result (controller exit {}). {}".format(
             returncode, summary[-1800:]))
 
-    terminal_service.start_server(_terminal_command, host="127.0.0.1", port=2323)
+    # The self-test lives in pi_impl so its progress is always part of the
+    # runtime telemetry, even if an older terminal_service module is cached.
+    terminal_service.start_server(_terminal_command, host="127.0.0.1", port=2323, self_test=False)
+
+    def _run_terminal_rx_tx_selftest():
+        token = "WEBVM_TERMINAL_SELFTEST_OK"
+        started_at = time.monotonic()
+        received = bytearray()
+        try:
+            with socket.create_connection(("127.0.0.1", 2323), timeout=15) as client:
+                client.settimeout(10)
+                print("WEBVM_TERMINAL_SELFTEST_CONNECTED host=127.0.0.1 port=2323", flush=True)
+                banner = bytearray()
+                while b"kaggle$ " not in banner:
+                    part = client.recv(4096)
+                    if not part:
+                        raise RuntimeError("closed before prompt")
+                    banner.extend(part)
+                    if len(banner) > 16384:
+                        raise RuntimeError("unexpectedly large terminal banner")
+                client.sendall(("printf '" + token + "\\\\n'\\n").encode("utf-8"))
+                print("WEBVM_TERMINAL_SELFTEST_COMMAND_SENT command=printf-marker", flush=True)
+                deadline = started_at + 1200
+                while time.monotonic() < deadline:
+                    try:
+                        part = client.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not part:
+                        raise RuntimeError("closed before TX response")
+                    received.extend(part)
+                    response = received.decode("utf-8", "replace")
+                    if token in response and "[exit code 0]" in response:
+                        print("WEBVM_TERMINAL_RESULT_SELFTEST_PASS transport=tcp-loopback-rx-kaggle-tx elapsed_seconds={:.1f} output_marker={} exit_code=0".format(
+                            time.monotonic() - started_at, token), flush=True)
+                        return
+                    if "[RX/TX ERROR]" in response or "[exit code " in response:
+                        raise RuntimeError("command returned an error: " + response[-1200:])
+                raise TimeoutError("no successful TX result within 1200 seconds; response=" +
+                                   received.decode("utf-8", "replace")[-1200:])
+        except Exception as exc:
+            print("WEBVM_TERMINAL_RESULT_SELFTEST_FAIL error={}: {} elapsed_seconds={:.1f}".format(
+                type(exc).__name__, str(exc)[:1200], time.monotonic() - started_at), flush=True)
+
+    print("WEBVM_TERMINAL_SELFTEST_STARTED transport=tcp-loopback-rx-kaggle-tx", flush=True)
+    threading.Thread(target=_run_terminal_rx_tx_selftest,
+                     name="webvm-terminal-rx-tx-selftest", daemon=True).start()
 
     # Submit the existing long-running Tailscale bridge. Authentication is
     # handled inside that bridge; no auth material is sent through RX/TX.
