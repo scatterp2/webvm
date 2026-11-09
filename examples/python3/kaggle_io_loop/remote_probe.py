@@ -1,124 +1,134 @@
 #!/usr/bin/env python3
-"""Bounded network probe executed through the WebVM -> Kaggle RX/TX envelope.
+"""Run a bounded raw-frame transmit/capture test through the WebVM RX/TX command channel.
 
-Every DNS/connection check runs in a child process with a hard wall-clock limit,
-so a resolver stall cannot block the RX/TX acknowledgement. This does not change
-firewall rules or touch Jupyter.
+This uses AF_PACKET directly because tcpdump is not installed in the Kaggle runtime.
+It captures packet metadata for existing Jupyter :8888 flows without reading application
+payloads, and sends one private experimental-EtherType marker frame to verify raw TX/RX.
+It does not inject bytes into an established TCP session or change firewall/server state.
 """
-import json, os, platform, shutil, subprocess, sys, time
+import json, os, socket, struct, time, fcntl
 
-PROBE_CODE = r"""
-import json, socket, sys
-host, port = sys.argv[1], int(sys.argv[2])
-addresses = sorted({item[4][0] for item in socket.getaddrinfo(
-    host, port, type=socket.SOCK_STREAM
-)})
-with socket.create_connection((host, port), timeout=2):
-    pass
-print(json.dumps({"dns": True, "address_count": len(addresses), "tcp": True}))
-"""
+INTERFACE = "eth0"
+CAPTURE_SECONDS = 4.0
+MARKER = ("WEBVM_RAW_FRAME_TEST_" + str(time.time_ns())).encode("ascii")
+CUSTOM_ETHERTYPE = 0x88B5
 
-HTTPS_CODE = r"""
-import json
-from urllib.request import urlopen, Request
-req = Request("https://example.com/", headers={"User-Agent": "webvm-rx-tx-probe/1"})
-with urlopen(req, timeout=3) as response:
-    print(json.dumps({"ok": True, "status": response.status,
-                      "bytes": len(response.read(256))}))
-"""
-
-def run_bounded(code, args, timeout):
+def mac_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        result = subprocess.run(
-            [sys.executable, "-I", "-c", code, *args],
-            capture_output=True, text=True, timeout=timeout, check=False
-        )
-        if result.returncode != 0:
-            return {"ok": False, "error": "ProbeFailed",
-                    "detail": (result.stderr or "")[-180:]}
-        try:
-            return json.loads(result.stdout.strip().splitlines()[-1])
-        except (ValueError, IndexError):
-            return {"ok": False, "error": "InvalidProbeOutput"}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "ProbeTimeout"}
-    except Exception as exc:
-        return {"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:160]}
+        request = struct.pack("256s", ifname.encode()[:15])
+        result = fcntl.ioctl(s.fileno(), 0x8927, request)
+        return result[18:24]
+    finally:
+        s.close()
 
-def probe_host(host, port=443):
-    result = run_bounded(PROBE_CODE, [host, str(port)], 5)
-    row = {"host": host, "port": port}
-    if result.get("ok") is False:
-        row.update(dns_or_tcp=False, error=result.get("error", "ProbeFailed"))
-        if result.get("detail"):
-            row["detail"] = result["detail"]
-    else:
-        row.update(result)
-    return row
-
-def bounded_command(argv, timeout=3):
-    try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
-        return {
-            "returncode": p.returncode,
-            "stdout": (p.stdout or "")[-1200:],
-            "stderr": (p.stderr or "")[-600:],
-        }
-    except Exception as exc:
-        return {"error": type(exc).__name__}
-
-def read_small(path, limit=3000):
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read(limit)
-    except Exception as exc:
-        return {"error": type(exc).__name__}
-
-def netfilter_diagnostics():
-    commands = {}
-    for name in ("iptables", "iptables-nft", "iptables-legacy", "nft", "apt-get", "dpkg", "busybox"):
-        commands[name] = shutil.which(name)
-    for path in ("/usr/sbin/iptables", "/sbin/iptables", "/usr/bin/iptables",
-                 "/usr/sbin/iptables-nft", "/usr/sbin/iptables-legacy",
-                 "/usr/sbin/nft", "/sbin/nft"):
-        if os.path.exists(path):
-            commands["exists:" + path] = True
-    proc_names = read_small("/proc/net/ip_tables_names", 1000)
-    module_names = read_small("/proc/modules", 8000)
-    module_matches = []
-    if isinstance(module_names, str):
-        module_matches = [line.split()[0] for line in module_names.splitlines()
-                          if any(k in line.lower() for k in
-                                 ("ip_tables", "iptable_nat", "nf_nat", "nf_tables", "nft_chain"))]
-    apt_cache = bounded_command(["apt-cache", "policy", "iptables"], 3) if commands.get("apt-get") else {"note": "apt-get not found"}
-    dpkg_arch = bounded_command(["dpkg", "--print-architecture"], 3) if commands.get("dpkg") else {"note": "dpkg not found"}
-    uname = bounded_command(["uname", "-a"], 3)
+def tcp_metadata(frame):
+    if len(frame) < 14:
+        return None
+    ethertype = struct.unpack("!H", frame[12:14])[0]
+    offset = 14
+    if ethertype == 0x8100 and len(frame) >= 18:
+        ethertype = struct.unpack("!H", frame[16:18])[0]
+        offset = 18
+    if ethertype != 0x0800 or len(frame) < offset + 20:
+        return None
+    ip = frame[offset:]
+    if ip[0] >> 4 != 4:
+        return None
+    ihl = (ip[0] & 0x0f) * 4
+    if len(ip) < ihl + 20 or ip[9] != 6:
+        return None
+    total_len = struct.unpack("!H", ip[2:4])[0]
+    src_ip = socket.inet_ntoa(ip[12:16])
+    dst_ip = socket.inet_ntoa(ip[16:20])
+    tcp = ip[ihl:]
+    src_port, dst_port, seq, ack = struct.unpack("!HHII", tcp[:12])
+    tcp_hlen = (tcp[12] >> 4) * 4
+    flags = tcp[13]
+    payload_len = max(0, min(total_len, len(ip)) - ihl - tcp_hlen)
+    if src_port != 8888 and dst_port != 8888:
+        return None
     return {
-        "architecture": platform.machine(),
-        "kernel": uname,
-        "commands": commands,
-        "dpkg_architecture": dpkg_arch,
-        "apt_policy_iptables": apt_cache,
-        "proc_ip_tables_names": proc_names,
-        "netfilter_modules_loaded": module_matches,
-        "config_netfilter": {
-            "proc_config_gz": "present" if os.path.exists("/proc/config.gz") else "absent",
-            "boot_config": "present" if os.path.exists("/boot/config-" + os.uname().release) else "absent",
-        },
+        "src": f"{src_ip}:{src_port}",
+        "dst": f"{dst_ip}:{dst_port}",
+        "flags": "".join(letter for bit, letter in (
+            (0x02, "S"), (0x10, "A"), (0x08, "P"),
+            (0x01, "F"), (0x04, "R"), (0x20, "U")
+        ) if flags & bit),
+        "seq": seq,
+        "ack": ack,
+        "payload_bytes": payload_len,
     }
 
 report = {
-    "probe": "webvm-rx-tx-remote-probe-v3",
+    "probe": "webvm-raw-frame-tx-rx-v1",
     "time": time.time(),
-    "hostname": os.uname().nodename if hasattr(os, "uname") else None,
-    "uid": os.geteuid() if hasattr(os, "geteuid") else None,
-    "network": [probe_host(host) for host in (
-        "raw.githubusercontent.com", "api.kaggle.com",
-        "kkb-production.jupyter-proxy.kaggle.net", "pste.us"
-    )],
-    "jupyter_8888_untouched": True,
+    "interface": INTERFACE,
+    "tcpdump_installed": False,
+    "capture_method": "AF_PACKET raw socket",
     "firewall_changed": False,
+    "jupyter_8888_touched": False,
 }
-report["https_example"] = run_bounded(HTTPS_CODE, [], 7)
-report["netfilter_diagnostics"] = netfilter_diagnostics()
+
+capture = None
+tx = None
+try:
+    capture = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+    capture.bind((INTERFACE, 0))
+    capture.settimeout(0.15)
+    local_mac = mac_address(INTERFACE)
+    report["raw_capture_socket"] = "PASS"
+    report["interface_mac_available"] = True
+
+    tx = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(CUSTOM_ETHERTYPE))
+    tx.bind((INTERFACE, socket.htons(CUSTOM_ETHERTYPE)))
+    # Address the frame to this interface's own MAC and use an experimental
+    # EtherType, avoiding the live TCP/Jupyter protocol entirely.
+    frame = local_mac + local_mac + struct.pack("!H", CUSTOM_ETHERTYPE) + MARKER
+    if len(MARKER) < 46:
+        frame += b"\x00" * (46 - len(MARKER))
+    sent = tx.send(frame)
+    report["raw_frame_tx"] = "PASS"
+    report["raw_frame_bytes"] = sent
+except Exception as exc:
+    report["raw_capture_or_tx_error"] = type(exc).__name__ + ": " + str(exc)[:240]
+finally:
+    if tx is not None:
+        tx.close()
+
+start = time.monotonic()
+seen_marker = 0
+tcp_packets = 0
+tcp_rows = []
+other_packets = 0
+if capture is not None:
+    while time.monotonic() - start < CAPTURE_SECONDS:
+        try:
+            packet, addr = capture.recvfrom(65535)
+        except socket.timeout:
+            continue
+        except Exception as exc:
+            report["capture_loop_error"] = type(exc).__name__ + ": " + str(exc)[:180]
+            break
+        if MARKER in packet:
+            seen_marker += 1
+        row = tcp_metadata(packet)
+        if row is not None:
+            tcp_packets += 1
+            if len(tcp_rows) < 30:
+                tcp_rows.append(row)
+        else:
+            other_packets += 1
+    capture.close()
+
+report["capture_window_seconds"] = round(time.monotonic() - start, 3)
+report["raw_marker_captured"] = seen_marker > 0
+report["raw_marker_capture_count"] = seen_marker
+report["tcp_8888_packet_count"] = tcp_packets
+report["other_packet_count"] = other_packets
+report["tcp_8888_samples"] = tcp_rows
+report["result"] = (
+    "PASS_RAW_TX_AND_CAPTURE" if report.get("raw_frame_tx") == "PASS" and seen_marker > 0
+    else "PARTIAL_OR_FAILED_RAW_TX_CAPTURE"
+)
 print("REMOTE_PROBE_RESULT " + json.dumps(report, sort_keys=True), flush=True)
