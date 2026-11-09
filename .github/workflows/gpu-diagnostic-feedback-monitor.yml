@@ -34,7 +34,7 @@ jobs:
               "TORCH_DIAGNOSTIC",
               "KAGGLE_DIAGNOSTIC_FILE",
           )
-          SEARCH_URL = "https://pste.us/pastes"
+          SEARCH_URL = "https://pste.us/recent?search=" + TAG + "&sort=date&order=desc&limit=51"
           RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
@@ -61,11 +61,12 @@ jobs:
               ignored = 0
               try:
                   page = fetch_text(SEARCH_URL, max_time=5)
-                  # Paste IDs on the public listing are 8-character path segments.
+                  # Query the tag-specific search endpoint so older GPU snapshots are not
+                  # missed merely because newer unrelated pastes pushed them off page 1.
                   ids = list(dict.fromkeys(re.findall(
-                      r'<a[^>]+href="/([A-Za-z0-9_-]{8})"[^>]*>', page
+                      r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"[^>]*>', page
                   )))
-                  for pid in ids[:25]:
+                  for pid in ids[:51]:
                       if pid in SEEN:
                           continue
                       try:
