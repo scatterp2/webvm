@@ -7,6 +7,7 @@ This is a command queue, not a low-latency persistent shell: Kaggle scheduling
 and dataset publication can make each command take minutes.
 """
 import json
+import socket
 import socketserver
 import threading
 import time
@@ -61,7 +62,50 @@ class _Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def start_server(execute_command, host=HOST, port=PORT):
+def _self_test(host, port):
+    """Prove a real TCP client command returns through RX -> Kaggle -> TX."""
+    token = "WEBVM_TERMINAL_SELFTEST_OK"
+    command = "printf '" + token + "\\n'"
+    started = time.monotonic()
+    received = bytearray()
+    try:
+        with socket.create_connection((host, port), timeout=15) as client:
+            client.settimeout(30)
+            # Consume the banner/prompt first, then issue one harmless command.
+            banner = bytearray()
+            while b"kaggle$ " not in banner:
+                chunk = client.recv(4096)
+                if not chunk:
+                    raise RuntimeError("connection closed before initial prompt")
+                banner.extend(chunk)
+                if len(banner) > 16384:
+                    raise RuntimeError("terminal banner exceeded expected size")
+            client.sendall((command + "\n").encode("utf-8"))
+            deadline = started + 1200
+            while time.monotonic() < deadline:
+                try:
+                    chunk = client.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    raise RuntimeError("connection closed before TX result")
+                received.extend(chunk)
+                response = received.decode("utf-8", "replace")
+                if token in response and "[exit code 0]" in response:
+                    print("WEBVM_TERMINAL_RESULT_SELFTEST_PASS transport=tcp-loopback-rx-kaggle-tx "
+                          "elapsed_seconds={:.1f} output_marker={} exit_code=0".format(
+                              time.monotonic() - started, token), flush=True)
+                    return
+                if "[RX/TX ERROR]" in response or "[exit code " in response:
+                    raise RuntimeError("terminal returned error/nonzero result: " + response[-1200:])
+            raise TimeoutError("no successful terminal TX result within 1200 seconds; received=" +
+                               received.decode("utf-8", "replace")[-1200:])
+    except Exception as exc:
+        print("WEBVM_TERMINAL_RESULT_SELFTEST_FAIL error={}: {} elapsed_seconds={:.1f}".format(
+            type(exc).__name__, str(exc)[:1200], time.monotonic() - started), flush=True)
+
+
+def start_server(execute_command, host=HOST, port=PORT, self_test=True):
     server = _Server((host, port), _Handler)
     server.execute_command = execute_command
     thread = threading.Thread(target=server.serve_forever,
@@ -69,6 +113,10 @@ def start_server(execute_command, host=HOST, port=PORT):
     thread.start()
     print("RX_TX_TERMINAL_LISTENING host={} port={} transport=Kaggle-RX-TX".format(
         host, port), flush=True)
+    if self_test:
+        threading.Thread(target=_self_test, args=(host, port),
+                         name="webvm-rx-tx-terminal-selftest", daemon=True).start()
+        print("WEBVM_TERMINAL_SELFTEST_STARTED command=printf-marker transport=loopback-tcp", flush=True)
     return server
 
 
