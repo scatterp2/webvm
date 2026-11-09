@@ -8,6 +8,7 @@ import time
 import shutil
 import subprocess
 import threading
+import socket
 from pathlib import Path
 
 # ============================================================
@@ -1078,7 +1079,7 @@ def run_io_loop_proof():
                     banner.extend(part)
                     if len(banner) > 16384:
                         raise RuntimeError("unexpectedly large terminal banner")
-                client.sendall(("printf '" + token + "\\\\n'\\n").encode("utf-8"))
+                client.sendall(("printf '%s\\n' " + token + "\n").encode("utf-8"))
                 print("WEBVM_TERMINAL_SELFTEST_COMMAND_SENT command=printf-marker", flush=True)
                 deadline = started_at + 1200
                 while time.monotonic() < deadline:
