@@ -751,34 +751,88 @@ def deploy():
 # ============================================================
 
 def run_streamed_subprocess(command, env, label, timeout=1200):
-    """Stream newline-delimited child logs without selectors (unreliable in WebAssembly)."""
+    """Stream child logs while enforcing a real wall-clock timeout.
+
+    readline() on the main thread can block forever if a descendant inherits
+    stdout after the direct child exits. A daemon reader plus timed queue reads
+    keeps timeout and process-exit checks responsive in WebAssembly too.
+    """
+    import queue
     started = time.monotonic()
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=env
     )
+    lines = queue.Queue()
+    eof = object()
+
+    def _read_output():
+        try:
+            for line in iter(process.stdout.readline, ""):
+                lines.put(line)
+        except (OSError, ValueError) as exc:
+            lines.put("{}_OUTPUT_READER_ERROR {}: {}".format(
+                label, type(exc).__name__, str(exc)[:180]))
+        finally:
+            lines.put(eof)
+
+    reader = threading.Thread(target=_read_output, name=label + "-stdout", daemon=True)
+    reader.start()
+    timed_out = False
     try:
         while True:
-            line = process.stdout.readline()
-            if line:
-                print(line, end="", flush=True)
-                continue
-            returncode = process.poll()
-            if returncode is not None:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                timed_out = True
                 break
-            if time.monotonic() - started > timeout:
+            try:
+                item = lines.get(timeout=min(0.25, remaining))
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            if item is eof:
+                if process.poll() is not None:
+                    break
+                continue
+            print(item, end="" if item.endswith("\\n") else "\\n", flush=True)
+            if process.poll() is not None and lines.empty():
+                break
+        if timed_out:
+            print("{}_TIMEOUT seconds={}".format(label, timeout), flush=True)
+            if process.poll() is None:
                 process.kill()
-                raise subprocess.TimeoutExpired(command, timeout)
-            time.sleep(0.1)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise subprocess.TimeoutExpired(command, timeout)
+        returncode = process.poll()
+        if returncode is None:
+            try:
+                returncode = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # The direct process is still alive despite closing its output.
+                process.kill()
+                try:
+                    returncode = process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    returncode = -9
         print("{}_EXIT returncode={}".format(label, returncode), flush=True)
         if returncode != 0:
             raise RuntimeError("{} failed with exit code {}".format(label, returncode))
     finally:
         if process.poll() is None:
             process.kill()
-            process.wait()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         if process.stdout:
-            process.stdout.close()
+            try:
+                process.stdout.close()
+            except (OSError, ValueError):
+                pass
 
 
 def verify_tcp_link_from_webvm():
