@@ -8,6 +8,7 @@ on:
       - 'examples/python3/pi_impl.py'
       - 'examples/python3/kaggle_io_loop/controller.py'
       - 'examples/python3/kaggle_io_loop/remote_probe.py'
+      - 'examples/python3/kaggle_io_loop/terminal_service.py'
       - 'reset'
   workflow_dispatch:
 
@@ -33,7 +34,6 @@ jobs:
           details_attempted = set()
           started_at = datetime.now(timezone.utc)
           started = time.monotonic()
-          tcp_controller_started_at = None
 
           def get_json(url, timeout=15):
               req = Request(url, headers={"Accept":"application/json","User-Agent":"webvm-active-runtime-watch/1.0"})
@@ -74,9 +74,6 @@ jobs:
               keep = []
               in_traceback = False
               for line in body.splitlines():
-                  # Preserve traceback frames as well as the final exception. The
-                  # old filter kept only "Traceback" and the exception type, hiding
-                  # the exact file/line that caused a runtime crash.
                   if "Traceback (most recent call last):" in line:
                       in_traceback = True
                       keep.append(line[:1000])
@@ -86,16 +83,12 @@ jobs:
                       if re.search(r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Interrupt|Exit):", line.strip()):
                           in_traceback = False
                       continue
-                  if re.search(r'(FATAL|ERROR|RuntimeError|Exception|REMOTE_PROBE_RESULT|JUPYTER_LAUNCH_ARGV|JUPYTER_BASE_URL|SECOND_JUPYTER_SERVER|GPU_HEALTH_CHECK|netfilter_diagnostics|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|LOOP_PROOF_PASS|OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|API_REQUEST_EXHAUSTED|API_REQUEST_TIMEOUT|RX_PUBLICATION_VERIFIED|DIAGNOSTICS|WEBVM_PROXY_DIAGNOSTIC|PROXY_URL_DISCOVERED|NAT_RULE_|IPTABLES_CAPABILITY_PROBE|INTERCEPT_CAPABILITY_PROBE|NAT_INTERCEPT|LOCAL_PORT_PROBE|LOCAL_TARGET_LISTENER|TCP_LINK|tailscale_ip|SOCKS5|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
-                      keep.append(
-                          line[:5000] if re.search(r"OUTPUT_VALIDATION|REMOTE_PROBE_RESULT|JUPYTER_LAUNCH_ARGV|JUPYTER_BASE_URL|SECOND_JUPYTER_SERVER|GPU_HEALTH_CHECK|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|TCP_LINK_STARTUP_STATUS", line, re.I)
-                          else line[:1000]
-                      )
-              return keep[-50:]
+                  if re.search(r'(FATAL|ERROR|RuntimeError|Exception|REMOTE_PROBE_RESULT|JUPYTER_LAUNCH_ARGV|JUPYTER_BASE_URL|SECOND_JUPYTER_SERVER|GPU_HEALTH_CHECK|netfilter_diagnostics|CUDA|GPU|torch=|cuda_available|gpu_count|KernelWorkerStatus|Kernel version|successfully pushed|PI_WRAPPER_STARTED|PI_WRAPPER_FINISHED|LOOP_PROOF_PASS|OUTPUT_VALIDATION|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|API_REQUEST_EXHAUSTED|API_REQUEST_TIMEOUT|RX_PUBLICATION_VERIFIED|DIAGNOSTICS|WEBVM_PROXY_DIAGNOSTIC|PROXY_URL_DISCOVERED|NAT_RULE_|IPTABLES_CAPABILITY_PROBE|INTERCEPT_CAPABILITY_PROBE|NAT_INTERCEPT|LOCAL_PORT_PROBE|LOCAL_TARGET_LISTENER|TCP_LINK|WEBVM_TERMINAL_RESULT_SELFTEST|WEBVM_TERMINAL_SELFTEST|RX_TX_TERMINAL_LISTENING|tailscale_ip|SOCKS5|exit code|stage=|time=|reset=|credentials are missing)', line, re.I):
+                      keep.append(line[:5000] if re.search(r"OUTPUT_VALIDATION|REMOTE_PROBE_RESULT|JUPYTER_LAUNCH_ARGV|JUPYTER_BASE_URL|SECOND_JUPYTER_SERVER|GPU_HEALTH_CHECK|PROXY_DIAGNOSTIC_RESULTS|NOTEBOOK_DIAGNOSTIC_DOWNLOAD|TCP_LINK_STARTUP_STATUS|WEBVM_TERMINAL_RESULT_SELFTEST", line, re.I) else line[:1200])
+              return keep[-70:]
 
           print("WATCH_STARTED", datetime.now(timezone.utc).isoformat(), flush=True)
           terminal_stage_seen = False
-          tcp_controller_seen = False
           while time.monotonic() - started < 900:
               try:
                   data = unwrap(get_json(BASE + "?" + urlencode({"limit":20,"offset":0}), timeout=10))
@@ -104,9 +97,7 @@ jobs:
                   for item in items[:20]:
                       pid = pid_of(item)
                       body = body_from(item)
-                      marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC)'
-                      # The listing endpoint may expose metadata/title but omit the paste body.
-                      # Fetch detail whenever listing text does not contain runtime markers.
+                      marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC|WEBVM_TERMINAL_RESULT_SELFTEST|WEBVM_TERMINAL_SELFTEST|RX_TX_TERMINAL_LISTENING)'
                       if (pid and (not body or not re.search(marker, body, re.I))
                               and pid not in details_attempted and detail_fetches < 3):
                           details_attempted.add(pid)
@@ -117,16 +108,12 @@ jobs:
                                   body = detail_body
                           except Exception:
                               pass
-                      if not body or (pid and pid in seen):
-                          continue
-                      if not re.search(marker, body, re.I):
+                      if not body or (pid and pid in seen) or not re.search(marker, body, re.I):
                           continue
                       event_time_match = re.search(r"^time=(\d{4}-\d\d-\d\dT[^\s]+)", body, re.M)
                       if event_time_match:
                           try:
                               event_time = datetime.fromisoformat(event_time_match.group(1).replace("Z", "+00:00"))
-                              # Runtime feedback can arrive just after a previous watcher exits.
-                              # Recheck recent events for up to ten minutes, but ignore older runs.
                               if event_time < started_at - __import__("datetime").timedelta(minutes=10):
                                   continue
                           except ValueError:
@@ -135,15 +122,11 @@ jobs:
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
                       for line in safe_lines(body):
                           print(line, flush=True)
-                      if re.search(r"TCP_LINK_CONTROLLER_START", body, re.I):
-                          tcp_controller_seen = True
-                          if tcp_controller_started_at is None:
-                              tcp_controller_started_at = time.monotonic()
-                      if re.search(r'(stage=PI_TCP_LINK_(READY|AUTH_KEY_MISSING|FAILED)|TCP_LINK_STARTUP_STATUS.*(READY|AUTH_KEY_MISSING|FAILED)|WEBVM_TCP_LINK.*"stage"\s*:\s*"(READY|AUTH_KEY_MISSING|FAILED)"|TCP_LINK_CONTROLLER_EXIT.*returncode=1|TCP_LINK_STATUS_ARTIFACT_MISSING|TCP_LINK_KERNEL_LOG_DIAGNOSTICS)', body, re.I):
+                      if re.search(r'WEBVM_TERMINAL_RESULT_SELFTEST_(PASS|FAIL)', body, re.I):
                           terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
                   if terminal_stage_seen:
-                      print("WATCH_EARLY_STOP terminal TCP link status found", flush=True)
+                      print("WATCH_EARLY_STOP terminal self-test result found", flush=True)
                       break
               except Exception as e:
                   print("POLL_ERROR", repr(e), flush=True)
