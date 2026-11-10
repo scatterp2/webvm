@@ -24,7 +24,7 @@ jobs:
           import time
           from datetime import datetime, timezone
 
-          TAG = "WVMGPU_DIAG_20261107_6D91C42F"
+          TAG = "WVMQWENWS_6D91C42F"
           # A WebVM wrapper can mention GPU settings, so require Kaggle-origin
           # telemetry plus an actual diagnostic marker before accepting a match.
           GPU_MARKERS = (
