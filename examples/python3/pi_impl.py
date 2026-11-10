@@ -1215,20 +1215,12 @@ def main():
     prepare_system()
     prepare_credentials()
 
-    # Run the GPU notebook diagnostic before the long-lived RX/TX command loop.
-    # Previously main() skipped write_notebook()/deploy(), so no
-    # automated-gpu-test run or GPU preflight logs were produced at all.
-    try:
-        print("GPU_DIAGNOSTIC_SUBMISSION_BEGIN", flush=True)
-        write_notebook()
-        deploy()
-        print("GPU_DIAGNOSTIC_SUBMISSION_FINISHED", flush=True)
-    except Exception as exc:
-        # Keep RX/TX proof independent if the GPU submission path fails.
-        # Log only the exception class so unexpected messages cannot leak
-        # environment details into public feedback.
-        print("GPU_DIAGNOSTIC_SUBMISSION_FAILED error_type={}".format(
-            type(exc).__name__), flush=True)
-
+    # Prioritize the active RX/TX proof and live TCP bridge. The legacy
+    # automated-gpu-test deployment can remain RUNNING for many minutes and
+    # previously blocked run_io_loop_proof() from starting at all. Defer that
+    # separate GPU workload until the transport path is proven; do not launch
+    # a competing Kaggle kernel while the RX/TX proof needs a session.
+    print("GPU_DIAGNOSTIC_DEFERRED reason=prioritize_RX_TX_and_live_TCP_proof",
+          flush=True)
     run_io_loop_proof()
 
