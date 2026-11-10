@@ -49,7 +49,7 @@ def publish(stage):
         payload = json.dumps({
             "content": content,
             "language": "text",
-            "expires_in": "1m"
+            "expires_in": "1d"
         }).encode("utf-8")
         request = Request(
             FEEDBACK_URL,
