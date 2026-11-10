@@ -64,7 +64,7 @@ jobs:
                   # Query the tag-specific search endpoint so older GPU snapshots are not
                   # missed merely because newer unrelated pastes pushed them off page 1.
                   ids = list(dict.fromkeys(re.findall(
-                      r'<a\\b[^>]*\\bhref=["\\']/([A-Za-z0-9_-]{8,})["\\'][^>]*>', page, re.IGNORECASE
+                      r"""<a\b[^>]*\bhref=["']/([A-Za-z0-9_-]{8,})["'][^>]*>""", page, re.IGNORECASE
                   )))
                   for pid in ids[:51]:
                       if pid in SEEN:
