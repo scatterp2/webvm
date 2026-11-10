@@ -74,7 +74,9 @@ def collect_network_diagnostics():
     import glob
     import shutil
     import socket
+    import struct
     import subprocess
+    import threading
 
     report = {
         "uid": os.geteuid() if hasattr(os, "geteuid") else None,
@@ -148,6 +150,124 @@ def collect_network_diagnostics():
         "conn=socket.create_connection((host,443),timeout=3); conn.close(); "
         "print(json.dumps({'dns':True,'tcp':True,'address_count':len(addresses)}))"
     )
+    # Capture packet headers while the existing DNS/TCP probes run.
+    # This is an AF_PACKET/tcpdump-equivalent metadata capture; no payloads are stored.
+    capture = {
+        "available": False, "method": "AF_PACKET", "filter": "IPv4 TCP/443 and UDP/53",
+        "metadata_only": True, "payload_capture": False,
+    }
+    capture_sock = None
+    capture_thread = None
+    capture_stop = threading.Event()
+    capture_started = time.monotonic()
+    capture_stats = {
+        "tcp_443_packets": 0, "tcp_443_outbound": 0, "tcp_443_inbound": 0,
+        "tcp_443_syn": 0, "tcp_443_syn_ack": 0, "tcp_443_rst": 0,
+        "tcp_443_fin": 0, "tcp_443_syn_retransmit_hints": 0,
+        "udp_53_packets": 0, "udp_53_outbound": 0, "udp_53_inbound": 0,
+    }
+    capture_samples = []
+    syn_seen = set()
+    try:
+        interfaces = [name for name, _index in socket.if_nameindex() if name != "lo"]
+        capture_interface = "eth0" if "eth0" in interfaces else (interfaces[0] if interfaces else None)
+        if not capture_interface:
+            raise OSError("no non-loopback interface found")
+        capture_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+        capture_sock.bind((capture_interface, 0))
+        capture_sock.settimeout(0.2)
+        capture.update({"available": True, "interface": capture_interface})
+
+        def _capture_packets():
+            outgoing_type = getattr(socket, "PACKET_OUTGOING", 4)
+            while not capture_stop.is_set():
+                try:
+                    frame, addr = capture_sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if len(frame) < 14:
+                    continue
+                ethertype = struct.unpack("!H", frame[12:14])[0]
+                offset = 14
+                if ethertype == 0x8100 and len(frame) >= 18:
+                    ethertype = struct.unpack("!H", frame[16:18])[0]
+                    offset = 18
+                if ethertype != 0x0800 or len(frame) < offset + 20:
+                    continue
+                ip = frame[offset:]
+                if ip[0] >> 4 != 4:
+                    continue
+                ihl = (ip[0] & 0x0f) * 4
+                if len(ip) < ihl + 8:
+                    continue
+                total_len = struct.unpack("!H", ip[2:4])[0]
+                proto = ip[9]
+                src_ip = socket.inet_ntoa(ip[12:16])
+                dst_ip = socket.inet_ntoa(ip[16:20])
+                if proto == 6 and len(ip) >= ihl + 20:
+                    tcp = ip[ihl:]
+                    src_port, dst_port, seq, ack = struct.unpack("!HHII", tcp[:12])
+                    if src_port != 443 and dst_port != 443:
+                        continue
+                    tcp_hlen = (tcp[12] >> 4) * 4
+                    flags = tcp[13]
+                    direction = "outbound" if len(addr) > 2 and addr[2] == outgoing_type else "inbound"
+                    capture_stats["tcp_443_packets"] += 1
+                    capture_stats["tcp_443_" + direction] += 1
+                    if flags & 0x02:
+                        capture_stats["tcp_443_syn"] += 1
+                        if flags & 0x10:
+                            capture_stats["tcp_443_syn_ack"] += 1
+                        else:
+                            key = (src_ip, dst_ip, src_port, dst_port, seq)
+                            if key in syn_seen:
+                                capture_stats["tcp_443_syn_retransmit_hints"] += 1
+                            syn_seen.add(key)
+                    if flags & 0x04:
+                        capture_stats["tcp_443_rst"] += 1
+                    if flags & 0x01:
+                        capture_stats["tcp_443_fin"] += 1
+                    if len(capture_samples) < 24:
+                        capture_samples.append({
+                            "protocol": "tcp", "direction": direction,
+                            "src": "{}:{}".format(src_ip, src_port),
+                            "dst": "{}:{}".format(dst_ip, dst_port),
+                            "flags": "".join(letter for bit, letter in (
+                                (0x02, "S"), (0x10, "A"), (0x08, "P"),
+                                (0x01, "F"), (0x04, "R"), (0x20, "U")
+                            ) if flags & bit),
+                            "seq": seq, "ack": ack,
+                            "payload_bytes": max(0, min(total_len, len(ip)) - ihl - tcp_hlen),
+                        })
+                elif proto == 17 and len(ip) >= ihl + 8:
+                    udp = ip[ihl:]
+                    src_port, dst_port = struct.unpack("!HH", udp[:4])
+                    if src_port != 53 and dst_port != 53:
+                        continue
+                    direction = "outbound" if len(addr) > 2 and addr[2] == outgoing_type else "inbound"
+                    capture_stats["udp_53_packets"] += 1
+                    capture_stats["udp_53_" + direction] += 1
+                    if len(capture_samples) < 24:
+                        capture_samples.append({
+                            "protocol": "udp", "direction": direction,
+                            "src": "{}:{}".format(src_ip, src_port),
+                            "dst": "{}:{}".format(dst_ip, dst_port),
+                            "payload_bytes": max(0, min(total_len, len(ip)) - ihl - 8),
+                        })
+
+        capture_thread = threading.Thread(target=_capture_packets, name="kaggle-tcp-header-capture", daemon=True)
+        capture_thread.start()
+    except Exception as exc:
+        capture["error_type"] = type(exc).__name__
+        if capture_sock is not None:
+            try:
+                capture_sock.close()
+            except OSError:
+                pass
+            capture_sock = None
+
     for host in ("kkb-production.jupyter-proxy.kaggle.net", "pste.us"):
         try:
             probe = subprocess.run(
@@ -174,6 +294,18 @@ def collect_network_diagnostics():
             report["outbound_tcp_443"][host] = {
                 "error": type(exc).__name__, "dns_or_tcp": False
             }
+    if capture_sock is not None:
+        capture_stop.set()
+        try:
+            capture_sock.close()
+        except OSError:
+            pass
+        if capture_thread is not None:
+            capture_thread.join(timeout=1.0)
+    capture["capture_window_seconds"] = round(time.monotonic() - capture_started, 3)
+    capture.update(capture_stats)
+    capture["samples"] = capture_samples
+    report["packet_capture"] = capture
     return report
 
 def main():
