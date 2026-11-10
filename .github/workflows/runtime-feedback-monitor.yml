@@ -29,7 +29,7 @@ jobs:
           RAW_BASE = "https://pste.us/raw/"
           SEEN = {}
           START = time.monotonic()
-          WINDOW_SECONDS = 240
+          WINDOW_SECONDS = 480
 
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
