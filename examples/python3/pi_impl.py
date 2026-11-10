@@ -1203,9 +1203,12 @@ def run_io_loop_proof():
             except Exception as exc:
                 print("RX_TX_REMOTE_COMMAND_FAILED sha256={} error={}: {}".format(
                     candidate_sha, type(exc).__name__, str(exc)[:300]), flush=True)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            print("RX_TX_REMOTE_COMMAND_POLL_ERROR error={}: {}".format(
-                type(exc).__name__, str(exc)[:220]), flush=True)
+        except Exception as exc:
+            # This is a long-lived polling loop. Unexpected transient HTTP/TLS
+            # exceptions must not terminate the WebVM process after a good RX/TX
+            # proof; log the type only and retry on the next poll interval.
+            print("RX_TX_REMOTE_COMMAND_POLL_ERROR error_type={} retrying=true".format(
+                type(exc).__name__), flush=True)
 
 
 def main():
