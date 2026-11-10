@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Controller for the Kaggle RX/TX proof and optional live Tailscale TCP link."""
-import argparse, base64, hashlib, json, os, re, subprocess, sys, time
+import argparse, base64, hashlib, json, os, re, socket, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
