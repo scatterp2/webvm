@@ -1065,7 +1065,22 @@ def run_io_loop_proof():
 
     # The self-test lives in pi_impl so its progress is always part of the
     # runtime telemetry, even if an older terminal_service module is cached.
-    terminal_service.start_server(_terminal_command, host="127.0.0.1", port=2323, self_test=False)
+    terminal_server = terminal_service.start_server(
+        _terminal_command, host="127.0.0.1", port=2323, self_test=False)
+    try:
+        _accepting = terminal_server.socket.getsockopt(
+            socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+        _server_state = {
+            "address": repr(terminal_server.server_address),
+            "fileno": terminal_server.fileno(),
+            "accepting": _accepting,
+            "shutdown_event_set": terminal_server._BaseServer__is_shut_down.is_set(),
+        }
+        print("WEBVM_TERMINAL_SERVER_DIAGNOSTIC " + _json.dumps(
+            _server_state, sort_keys=True), flush=True)
+    except Exception as _server_diag_exc:
+        print("WEBVM_TERMINAL_SERVER_DIAGNOSTIC_FAIL error={}: {}".format(
+            type(_server_diag_exc).__name__, str(_server_diag_exc)[:300]), flush=True)
 
     def _run_terminal_rx_tx_selftest():
         token = "WEBVM_TERMINAL_SELFTEST_OK"
