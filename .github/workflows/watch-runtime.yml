@@ -99,7 +99,7 @@ jobs:
                   for item in items[:20]:
                       pid = pid_of(item)
                       body = body_from(item)
-                      marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC|WEBVM_TERMINAL_RESULT_SELFTEST|WEBVM_TERMINAL_SELFTEST|RX_TX_TERMINAL_LISTENING)'
+                      marker = r'(PI_WRAPPER_STARTED|source=WEBVM|stage=PI_|KernelWorkerStatus|CUDA_VISIBLE_DEVICES|WEBVM_PROXY_DIAGNOSTIC|WEBVM_TERMINAL_RESULT_SELFTEST|WEBVM_TERMINAL_SELFTEST|RX_TX_TERMINAL_LISTENING|TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC)'
                       if (pid and (not body or not re.search(marker, body, re.I))
                               and pid not in details_attempted and detail_fetches < 3):
                           details_attempted.add(pid)
@@ -127,12 +127,7 @@ jobs:
                       print("\\n=== LOG id=" + (pid or "unknown") + " ===", flush=True)
                       for line in safe_lines(body):
                           print(line, flush=True)
-                      if re.search(r'WEBVM_TERMINAL_RESULT_SELFTEST_(PASS|FAIL)', body, re.I):
-                          terminal_stage_seen = True
                   print("POLL_OK", datetime.now(timezone.utc).isoformat(), "pastes=",len(items),"matched=",len(seen), flush=True)
-                  if terminal_stage_seen:
-                      print("WATCH_EARLY_STOP terminal self-test result found", flush=True)
-                      break
               except Exception as e:
                   print("POLL_ERROR", repr(e), flush=True)
               time.sleep(20)
