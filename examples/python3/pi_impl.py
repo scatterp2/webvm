@@ -858,7 +858,7 @@ def verify_tcp_link_from_webvm():
     env_file = Path("/data/kaggle-tcp-link.env")
     proxy = None
     prefix = 'export WEBVM_KAGGLE_TCP_LINK_HTTP_PROXY="'
-    for attempt in range(1, 7):
+    for attempt in range(1, 61):
         try:
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 if line.startswith(prefix) and line.endswith('"'):
@@ -868,9 +868,9 @@ def verify_tcp_link_from_webvm():
             pass
         if proxy:
             break
-        print("TCP_LINK_REMOTE_PROBE_WAIT attempt={}/6 reason=peer_proxy_config_not_ready".format(attempt), flush=True)
-        if attempt < 6:
-            time.sleep(5)
+        print("TCP_LINK_REMOTE_PROBE_WAIT attempt={}/60 reason=peer_proxy_config_not_ready".format(attempt), flush=True)
+        if attempt < 60:
+            time.sleep(10)
 
     if not proxy:
         print("TCP_LINK_REMOTE_CONNECTIVITY_UNVERIFIED reason=peer_proxy_config_missing", flush=True)
@@ -1166,6 +1166,24 @@ def run_io_loop_proof():
         daemon=True,
     ).start()
     print("TCP_LINK_CONTROLLER_BACKGROUND_STARTED command_channel=unblocked", flush=True)
+
+    # Actually exercise the peer proxy once the browser/DataDevice publishes its
+    # address. This verifies WebVM -> Kaggle Tailscale proxy -> HTTPS target and
+    # confirms response bytes return to WebVM; it is not a raw Ethernet test.
+    def _run_tcp_proxy_delivery_test():
+        try:
+            passed = verify_tcp_link_from_webvm()
+            print("TCP_LINK_CROSS_MACHINE_DELIVERY_RESULT passed={}".format(
+                bool(passed)), flush=True)
+        except Exception as exc:
+            print("TCP_LINK_CROSS_MACHINE_DELIVERY_TEST_ERROR error={}: {}".format(
+                type(exc).__name__, str(exc)[:300]), flush=True)
+    threading.Thread(
+        target=_run_tcp_proxy_delivery_test,
+        name="webvm-tcp-proxy-delivery-test",
+        daemon=True,
+    ).start()
+    print("TCP_LINK_CROSS_MACHINE_DELIVERY_TEST_STARTED", flush=True)
 
     # Keep a command channel alive for the lifetime of this WebVM process.
     # Editing remote_probe.py on GitHub delivers a new Python payload over RX/TX;
