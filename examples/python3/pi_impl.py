@@ -935,6 +935,8 @@ def run_io_loop_proof():
     proof_command = [
         sys.executable, str(target_dir / "controller.py"),
         "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--dataset-exists",
+        "--capture-network",
         "--kernel-id", USERNAME + "/webvm-io-loop-proof",
         "--work-dir", "/home/user/kaggle-io-loop-run",
         "--timeout-seconds", "900",
@@ -994,6 +996,8 @@ def run_io_loop_proof():
         command = [
             sys.executable, str(target_dir / "controller.py"),
             "--dataset-id", USERNAME + "/webvm-io-loop-rx",
+        "--dataset-exists",
+        "--capture-network",
             "--kernel-id", USERNAME + "/webvm-io-loop-proof",
             "--work-dir", str(command_work),
             "--timeout-seconds", "900",
