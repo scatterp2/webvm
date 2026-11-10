@@ -29,7 +29,7 @@ jobs:
           RAW_BASE = "https://pste.us/raw/"
           SEEN = {}
           START = time.monotonic()
-          WINDOW_SECONDS = 120
+          WINDOW_SECONDS = 600
 
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -63,7 +63,7 @@ jobs:
                           print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
                           continue
                       if (TAG in body and
-                              re.search(r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED|PI_IMPL_FETCHED|TCP_LINK_START_SKIPPED|PI_TCP_LINK_|WEBVM_TCP_LINK|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|AUTH_KEY_MISSING|TAILSCALE)', body, re.I)
+                              re.search(r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED|PI_IMPL_FETCHED|TCP_LINK_START_SKIPPED|PI_TCP_LINK_|WEBVM_TCP_LINK|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|AUTH_KEY_MISSING|TAILSCALE|WEBVM_TERMINAL_SELFTEST_SKIPPED)', body, re.I)
                               and SEEN.get(pid) != body):
                           SEEN[pid] = body
                           print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
