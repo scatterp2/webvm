@@ -57,7 +57,7 @@ def publish(stage, details=""):
         payload = json.dumps({
             "content": content[:90000],
             "language": "text",
-            "expires_in": "1d",
+            "expires_in": "1m",
         }).encode("utf-8")
         request = Request(
             FEEDBACK_URL,
