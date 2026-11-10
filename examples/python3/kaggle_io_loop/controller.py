@@ -134,6 +134,154 @@ class Logger:
             handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
         print("IO_LOOP_CONTROLLER " + json.dumps(row, sort_keys=True, ensure_ascii=False), flush=True)
 
+class TcpHeaderCapture:
+    """Capture TCP/443 packet headers only; never record application payloads."""
+    def __init__(self, logger):
+        import threading
+        self.logger = logger
+        self.interface = None
+        self.sock = None
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.started_at = None
+        self.stopped = False
+        self.stats = {
+            "packets": 0, "outbound_packets": 0, "inbound_packets": 0,
+            "syn": 0, "syn_ack": 0, "rst": 0, "fin": 0,
+            "syn_retransmit_hints": 0,
+        }
+        self.samples = []
+        self.syn_seen = set()
+
+    @staticmethod
+    def _default_interface():
+        try:
+            with open("/proc/net/route", "r", encoding="ascii", errors="replace") as handle:
+                next(handle, None)
+                for line in handle:
+                    fields = line.split()
+                    if len(fields) > 3 and fields[1] == "00000000" and (int(fields[3], 16) & 1):
+                        return fields[0]
+        except (OSError, ValueError):
+            pass
+        try:
+            for name, _index in socket.if_nameindex():
+                if name != "lo":
+                    return name
+        except OSError:
+            pass
+        return None
+
+    def start(self):
+        import threading
+        try:
+            self.interface = self._default_interface()
+            if not self.interface:
+                raise OSError("no non-loopback interface found")
+            self.sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+            self.sock.bind((self.interface, 0))
+            self.sock.settimeout(0.2)
+            self.started_at = time.monotonic()
+            self.thread = threading.Thread(target=self._capture, name="webvm-tcp-header-capture", daemon=True)
+            self.thread.start()
+            self.logger.event("WEBVM_PACKET_CAPTURE_STARTED", interface=self.interface,
+                              method="AF_PACKET", filter="IPv4 TCP port 443",
+                              metadata_only=True, payload_capture=False)
+        except Exception as exc:
+            if self.sock is not None:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
+                self.sock = None
+            self.logger.event("WEBVM_PACKET_CAPTURE_UNAVAILABLE",
+                              interface=self.interface, error_type=type(exc).__name__)
+
+    def _capture(self):
+        import struct
+        outgoing_type = getattr(socket, "PACKET_OUTGOING", 4)
+        while not self.stop_event.is_set():
+            try:
+                frame, addr = self.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(frame) < 14:
+                continue
+            ethertype = struct.unpack("!H", frame[12:14])[0]
+            offset = 14
+            if ethertype == 0x8100 and len(frame) >= 18:
+                ethertype = struct.unpack("!H", frame[16:18])[0]
+                offset = 18
+            if ethertype != 0x0800 or len(frame) < offset + 20:
+                continue
+            ip = frame[offset:]
+            if ip[0] >> 4 != 4:
+                continue
+            ihl = (ip[0] & 0x0f) * 4
+            if len(ip) < ihl + 20 or ip[9] != 6:
+                continue
+            total_len = struct.unpack("!H", ip[2:4])[0]
+            tcp = ip[ihl:]
+            src_port, dst_port, seq, ack = struct.unpack("!HHII", tcp[:12])
+            if src_port != 443 and dst_port != 443:
+                continue
+            tcp_hlen = (tcp[12] >> 4) * 4
+            flags = tcp[13]
+            flag_text = "".join(letter for bit, letter in (
+                (0x02, "S"), (0x10, "A"), (0x08, "P"),
+                (0x01, "F"), (0x04, "R"), (0x20, "U"),
+                (0x40, "E"), (0x80, "C")
+            ) if flags & bit)
+            src_ip = socket.inet_ntoa(ip[12:16])
+            dst_ip = socket.inet_ntoa(ip[16:20])
+            payload_bytes = max(0, min(total_len, len(ip)) - ihl - tcp_hlen)
+            direction = "out" if len(addr) > 2 and addr[2] == outgoing_type else "in"
+            self.stats["packets"] += 1
+            self.stats[direction + "bound_packets"] += 1
+            if flags & 0x02:
+                self.stats["syn"] += 1
+                if flags & 0x10:
+                    self.stats["syn_ack"] += 1
+                else:
+                    key = (src_ip, dst_ip, src_port, dst_port, seq)
+                    if key in self.syn_seen:
+                        self.stats["syn_retransmit_hints"] += 1
+                    self.syn_seen.add(key)
+            if flags & 0x04:
+                self.stats["rst"] += 1
+            if flags & 0x01:
+                self.stats["fin"] += 1
+            if len(self.samples) < 24:
+                self.samples.append({
+                    "elapsed_ms": round((time.monotonic() - self.started_at) * 1000, 2),
+                    "direction": direction,
+                    "src": "{}:{}".format(src_ip, src_port),
+                    "dst": "{}:{}".format(dst_ip, dst_port),
+                    "flags": flag_text,
+                    "seq": seq, "ack": ack, "payload_bytes": payload_bytes,
+                })
+
+    def stop(self):
+        if self.stopped:
+            return
+        self.stopped = True
+        if self.sock is None:
+            return
+        self.stop_event.set()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        if self.thread is not None:
+            self.thread.join(timeout=1.0)
+        self.logger.event("WEBVM_PACKET_CAPTURE_SUMMARY", interface=self.interface,
+                          capture_window_seconds=round(time.monotonic() - self.started_at, 3),
+                          metadata_only=True, payload_capture=False,
+                          stats=self.stats, samples=self.samples)
+
+
 def command(logger, argv, *, timeout=120, check=False):
     """Run Kaggle CLI with a bounded proxy-bypass retry for read-only API calls."""
     start = time.monotonic()
@@ -243,6 +391,7 @@ def main():
     parser.add_argument("--dataset-id", required=True, help="Kaggle dataset ID, e.g. username/webvm-io-loop-rx")
     parser.add_argument("--kernel-id", required=True, help="Kaggle kernel ID, e.g. username/webvm-io-loop-proof")
     parser.add_argument("--dataset-exists", action="store_true", help="Publish a new version instead of creating the Dataset")
+    parser.add_argument("--capture-network", action="store_true", help="Capture TCP/443 packet headers on this endpoint; never record payloads")
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK)
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--poll-seconds", type=int, default=10)
@@ -502,6 +651,13 @@ main()
         validate_output(local_output, message, log)
         log.event("PREPARE_ONLY_PASS", note="Local protocol test passed; Kaggle API not called")
         return
+
+    capture = None
+    if args.capture_network and not args.serve_tcp_link:
+        import atexit
+        capture = TcpHeaderCapture(log)
+        capture.start()
+        atexit.register(capture.stop)
 
     if not args.serve_tcp_link:
         if args.dataset_exists:
@@ -865,6 +1021,8 @@ main()
                       error=type(exc).__name__ + ": " + str(exc))
     log.event("PROXY_DIAGNOSTIC_RESULTS", found=bool(diagnostic_lines),
               line_count=len(diagnostic_lines), lines=diagnostic_lines[-20:])
+    if capture is not None:
+        capture.stop()
     log.event("LOOP_PROOF_PASS", request_id=message["request_id"], sequence=message["sequence"],
               rx_checksum=message["checksum"], tx_checksum=response["checksum"],
               round_trip_ms=round((time.monotonic() - round_trip_started) * 1000, 3),
