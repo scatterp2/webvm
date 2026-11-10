@@ -949,7 +949,9 @@ def run_io_loop_proof():
         sys.executable, str(target_dir / "controller.py"),
         "--dataset-id", USERNAME + "/webvm-io-loop-rx",
         "--dataset-exists",
-        "--capture-network",
+        # AF_PACKET raw sockets hang in this WebVM's socket layer; the direct
+        # SOCKS5 handshake below is the cross-machine proof, so don't let
+        # optional packet capture block the Kaggle RX/TX controller.
         "--kernel-id", USERNAME + "/webvm-io-loop-proof",
         "--work-dir", "/home/user/kaggle-io-loop-run",
         "--timeout-seconds", "900",
