@@ -1207,7 +1207,21 @@ def run_io_loop_proof():
 def main():
     prepare_system()
     prepare_credentials()
-    # The current task is the one-message Kaggle API-mediated RX/TX proof.
-    # Keep the Qwen experiment implementation intact but do not submit it here.
+
+    # Run the GPU notebook diagnostic before the long-lived RX/TX command loop.
+    # Previously main() skipped write_notebook()/deploy(), so no
+    # automated-gpu-test run or GPU preflight logs were produced at all.
+    try:
+        print("GPU_DIAGNOSTIC_SUBMISSION_BEGIN", flush=True)
+        write_notebook()
+        deploy()
+        print("GPU_DIAGNOSTIC_SUBMISSION_FINISHED", flush=True)
+    except Exception as exc:
+        # Keep RX/TX proof independent if the GPU submission path fails.
+        # Log only the exception class so unexpected messages cannot leak
+        # environment details into public feedback.
+        print("GPU_DIAGNOSTIC_SUBMISSION_FAILED error_type={}".format(
+            type(exc).__name__), flush=True)
+
     run_io_loop_proof()
 
