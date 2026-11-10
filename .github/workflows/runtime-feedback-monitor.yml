@@ -27,7 +27,7 @@ jobs:
           TAG = "WVMQWENWS_6D91C42F"
           SEARCH_URL = "https://pste.us/recent?search=" + TAG + "&sort=date&order=desc&limit=10"
           RAW_BASE = "https://pste.us/raw/"
-          SEEN = set()
+          SEEN = {}
           START = time.monotonic()
           WINDOW_SECONDS = 240
 
@@ -55,15 +55,17 @@ jobs:
                       r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', page
                   )))
                   for pid in ids[:5]:
-                      if pid in SEEN:
-                          continue
                       try:
+                          # Runtime updates an existing paste in place, so refetch
+                          # previously seen IDs and print only when the body changes.
                           body = fetch_text(RAW_BASE + pid, max_time=4)
                       except (subprocess.SubprocessError, OSError) as exc:
                           print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
                           continue
-                      if TAG in body and re.search(r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED)', body, re.I):
-                          SEEN.add(pid)
+                      if (TAG in body and
+                              re.search(r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED|PI_IMPL_FETCHED|TCP_LINK_START_SKIPPED)', body, re.I)
+                              and SEEN.get(pid) != body):
+                          SEEN[pid] = body
                           print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
                           print(body[-18000:], flush=True)
                           print("===== END_FEEDBACK_MATCH =====\n", flush=True)
