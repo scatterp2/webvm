@@ -1293,6 +1293,27 @@ def run_io_loop_proof():
                     try:
                         run_streamed_subprocess(
                             proof_command, env, "RX_TX_REMOTE_COMMAND", timeout=1200)
+                        # A changed probe is executed through the same RX/TX
+                        # controller as the initial proof. Process its returned
+                        # route here too; otherwise remote updates discover the
+                        # route but never trigger the tokenized HTTPS marker.
+                        tx_path = Path("/home/user/kaggle-io-loop-run/output/tx_response.json")
+                        if not tx_path.is_file():
+                            print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=remote_tx_route_file_missing", flush=True)
+                        else:
+                            try:
+                                tx_result = json.loads(tx_path.read_text(encoding="utf-8"))
+                                proxy_route = tx_result.get("proxy_route")
+                                if not proxy_route:
+                                    print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=remote_proxy_route_not_returned", flush=True)
+                                else:
+                                    verify_tcp_link_from_webvm(proxy_route)
+                            finally:
+                                # The route includes a transient proxy token.
+                                try:
+                                    tx_path.unlink()
+                                except OSError:
+                                    pass
                     finally:
                         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 print("RX_TX_REMOTE_COMMAND_COMPLETED sha256={}".format(
