@@ -15,6 +15,10 @@ let rejectLogin = null;
 let loginPromise = null;
 let connectionState = writable("DISCONNECTED");
 let exitNode = writable(false);
+// CheerpX reports the selected exit node only in the first netmap after it is
+// chosen. Follow-up netmaps omit the flag while the exit node is still in use,
+// so keep the peer we saw and only clear the indicator when it goes away.
+let selectedExitNodePeer = null;
 const kaggleTcpLink = writable(null);
 let attachedDataDevice = null;
 let currentKaggleTcpLink = null;
@@ -126,18 +130,33 @@ function stateUpdateCb(state)
 function netmapUpdateCb(map)
 {
 	networkData.currentIp = map.self.addresses[0];
-	var exitNodeFound = false;
-	for(var i=0; i < map.peers.length;i++)
-	{
-		if(map.peers[i].exitNode)
-		{
-			exitNodeFound = true;
-			break;
+	const peers = Array.isArray(map.peers) ? map.peers : [];
+
+	const exitNodePeer = peers.find((peer) => peer.exitNode);
+	if (exitNodePeer) {
+		selectedExitNodePeer = exitNodePeer;
+		exitNode.set(true);
+	} else if (selectedExitNodePeer) {
+		// The selected exit node stays usable after the control plane stops
+		// reporting its exitNode flag. Only clear the indicator when the peer
+		// is no longer present or has gone offline.
+		const stillOnline = peers.some((peer) => {
+			if (!peer.online)
+				return false;
+			if (peer.name && peer.name === selectedExitNodePeer.name)
+				return true;
+			const peerAddress = Array.isArray(peer.addresses) ? peer.addresses[0] : null;
+			const selectedAddress = Array.isArray(selectedExitNodePeer.addresses)
+				? selectedExitNodePeer.addresses[0]
+				: null;
+			return peerAddress && selectedAddress && peerAddress === selectedAddress;
+		});
+		if (!stillOnline) {
+			selectedExitNodePeer = null;
+			exitNode.set(false);
 		}
 	}
-	exitNode.set(exitNodeFound);
 
-	const peers = Array.isArray(map.peers) ? map.peers : [];
 	const kagglePeer = peers.find((peer) => {
 		const name = String(peer.name || peer.hostName || peer.dnsName || "")
 			.toLowerCase().replace(/\.$/, "");

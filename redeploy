@@ -38,3 +38,4 @@ Install runtime-loaded pi_impl.py bootstrap so submitter fixes activate on brows
 Update WebVM networking panel to use dedicated Kaggle TCP bridge port 18088.
 
 Deploy RX/TX terminal service and private Kaggle shell port; expose connection instructions in Networking tab.
+Deploy Tailscale exit-node indicator fix: keep the selected exit node latched across follow-up netmaps.
