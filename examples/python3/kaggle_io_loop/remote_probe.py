@@ -16,20 +16,23 @@ ROUTE_RE = re.compile(r"/k/([0-9]+)/([^/\s'\"?]+)/proxy(?:/|$)")
 
 try:
     ps = subprocess.run(
-        ["ps", "auxww"],
+        ["ps", "-aux"],
         check=True,
         capture_output=True,
         text=True,
         timeout=10,
     )
     process_lines = ps.stdout.splitlines()
+    print("WEBVM_FULL_PS_AUX_BEGIN", flush=True)
+    print(ps.stdout, end="" if ps.stdout.endswith("\n") else "\n", flush=True)
+    print("WEBVM_FULL_PS_AUX_END", flush=True)
 except (OSError, subprocess.SubprocessError) as exc:
     try:
         RESULT.unlink()
     except FileNotFoundError:
         pass
     print(
-        "WEBVM_PROXY_ROUTE_DISCOVERY found=false method=ps_auxww "
+        "WEBVM_PROXY_ROUTE_DISCOVERY found=false method=ps_aux "
         "error_type={}".format(type(exc).__name__),
         flush=True,
     )
