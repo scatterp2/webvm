@@ -61,3 +61,24 @@ The notebook reports non-secret stages through the existing runtime telemetry: i
 ### What this link provides
 
 This is a real TCP stream path from WebVM over its Tailscale network to the Kaggle peer, then through either HTTP `CONNECT` or SOCKS5 `CONNECT` to public TCP destinations. It is not the old file-based RX/TX loop, and it does not rely on a guessed source IP or NAT redirect. UDP and arbitrary layer-3 packet forwarding are not provided by this SOCKS5 mode; applications must honor the proxy environment variables. HTTP clients use `HTTP_PROXY`/`HTTPS_PROXY`; SOCKS-aware clients use `ALL_PROXY`. The service remains available only while the Kaggle notebook is running and subject to Kaggle's session limits.
+
+## Stage 3: actual WebVM-to-Kaggle-proxy marker and same-connection reply
+
+This is the active end-to-end networking experiment; it is distinct from the Dataset artifact loop in Stage 1 and the Tailscale SOCKS5 bridge in Stage 2.
+
+### Required sequence
+
+1. Kaggle starts the receiver/capture before WebVM transmits and publishes a `RECEIVER_READY` event containing a per-run ID and the observation layer.
+2. WebVM sends a unique marker encoded as hex in an HTTP request to the actual Kaggle Jupyter proxy host and route. Record destination host/route shape, request ID, byte count, start/end time, connection outcome, and HTTP status. Do not put proxy tokens or other secrets in logs.
+3. Kaggle-side evidence must say whether the marker was observed and where: an HTTP handler or socket sees application bytes; a packet capture sees only packets that traverse the captured interface/namespace. The upstream HTTPS reverse proxy may terminate TLS outside the notebook namespace, so an HTTP response or error alone must not be described as notebook-side packet capture.
+4. On the same still-open connection, Kaggle returns a second unique marker. WebVM verifies exact response bytes and logs the matching run ID.
+5. Emit a final verdict: `PASS_PROXY_MARKER_ROUND_TRIP` only if the outbound marker is correlated with receiver-side evidence and the response marker arrives back on the same connection. Otherwise emit a stage-specific failure with actual exception/status/capture counts.
+
+### Interpretation rules
+
+- A successful Dataset upload/download proves only API-mediated file transfer.
+- A successful kernel push or `RUNNING` status proves only submission/execution status.
+- `peer_ip_not_ready` means the separate Tailscale peer-address lookup did not produce an address; it is not an attempted marker transmission.
+- The existing SOCKS5 greeting test against tailnet port 18088 is a separate test. It must not be used as the result for the Kaggle proxy-address experiment.
+- If the proxy rejects or drops the HTTP request before it reaches the notebook, report that as an observed proxy-path result and explain what the available evidence can and cannot establish. Do not claim the Kaggle notebook interface received bytes unless the notebook-side capture/handler actually observed them.
+- Keep the test bounded, use non-sensitive marker data, avoid changing firewall/server state, and do not print tokens or credentials.
