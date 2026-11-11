@@ -1442,13 +1442,27 @@ def start_web_adjuster_sidecar():
 def main():
     prepare_system()
     start_web_adjuster_sidecar()
-    prepare_credentials()
 
-    # Prioritize the active RX/TX proof and live TCP bridge. The legacy
-    # automated-gpu-test deployment can remain RUNNING for many minutes and
-    # previously blocked run_io_loop_proof() from starting at all. Defer that
-    # separate GPU workload until the transport path is proven; do not launch
-    # a competing Kaggle kernel while the RX/TX proof needs a session.
-    print("GPU_DIAGNOSTIC_DEFERRED reason=prioritize_RX_TX_and_live_TCP_proof",
-          flush=True)
-    run_io_loop_proof()
+    # --- Kaggle RX/TX and IO loop commented out for Web Adjuster investigation ---
+    # prepare_credentials()
+    # print("GPU_DIAGNOSTIC_DEFERRED reason=prioritize_RX_TX_and_live_TCP_proof",
+    #       flush=True)
+    # run_io_loop_proof()
+
+    print("WEB_ADJUSTER_ONLY_MODE — Kaggle code disabled for proxy testing", flush=True)
+    print("Wrapper: http://0.0.0.0:28080/", flush=True)
+    print("Adjuster: http://0.0.0.0:28081/", flush=True)
+    print("Tailing /tmp/web-adjuster.log ...", flush=True)
+    import time
+    log_path = Path("/tmp/web-adjuster.log")
+    seen = 0
+    while True:
+        try:
+            if log_path.is_file():
+                content = log_path.read_text(encoding="utf-8", errors="replace")
+                if len(content) > seen:
+                    print(content[seen:], end="", flush=True)
+                    seen = len(content)
+        except OSError:
+            pass
+        time.sleep(2)
