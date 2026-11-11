@@ -1326,31 +1326,35 @@ def run_io_loop_proof():
                 type(exc).__name__), flush=True)
 
 
+def _kill_stale_launcher():
+    """Kill any process occupying ports 28080/28081 so the new launcher can bind."""
+    for port in (28080, 28081):
+        try:
+            subprocess.run(
+                ["fuser", "-k", "{}/tcp".format(port)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    time.sleep(0.5)
+
+
 def start_web_adjuster_sidecar():
-    """Start the separate Web Adjuster iframe smoke test without touching Kaggle credentials."""
+    """Start the Web Adjuster wrapper IN-PROCESS (as a daemon thread).
+
+    CheerpX's cooperative scheduler starves subprocess-spawned Python
+    interpreters, so we exec the launcher module inside this process
+    and run its main() on a daemon thread instead.
+    """
     import hashlib
     from urllib.request import Request, urlopen
 
     launcher_url = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
-    launcher_path = Path("/tmp/web_adjuster_launcher.py")
-    pid_path = Path("/tmp/web-adjuster-launcher.pid")
-    hash_path = Path("/tmp/web-adjuster-launcher.sha256")
-    log_path = Path("/tmp/web-adjuster.log")
-
     local_launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
 
-    def _kill_stale_launcher():
-        """Kill any process occupying ports 28080/28081 so the new launcher can bind."""
-        for port in (28080, 28081):
-            try:
-                subprocess.run(
-                    ["fuser", "-k", "{}/tcp".format(port)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=5, check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-        time.sleep(0.5)
+    source = None
+    digest = "?"
 
     try:
         request = Request(
@@ -1359,99 +1363,48 @@ def start_web_adjuster_sidecar():
         )
         with urlopen(request, timeout=30) as response:
             source = response.read().decode("utf-8")
-        compile(source, str(launcher_path), "exec")
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-
-        # Restart the sidecar when the launcher source changed since the last
-        # start, so fixes in main take effect on the next boot without a
-        # disk-image rebuild.
-        recorded_hash = ""
-        if hash_path.is_file():
-            try:
-                recorded_hash = hash_path.read_text(encoding="ascii").strip()
-            except OSError:
-                recorded_hash = ""
-
-        if pid_path.is_file():
-            old_pid = 0
-            try:
-                old_pid = int(pid_path.read_text(encoding="ascii").strip())
-            except (ValueError, OSError):
-                old_pid = 0
-            alive = False
-            if old_pid > 0:
-                try:
-                    os.kill(old_pid, 0)
-                    alive = True
-                except OSError:
-                    alive = False
-            if alive and recorded_hash == digest:
-                print("WEB_ADJUSTER_START_SKIPPED reason=launcher_pid_alive pid={}".format(old_pid), flush=True)
-                return
-            if alive:
-                print("WEB_ADJUSTER_RESTART reason=launcher_source_changed pid={}".format(old_pid), flush=True)
-                try:
-                    os.kill(old_pid, 15)
-                except OSError:
-                    pass
-                for _ in range(20):
-                    try:
-                        os.kill(old_pid, 0)
-                    except OSError:
-                        break
-                    time.sleep(0.25)
-
-        _kill_stale_launcher()
-        launcher_path.write_text(source, encoding="utf-8")
-        log_file = open(log_path, "ab", buffering=0)
-        try:
-            child = subprocess.Popen(
-                [sys.executable, str(launcher_path)],
-                stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
-        finally:
-            log_file.close()
-        pid_path.write_text(str(child.pid) + "\n", encoding="ascii")
-        hash_path.write_text(digest + "\n", encoding="ascii")
-        print("WEB_ADJUSTER_START_REQUESTED pid={} wrapper_port=28080 proxy_port=28081 sha256={} log={}".format(
-            child.pid, digest[:12], log_path), flush=True)
+        compile(source, "launcher.py", "exec")
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+        print("WEB_ADJUSTER_LAUNCHER_FETCHED source=github chars={} sha256={}".format(
+            len(source), digest), flush=True)
     except Exception as exc:
+        print("WEB_ADJUSTER_GITHUB_FAILED error={}: {}".format(
+            type(exc).__name__, str(exc)[:200]), flush=True)
         if local_launcher.is_file():
-            print("WEB_ADJUSTER_GITHUB_FAILED error={}: {} — falling back to local launcher".format(
-                type(exc).__name__, str(exc)[:200]), flush=True)
             try:
                 source = local_launcher.read_text(encoding="utf-8")
                 compile(source, str(local_launcher), "exec")
-                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-                _kill_stale_launcher()
-                launcher_path.write_text(source, encoding="utf-8")
-                log_file = open(log_path, "ab", buffering=0)
-                try:
-                    child = subprocess.Popen(
-                        [sys.executable, str(launcher_path)],
-                        stdin=subprocess.DEVNULL,
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                        close_fds=True,
-                    )
-                finally:
-                    log_file.close()
-                pid_path.write_text(str(child.pid) + "\n", encoding="ascii")
-                hash_path.write_text(digest + "\n", encoding="ascii")
-                print("WEB_ADJUSTER_START_REQUESTED pid={} source=local sha256={} log={}".format(
-                    child.pid, digest[:12], log_path), flush=True)
-                return
-            except Exception as fallback_exc:
+                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+                print("WEB_ADJUSTER_LAUNCHER_FETCHED source=local chars={} sha256={}".format(
+                    len(source), digest), flush=True)
+            except Exception as e2:
                 print("WEB_ADJUSTER_LOCAL_FALLBACK_FAILED error={}: {}".format(
-                    type(fallback_exc).__name__, str(fallback_exc)[:300]), flush=True)
-        else:
-            print("WEB_ADJUSTER_START_FAILED error={}: {}".format(
+                    type(e2).__name__, str(e2)[:300]), flush=True)
+
+    if source is None:
+        print("WEB_ADJUSTER_START_FAILED reason=no_launcher_source", flush=True)
+        return
+
+    _kill_stale_launcher()
+
+    ns = {"__name__": "__main__", "__file__": "launcher.py"}
+    exec(compile(source, "launcher.py", "exec"), ns)
+    launcher_main = ns.get("main")
+    if not callable(launcher_main):
+        print("WEB_ADJUSTER_START_FAILED reason=no_main_in_launcher", flush=True)
+        return
+
+    def _run_launcher():
+        try:
+            launcher_main()
+        except Exception as exc:
+            print("[WEB_ADJUSTER] THREAD_CRASHED error={}: {}".format(
                 type(exc).__name__, str(exc)[:300]), flush=True)
+
+    t = threading.Thread(target=_run_launcher, name="web-adjuster-wrapper", daemon=True)
+    t.start()
+    print("WEB_ADJUSTER_START_REQUESTED mode=in-process wrapper_port=28080 proxy_port=28081 sha256={}".format(
+        digest), flush=True)
 
 
 def _run_endpoint_tests():
