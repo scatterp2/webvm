@@ -867,7 +867,7 @@ def probe_kaggle_https_proxy_from_webvm(proxy_route):
     base_path = str(proxy_route.get("path") or "")
     kernel_id = str(proxy_route.get("kernel_id") or "")
     token = str(proxy_route.get("token") or "")
-    match = re.fullmatch(r"/k/([0-9]+)/([A-Za-z0-9._~-]+)/proxy/?", base_path)
+    match = re.fullmatch(r"/k/([0-9]+)/([^/ ]+)/proxy/?", base_path)
     if (not match or match.group(1) != kernel_id or match.group(2) != token
             or not token):
         print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=false stage=route_validation reason=invalid_tokenized_path", flush=True)
