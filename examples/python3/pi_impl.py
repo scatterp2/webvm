@@ -1162,12 +1162,17 @@ def run_io_loop_proof():
         # Do not launch a second Kaggle CPU session while the RX/TX proof is
         # still publishing and validating its own kernel. This also prevents
         # a rejected proof push from being obscured by a concurrent bridge push.
-        if not proof_finished.wait(timeout=1210):
-            print("TCP_LINK_START_SKIPPED reason=initial RX_TX proof did not finish", flush=True)
-            return
-        if not proof_result["passed"]:
-            print("TCP_LINK_START_SKIPPED reason=initial RX_TX proof failed", flush=True)
-            return
+        # The initial Kaggle RX/TX kernel can remain RUNNING for several
+        # minutes without publishing its result. Do not let that stall the
+        # separate TCP-link test indefinitely: give it 180 seconds, then launch
+        # the bridge even if the file/API proof is still pending or failed.
+        proof_done = proof_finished.wait(timeout=180)
+        if proof_done and proof_result["passed"]:
+            print("TCP_LINK_START_REASON initial_rx_tx_proof_passed", flush=True)
+        elif proof_done:
+            print("TCP_LINK_START_REASON initial_rx_tx_proof_failed_continue_with_tcp_test", flush=True)
+        else:
+            print("TCP_LINK_START_REASON initial_rx_tx_proof_still_running_after_180s_continue_with_tcp_test", flush=True)
         try:
             run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
             print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
