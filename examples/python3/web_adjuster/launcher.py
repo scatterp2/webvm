@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Start an isolated Web Adjuster Kaggle iframe smoke test.
+"""Start an isolated Web Adjuster proxy iframe smoke test.
 
 Ports:
   28080: small wrapper page with an iframe
-  28081: Web Adjuster, configured for Kaggle
+  28081: Web Adjuster, generic proxy
 
 This is intentionally separate from the Kaggle RX/TX controller and does not
 read or modify any configuration or credential files.
@@ -197,13 +197,11 @@ def start_adjuster(host: str) -> None:
         # back at this node instead of the upstream site.
         "--host-suffix=" + host,
         "--wildcard-dns=False",
-        # ".0" selects HTTPS for the upstream site.
-        "--default-site=www.kaggle.com.0",
         "--open-proxy",
         "--viewsource=True",
         "--bodyAppend=" + INJECTION_SCRIPT,
     ]
-    log("STARTING_PROXY port={} host={} target=www.kaggle.com".format(ADJUSTER_PORT, host))
+    log("STARTING_PROXY port={} host={}".format(ADJUSTER_PORT, host))
     try:
         process = subprocess.Popen(
             command,
@@ -271,7 +269,7 @@ PAGE_TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Web Adjuster / Kaggle iframe smoke test</title>
+<title>Web Adjuster / Proxy iframe test</title>
 <style>
 body{font:16px system-ui,sans-serif;margin:0;background:#111827;color:#f9fafb}
 header{padding:12px 16px;background:#1f2937}
@@ -283,15 +281,15 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
 </head>
 <body>
 <header>
-<strong>Web Adjuster &rarr; Kaggle iframe test</strong>
+<strong>Web Adjuster &rarr; Proxy iframe test</strong>
 <p>Proxy: <a id="adjuster-link" href="#">open Web Adjuster directly</a></p>
 <p id="status">Waiting for the adjuster to come up...</p>
 </header>
-<iframe id="kaggle" title="Kaggle through Web Adjuster"></iframe>
+<iframe id="proxy-frame" title="Proxy through Web Adjuster"></iframe>
 <script>
 (function() {
   var status = document.getElementById('status');
-  var frame = document.getElementById('kaggle');
+  var frame = document.getElementById('proxy-frame');
   var link = document.getElementById('adjuster-link');
   var host = window.location.hostname;
   var adjusterUrl = 'http://' + host + ':' + __ADJUSTER_PORT__ + '/';
@@ -315,7 +313,7 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
       .then(function(s) {
         if (s.state === 'ready') {
           if (!loaded) { frame.src = adjusterUrl; }
-          status.textContent = 'Adjuster ready at ' + adjusterUrl
+          status.textContent = 'Proxy ready at ' + adjusterUrl
             + ' - checking the frame for the injected marker.';
           checkInjection();
           return;
