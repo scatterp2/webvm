@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import socket
+from urllib.request import Request, urlopen
 from pathlib import Path
 
 # ============================================================
@@ -197,7 +198,8 @@ def prepare_credentials():
     if json_file.is_file():
         try:
             legacy = json.loads(json_file.read_text(encoding="utf-8"))
-            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))        except (OSError, ValueError, AttributeError):
+            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))
+        except (OSError, ValueError, AttributeError):
             has_legacy_key = False
     if not has_token and not has_legacy_key:
         raise RuntimeError(
@@ -941,6 +943,7 @@ def run_io_loop_proof():
     """Run RX/TX commands fetched from GitHub without requiring a WebVM reset."""
     import hashlib
     from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
 
     # Fetch the current repository version so the deployed TCP service matches the
     # validated implementation (including the explicitly requested auth-key setup).

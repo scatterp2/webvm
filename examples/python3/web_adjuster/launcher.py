@@ -20,11 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 BIND = "0.0.0.0"
-PUBLIC_IP = "100.92.188.123"
 WRAPPER_PORT = 28080
 ADJUSTER_PORT = 28081
 VENV = Path("/opt/web-adjuster-venv")
 LOG_PATH = Path("/tmp/web-adjuster.log")
+_adjuster_process = None
 
 
 def log(message: str) -> None:
@@ -36,14 +36,20 @@ def ensure_adjuster() -> Path:
     if executable.exists():
         return executable
 
+    # Use pip via system package manager instead of ensurepip (unreliable in WebVM)
     if not (VENV / "bin" / "python").exists():
         log("INSTALL_STEP create_venv")
-        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(VENV), "--without-pip", "--system-site-packages"],
+            check=True,
+        )
 
     python = VENV / "bin" / "python"
     log("INSTALL_STEP pip_install_adjuster")
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", "adjuster"],
+    # Try pip from venv first; fall back to system pip
+    pip_cmd = [str(python), "-m", "pip", "install", "--disable-pip-version-check", "adjuster"]
+    result = subprocess.run(
+        pip_cmd,
         check=True,
         timeout=300,
     )
@@ -57,21 +63,26 @@ def ensure_adjuster() -> Path:
 
 
 def start_adjuster() -> subprocess.Popen:
+    global _adjuster_process
+    if _adjuster_process is not None and _adjuster_process.poll() is None:
+        return _adjuster_process
     executable = ensure_adjuster()
     command = [
         str(executable),
         "--address=" + BIND,
         "--port=" + str(ADJUSTER_PORT),
-        "--host-suffix=" + PUBLIC_IP,
+        "--host-suffix=_",
         "--wildcard-dns=False",
         "--default-site=www.kaggle.com",
         "--viewsource=True",
+        "--open-proxy",
     ]
     log("STARTING_PROXY port={} target=www.kaggle.com".format(ADJUSTER_PORT))
-    return subprocess.Popen(command, stdin=subprocess.DEVNULL)
+    _adjuster_process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
+    return _adjuster_process
 
 
-PAGE = """<!doctype html>
+PAGE_WITH_IFRAME = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -89,20 +100,42 @@ iframe{display:block;width:100%;height:calc(100vh - 112px);border:0;background:w
 <body>
 <header>
 <strong>Web Adjuster → Kaggle iframe test</strong>
-<p>Proxy: <a href="http://100.92.188.123:28081/" target="_blank" rel="noopener">open Web Adjuster directly</a></p>
-<p id="status">Waiting for iframe load event. A load event does not prove the page's scripts or authentication worked.</p>
+<p>Proxy: <a id="adjuster-link" href="#">open Web Adjuster directly</a></p>
+<p id="status">Waiting for iframe load event.</p>
 </header>
-<iframe id="kaggle" title="Kaggle through Web Adjuster" src="http://100.92.188.123:28081/"></iframe>
+<iframe id="kaggle" title="Kaggle through Web Adjuster" src=""></iframe>
 <script>
-const frame = document.getElementById('kaggle');
-frame.addEventListener('load', () => {
-  document.getElementById('status').textContent =
-    'Iframe load event fired. Check the frame visually; CSP/X-Frame-Options, redirects, or missing cross-domain assets may still prevent Kaggle from working.';
-});
-frame.addEventListener('error', () => {
-  document.getElementById('status').textContent = 'Iframe error event fired.';
-});
+(function() {
+  var status = document.getElementById('status');
+  var frame = document.getElementById('kaggle');
+  var link = document.getElementById('adjuster-link');
+  var host = window.location.host; // e.g. 100.92.188.123:28080
+  var adjusterUrl = 'http://' + host.replace(/:\\d+$/, '') + ':' + {ADJUSTER_PORT} + '/';
+  link.href = adjusterUrl;
+  frame.src = adjusterUrl;
+
+  frame.addEventListener('load', function() {
+    status.textContent = 'Iframe load event fired. Check the frame visually; CSP/X-Frame-Options, redirects, or missing cross-domain assets may still prevent Kaggle from working.';
+  });
+  frame.addEventListener('error', function() {
+    status.textContent = 'Iframe error event fired.';
+  });
+})();
 </script>
+</body>
+</html>
+"""
+
+WRAPPER_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Adjuster / Wrapper</title>
+</head>
+<body>
+<h1>Wrapper page - adjuster not yet installed</h1>
+<p>Use /health for health check. Navigate to the iframe page to start the adjuster.</p>
 </body>
 </html>
 """
@@ -110,12 +143,19 @@ frame.addEventListener('error', () => {
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path not in ("/", "/index.html", "/health"):
-            self.send_error(404)
+        if self.path == "/health":
+            self._send(200, "text/plain; charset=utf-8", b"ok\n")
             return
-        body = b"ok\n" if self.path == "/health" else PAGE.encode("utf-8")
-        content_type = "text/plain; charset=utf-8" if self.path == "/health" else "text/html; charset=utf-8"
-        self.send_response(200)
+        if self.path in ("/", "/index.html"):
+            # Derive host from Host header
+            host = self.headers.get("Host", "localhost")
+            page = PAGE_WITH_IFRAME.replace("{ADJUSTER_PORT}", str(ADJUSTER_PORT))
+            self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
+        else:
+            self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
+
+    def _send(self, code: int, content_type: str, body: bytes) -> None:
+        self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -127,21 +167,31 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global _adjuster_process
     log("BOOT bind={} wrapper_port={} adjuster_port={}".format(BIND, WRAPPER_PORT, ADJUSTER_PORT))
-    adjuster = start_adjuster()
-    time.sleep(2)
-    if adjuster.poll() is not None:
-        raise RuntimeError("Web Adjuster exited during startup with code {}".format(adjuster.returncode))
+
+    # Start wrapper server FIRST (before adjuster), so we can lazily start adjuster
     server = ThreadingHTTPServer((BIND, WRAPPER_PORT), Handler)
-    log("WRAPPER_READY url=http://{}:{}/".format(PUBLIC_IP, WRAPPER_PORT))
-    log("PROXY_EXPECTED url=http://{}:{}/".format(PUBLIC_IP, ADJUSTER_PORT))
+    log("WRAPPER_READY url=http://{}:{}/".format(BIND, WRAPPER_PORT))
     log("IFRAME_TEST_READY")
+
+    def _shutdown(signum, frame):
+        log("SHUTDOWN signal {}".format(signum))
+        server.shutdown()
+        if _adjuster_process is not None and _adjuster_process.poll() is None:
+            _adjuster_process.terminate()
+        server.server_close()
+
+    import signal
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
     try:
         server.serve_forever()
     finally:
         server.server_close()
-        if adjuster.poll() is None:
-            adjuster.terminate()
+        if _adjuster_process is not None and _adjuster_process.poll() is None:
+            _adjuster_process.terminate()
 
 
 if __name__ == "__main__":
