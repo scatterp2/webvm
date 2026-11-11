@@ -1328,23 +1328,16 @@ def run_io_loop_proof():
 
 def start_web_adjuster_sidecar():
     """Start the separate Web Adjuster iframe smoke test without touching Kaggle credentials."""
+    import hashlib
     from urllib.request import Request, urlopen
 
     launcher_url = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
     launcher_path = Path("/tmp/web_adjuster_launcher.py")
     pid_path = Path("/tmp/web-adjuster-launcher.pid")
+    hash_path = Path("/tmp/web-adjuster-launcher.sha256")
     log_path = Path("/tmp/web-adjuster.log")
 
     try:
-        if pid_path.is_file():
-            try:
-                old_pid = int(pid_path.read_text(encoding="ascii").strip())
-                os.kill(old_pid, 0)
-                print("WEB_ADJUSTER_START_SKIPPED reason=launcher_pid_alive pid={}".format(old_pid), flush=True)
-                return
-            except (ValueError, OSError):
-                pass
-
         request = Request(
             launcher_url + "?t=" + str(int(time.time() * 1000)),
             headers={"Cache-Control": "no-cache", "User-Agent": "webvm-web-adjuster-bootstrap/1.0"},
@@ -1352,6 +1345,47 @@ def start_web_adjuster_sidecar():
         with urlopen(request, timeout=30) as response:
             source = response.read().decode("utf-8")
         compile(source, str(launcher_path), "exec")
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+        # Restart the sidecar when the launcher source changed since the last
+        # start, so fixes in main take effect on the next boot without a
+        # disk-image rebuild.
+        recorded_hash = ""
+        if hash_path.is_file():
+            try:
+                recorded_hash = hash_path.read_text(encoding="ascii").strip()
+            except OSError:
+                recorded_hash = ""
+
+        if pid_path.is_file():
+            old_pid = 0
+            try:
+                old_pid = int(pid_path.read_text(encoding="ascii").strip())
+            except (ValueError, OSError):
+                old_pid = 0
+            alive = False
+            if old_pid > 0:
+                try:
+                    os.kill(old_pid, 0)
+                    alive = True
+                except OSError:
+                    alive = False
+            if alive and recorded_hash == digest:
+                print("WEB_ADJUSTER_START_SKIPPED reason=launcher_pid_alive pid={}".format(old_pid), flush=True)
+                return
+            if alive:
+                print("WEB_ADJUSTER_RESTART reason=launcher_source_changed pid={}".format(old_pid), flush=True)
+                try:
+                    os.kill(old_pid, 15)
+                except OSError:
+                    pass
+                for _ in range(20):
+                    try:
+                        os.kill(old_pid, 0)
+                    except OSError:
+                        break
+                    time.sleep(0.25)
+
         launcher_path.write_text(source, encoding="utf-8")
         log_file = open(log_path, "ab", buffering=0)
         try:
@@ -1366,8 +1400,9 @@ def start_web_adjuster_sidecar():
         finally:
             log_file.close()
         pid_path.write_text(str(child.pid) + "\n", encoding="ascii")
-        print("WEB_ADJUSTER_START_REQUESTED pid={} wrapper_port=28080 proxy_port=28081 log={}".format(
-            child.pid, log_path), flush=True)
+        hash_path.write_text(digest + "\n", encoding="ascii")
+        print("WEB_ADJUSTER_START_REQUESTED pid={} wrapper_port=28080 proxy_port=28081 sha256={} log={}".format(
+            child.pid, digest[:12], log_path), flush=True)
     except Exception as exc:
         print("WEB_ADJUSTER_START_FAILED error={}: {}".format(
             type(exc).__name__, str(exc)[:300]), flush=True)
