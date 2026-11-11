@@ -1454,6 +1454,74 @@ def start_web_adjuster_sidecar():
                 type(exc).__name__, str(exc)[:300]), flush=True)
 
 
+def _run_endpoint_tests():
+    """Hit the wrapper endpoints and print results."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    base = "http://127.0.0.1:28080"
+    endpoints = ["/health", "/proxy-status", "/"]
+    for ep in endpoints:
+        url = base + ep
+        tag = "ENDPOINT_TEST"
+        try:
+            req = Request(url, headers={"User-Agent": "webvm-selftest/1.0"})
+            with urlopen(req, timeout=15) as resp:
+                status = resp.status
+                headers = dict(resp.headers)
+                body = resp.read(2000).decode("utf-8", errors="replace")
+                print("{} url={} status={} body_len={} content_type={}".format(
+                    tag, url, status, len(body), headers.get("Content-Type", "?")),
+                    flush=True)
+                if ep == "/":
+                    has_iframe = "iframe" in body.lower()
+                    has_adjuster_marker = "WEBVM_ADJUSTER" in body
+                    print("{} url={} has_iframe={} has_adjuster_marker={}".format(
+                        tag, url, has_iframe, has_adjuster_marker), flush=True)
+                elif ep == "/health":
+                    print("{} HEALTH_BODY: {}".format(tag, body[:500]), flush=True)
+                elif ep == "/proxy-status":
+                    print("{} PROXY_STATUS_BODY: {}".format(tag, body[:500]), flush=True)
+        except HTTPError as e:
+            print("{} url={} HTTP_ERROR status={} reason={}".format(
+                tag, url, e.code, e.reason), flush=True)
+        except (URLError, OSError, TimeoutError) as e:
+            print("{} url={} NETWORK_ERROR error={}: {}".format(
+                tag, url, type(e).__name__, e), flush=True)
+
+    proxy_url = base + "/proxy/"
+    tag = "PROXY_TEST"
+    try:
+        req = Request(proxy_url, headers={"User-Agent": "webvm-selftest/1.0"})
+        with urlopen(req, timeout=30) as resp:
+            status = resp.status
+            headers = dict(resp.headers)
+            body = resp.read(4000).decode("utf-8", errors="replace")
+            has_xfo = "x-frame-options" in str(headers).lower()
+            print("{} url={} status={} body_len={} has_x_frame_options={} content_type={}".format(
+                tag, proxy_url, status, len(body), has_xfo,
+                headers.get("Content-Type", "?")), flush=True)
+            print("{} RESPONSE_HEADERS: {}".format(tag, json.dumps(
+                {k: v for k, v in headers.items()
+                 if k.lower() in ("content-type", "x-frame-options",
+                                   "content-security-policy", "location",
+                                   "set-cookie", "server")},
+                indent=None)), flush=True)
+            print("{} BODY_PREVIEW: {}".format(tag, body[:800]), flush=True)
+    except HTTPError as e:
+        body = ""
+        try:
+            body = e.read(2000).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        print("{} url={} HTTP_ERROR status={} reason={} body={}".format(
+            tag, proxy_url, e.code, e.reason, body[:500]), flush=True)
+    except (URLError, OSError, TimeoutError) as e:
+        print("{} url={} NETWORK_ERROR error={}: {}".format(
+            tag, proxy_url, type(e).__name__, e), flush=True)
+
+    print("SELF_TEST_COMPLETE", flush=True)
+
+
 def main():
     prepare_system()
     start_web_adjuster_sidecar()
@@ -1467,6 +1535,10 @@ def main():
     print("WEB_ADJUSTER_ONLY_MODE — Kaggle code disabled for proxy testing", flush=True)
     print("Wrapper: http://0.0.0.0:28080/", flush=True)
     print("Adjuster: http://0.0.0.0:28081/", flush=True)
+
+    # --- Auto-test endpoints ---
+    _run_endpoint_tests()
+
     print("Tailing /tmp/web-adjuster.log ...", flush=True)
     import time
     log_path = Path("/tmp/web-adjuster.log")
