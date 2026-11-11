@@ -68,11 +68,10 @@ This is the active end-to-end networking experiment; it is distinct from the Dat
 
 ### Required sequence
 
-1. Kaggle starts the receiver/capture before WebVM transmits and publishes a `RECEIVER_READY` event containing a per-run ID and the observation layer.
-2. WebVM sends a unique marker encoded as hex in an HTTP request to the actual Kaggle Jupyter proxy host and route. Record destination host/route shape, request ID, byte count, start/end time, connection outcome, and HTTP status. Do not put proxy tokens or other secrets in logs.
-3. Kaggle-side evidence must say whether the marker was observed and where: an HTTP handler or socket sees application bytes; a packet capture sees only packets that traverse the captured interface/namespace. The upstream HTTPS reverse proxy may terminate TLS outside the notebook namespace, so an HTTP response or error alone must not be described as notebook-side packet capture.
-4. On the same still-open connection, Kaggle returns a second unique marker. WebVM verifies exact response bytes and logs the matching run ID.
-5. Emit a final verdict: `PASS_PROXY_MARKER_ROUND_TRIP` only if the outbound marker is correlated with receiver-side evidence and the response marker arrives back on the same connection. Otherwise emit a stage-specific failure with actual exception/status/capture counts.
+1. **Public HTTPS probe (independent):** WebVM resolves `kkb-production.jupyter-proxy.kaggle.net`, connects with TLS to port 443, and sends a unique frame-shaped marker as hex in an HTTP request. It records the HTTP status returned on that same TLS connection even if the frontend rejects the request. This is evidence of frontend reachability, not proof of notebook-interface capture.
+2. **Kaggle-hosted receiver probe (exact marker round trip):** when the Tailscale peer address is available, WebVM sends a unique marker encoded as hex in an HTTP request to the Kaggle-side proxy endpoint at peer port 18088. The receiver handler validates the marker bytes and SHA-256, emits `MARKER_RECEIVED`, intentionally rejects forwarding with HTTP 501, and returns the marker ID and digest in the same connection's response.
+3. Record destination, request ID, byte counts, SHA-256, response status, and elapsed time. Never put proxy tokens or other secrets in logs.
+4. Emit `PASS_PROXY_MARKER_ROUND_TRIP` only when the receiver-side handler validates the exact marker and WebVM validates the matching same-connection response. The public HTTPS result is separate and cannot substitute for this receiver-side PASS. If peer discovery fails, still run and report the public HTTPS probe, then report the private receiver probe as unavailable.
 
 ### Interpretation rules
 
