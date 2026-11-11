@@ -2,18 +2,17 @@
 
 > Keep this section current when changing the reset mechanism or Qwen experiment. These notes are intended to let an AI agent continue the work without asking the user to repeat repository context.
 
-## Current objective: prove WebVM ↔ Kaggle proxy-path delivery
+## Current objective: RX/TX-controlled WebVM ↔ Kaggle proxy experiment
 
-The basic Kaggle API RX/TX loop is already a known, separate mechanism: WebVM publishes a Dataset version, Kaggle executes a notebook, and WebVM retrieves the output artifact. Repeating that file loop is **not** the active networking test.
+The Kaggle API RX/TX channel is the only remote control/transport mechanism for this experiment. **Do not launch a Tailscale bridge, do not depend on a tailnet IP, and do not wait for `peer_ip_not_ready`.** That wait was a dead end: it did not send the requested marker.
 
-The active test has two explicitly separate paths so a missing Tailscale peer cannot prevent the first real send:
+The current WebVM runtime sends a unique frame-shaped byte sequence encoded as hex in an HTTPS request to `kkb-production.jupyter-proxy.kaggle.net:443`. It records the actual response from the public proxy frontend. This confirms only that the frontend returned a response; it does not by itself prove that the Kaggle notebook's network interface observed the request.
 
-1. **Public Kaggle HTTPS proxy probe:** WebVM resolves `kkb-production.jupyter-proxy.kaggle.net`, establishes TLS to port 443, sends a unique frame-shaped marker encoded as hex in an HTTP request, and records the HTTP status returned over that same TLS connection. This proves the request reached the public proxy frontend and got a response; it does **not** prove the notebook's own network interface received the request, because TLS/proxying may terminate upstream.
-2. **Kaggle-side proxy receiver probe:** if the private Tailscale peer address becomes available, WebVM sends a unique hex-encoded marker to the Kaggle-hosted TCP proxy at peer port 18088. The receiver handler validates the exact marker and SHA-256, logs `MARKER_RECEIVED`, intentionally returns HTTP 501, and echoes the ID/digest on that same TCP connection. WebVM validates that exact response.
+Use the RX/TX command channel to coordinate a Kaggle-side packet observation during the WebVM send. Record whether the marker's corresponding connection is visible at the Kaggle notebook interface, and state the observation layer precisely. If the proxy terminates TLS upstream and no corresponding packet reaches the notebook namespace, report that as the result rather than adding Tailscale or another unrelated transport.
 
-Each path has its own result and failure stage. The direct public HTTPS probe must run before and independently of waiting for the Tailscale peer. The exact receiver-side marker round trip is the stronger proof of application-layer delivery to the Kaggle-hosted service. Do not call an HTTP status from the public frontend a notebook-side packet capture.
+The existing Dataset-upload/notebook/output loop remains the control channel for commands and results. It is not, by itself, proof that arbitrary WebVM network packets reached the notebook interface. Do not claim end-to-end packet delivery or a same-connection Kaggle response unless the receiver-side evidence and matching response are actually recorded.
 
-The Tailscale SOCKS5 greeting that existed previously was only a 3-byte request / 2-byte response; it did not carry or verify the marker. That has been replaced by the encoded-marker request and correlated response on port 18088. A missing peer address is reported separately and must not erase the public HTTPS probe result.
+
 
 Relevant files:
 - `reset` — plain-text reset generation; changing it triggers the deployed WebVM reset poller.
