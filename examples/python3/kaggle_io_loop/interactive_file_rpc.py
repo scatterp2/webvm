@@ -24,6 +24,8 @@ import re
 import subprocess
 import threading
 import time
+import secrets
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -33,6 +35,9 @@ RESULTS = ROOT / "results"
 RESULTS.mkdir(parents=True, exist_ok=True)
 HOST = "127.0.0.1"
 PORT = 8765
+TELNET_HOST = "0.0.0.0"
+TELNET_PORT = 8766
+TELNET_AUTH_TOKEN = secrets.token_hex(24)
 MAX_REQUEST_BYTES = 32768
 COMMAND_TIMEOUT_SECONDS = 60
 REQUEST_ID_RE = re.compile(r"[0-9a-fA-F]{128}")
@@ -168,6 +173,59 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
+class TelnetHandler(socketserver.StreamRequestHandler):
+    """Minimal authenticated line protocol for a raw TCP/telnet smoke test.
+
+    Client sends the one-time token, then a Base64 command on the next line.
+    Server returns combined stdout/stderr bytes and closes the connection.
+    """
+    def handle(self):
+        self.connection.settimeout(10)
+        self.wfile.write(b"WEBVM_FILE_RPC_TELNET_V1\\nAUTH_TOKEN: ")
+        self.wfile.flush()
+        supplied = self.rfile.readline(256).decode("ascii", "ignore").strip()
+        if not secrets.compare_digest(supplied, TELNET_AUTH_TOKEN):
+            self.wfile.write(b"AUTH_FAILED\\n")
+            self.wfile.flush()
+            return
+        self.wfile.write(b"AUTH_OK\\nBASE64_COMMAND: ")
+        self.wfile.flush()
+        line = self.rfile.readline(MAX_REQUEST_BYTES + 2)
+        if not line or len(line) > MAX_REQUEST_BYTES + 1:
+            self.wfile.write(b"ERROR: missing or oversized command\\n")
+            self.wfile.flush()
+            return
+        try:
+            command = decode_command(line.decode("ascii").strip())
+        except Exception as exc:
+            self.wfile.write(("ERROR: invalid command payload: {}\\n".format(exc)).encode())
+            self.wfile.flush()
+            return
+        try:
+            result = subprocess.run(
+                command, shell=True, executable="/bin/bash",
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=COMMAND_TIMEOUT_SECONDS,
+                check=False,
+            )
+            output = result.stdout or b""
+            print("FILE_RPC_TELNET_RESULT exit_code={} bytes={} sha256={}".format(
+                result.returncode, len(output), hashlib.sha256(output).hexdigest()
+            ), flush=True)
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or b""
+            if isinstance(output, str):
+                output = output.encode("utf-8", "replace")
+            output += b"\\nERROR: command timed out after 60 seconds\\n"
+        self.wfile.write(output)
+        self.wfile.flush()
+
+
+class ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def start_file_rpc_server():
     if globals().get("_hex_file_rpc_server") is not None:
         print("FILE_RPC_ALREADY_RUNNING host={} port={}".format(HOST, PORT), flush=True)
@@ -178,6 +236,20 @@ def start_file_rpc_server():
     thread.start()
     globals()["_hex_file_rpc_server"] = server
     print("FILE_RPC_READY host={} port={} results={}".format(HOST, PORT, RESULTS), flush=True)
+
+    if globals().get("_hex_file_rpc_telnet_server") is None:
+        telnet_server = ReusableThreadingTCPServer((TELNET_HOST, TELNET_PORT), TelnetHandler)
+        telnet_thread = threading.Thread(
+            target=telnet_server.serve_forever, name="kaggle-file-rpc-telnet", daemon=True
+        )
+        telnet_thread.start()
+        globals()["_hex_file_rpc_telnet_server"] = telnet_server
+        print("FILE_RPC_TELNET_READY host={} port={} auth_token={}".format(
+            TELNET_HOST, TELNET_PORT, TELNET_AUTH_TOKEN
+        ), flush=True)
+        print("NOTE: direct inbound Kaggle ports may be blocked; test reachability before relying on this port.", flush=True)
+    else:
+        print("FILE_RPC_TELNET_ALREADY_RUNNING port={}".format(TELNET_PORT), flush=True)
     return server
 
 if __name__ == "__main__":
