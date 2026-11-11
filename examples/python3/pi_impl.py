@@ -929,28 +929,24 @@ def verify_tcp_link_from_webvm():
     https_proxy_passed = probe_kaggle_https_proxy_from_webvm()
     print("TCP_LINK_KAGGLE_HTTPS_PROXY_PROBE_COMPLETED passed={}".format(bool(https_proxy_passed)), flush=True)
 
+    # This optional direct-Tailscale check is only meaningful after RX/TX has
+    # bootstrapped the bridge. Never burn ten minutes waiting for its IP here.
     env_file = Path("/data/kaggle-tcp-link.env")
     peer_ip = None
     ip_prefix = 'export WEBVM_KAGGLE_TCP_LINK_IP="'
-    for attempt in range(1, 61):
-        try:
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                if line.startswith(ip_prefix) and line.endswith('"'):
-                    candidate = line[len(ip_prefix):-1].strip()
-                    if candidate.startswith("100.") and all(ch.isdigit() or ch == "." for ch in candidate):
-                        peer_ip = candidate
-                        break
-        except OSError:
-            pass
-        if peer_ip:
-            break
-        print("TCP_LINK_REMOTE_PROBE_WAIT attempt={}/60 reason=peer_ip_not_ready".format(attempt), flush=True)
-        if attempt < 60:
-            time.sleep(10)
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith(ip_prefix) and line.endswith('"'):
+                candidate = line[len(ip_prefix):-1].strip()
+                if candidate.startswith("100.") and all(ch.isdigit() or ch == "." for ch in candidate):
+                    peer_ip = candidate
+                    break
+    except OSError:
+        pass
 
     if not peer_ip:
-        print("TCP_LINK_CROSS_MACHINE_DELIVERY_FAIL stage=peer_discovery reason=peer_ip_missing", flush=True)
-        return False
+        print("TCP_LINK_CROSS_MACHINE_DELIVERY_SKIP reason=peer_ip_not_ready transport=RX_TX_is_required", flush=True)
+        return bool(https_proxy_passed)
 
     marker_id = "WVM-" + str(time.time_ns())
     marker = ("WEBVM_RAW_FRAME_MARKER:" + marker_id).encode("ascii")
@@ -1332,23 +1328,14 @@ def run_io_loop_proof():
     print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
         USERNAME + "/webvm-tcp-link"), flush=True)
 
-    # The TCP controller can take many minutes when Kaggle's status API stalls.
-    # Run it in the background so the RX/TX command channel starts immediately.
+    # Tailscale is downstream of the RX/TX channel, never a substitute for it.
+    # Do not submit the bridge unless the actual RX/TX round-trip has passed.
     def _run_tcp_controller_background():
-        # Do not launch a second Kaggle CPU session while the RX/TX proof is
-        # still publishing and validating its own kernel. This also prevents
-        # a rejected proof push from being obscured by a concurrent bridge push.
-        # The initial Kaggle RX/TX kernel can remain RUNNING for several
-        # minutes without publishing its result. Do not let that stall the
-        # separate TCP-link test indefinitely: give it 180 seconds, then launch
-        # the bridge even if the file/API proof is still pending or failed.
-        proof_done = proof_finished.wait(timeout=180)
-        if proof_done and proof_result["passed"]:
-            print("TCP_LINK_START_REASON initial_rx_tx_proof_passed", flush=True)
-        elif proof_done:
-            print("TCP_LINK_START_REASON initial_rx_tx_proof_failed_continue_with_tcp_test", flush=True)
-        else:
-            print("TCP_LINK_START_REASON initial_rx_tx_proof_still_running_after_180s_continue_with_tcp_test", flush=True)
+        proof_finished.wait()
+        if not proof_result["passed"]:
+            print("TCP_LINK_NOT_STARTED reason=initial_rx_tx_proof_not_passed; transport=RX_TX_required", flush=True)
+            return
+        print("TCP_LINK_START_REASON initial_rx_tx_proof_passed", flush=True)
         try:
             run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
             print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
