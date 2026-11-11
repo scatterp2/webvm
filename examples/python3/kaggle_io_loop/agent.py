@@ -362,6 +362,11 @@ def main():
             if not source.strip():
                 raise ValueError("Python payload is empty")
             started_exec = time.monotonic()
+            route_result_path = Path("/kaggle/working/webvm_proxy_route.json")
+            try:
+                route_result_path.unlink()
+            except FileNotFoundError:
+                pass
             try:
                 result = subprocess.run(
                     [sys.executable, "-I", "-c", source],
@@ -389,10 +394,37 @@ def main():
             response_payload = "EXEC:" + execution["sha256"] + ":" + str(execution["exit_code"])
         else:
             response_payload = "ACK:" + message["payload"]
+    proxy_route = None
+    route_result_path = Path("/kaggle/working/webvm_proxy_route.json")
+    if route_result_path.is_file():
+        try:
+            candidate_route = json.loads(route_result_path.read_text(encoding="utf-8"))
+            import re as _route_re
+            route_host = candidate_route.get("host")
+            route_path = candidate_route.get("path")
+            route_kernel_id = str(candidate_route.get("kernel_id") or "")
+            route_token = str(candidate_route.get("token") or "")
+            route_match = _route_re.fullmatch(
+                r"/k/([0-9]+)/([A-Za-z0-9._~-]+)/proxy/?", str(route_path or ""))
+            if (route_host == "kkb-production.jupyter-proxy.kaggle.net"
+                    and route_match
+                    and route_match.group(1) == route_kernel_id
+                    and route_match.group(2) == route_token):
+                proxy_route = {
+                    "host": route_host, "path": route_path,
+                    "kernel_id": route_kernel_id, "token": route_token,
+                }
+                log("PROXY_ROUTE_TX_ATTACHED", host=route_host,
+                    kernel_id=route_kernel_id, token_present=True)
+            else:
+                log("PROXY_ROUTE_TX_REJECTED", reason="route_validation_failed")
+        except Exception as exc:
+            log("PROXY_ROUTE_TX_REJECTED", reason=type(exc).__name__)
     network_diagnostics = collect_network_diagnostics()
     log("NETWORK_DIAGNOSTICS", report=network_diagnostics)
     response_core = {
         "network_diagnostics": network_diagnostics,
+        "proxy_route": proxy_route,
         "execution": execution,
         "version": PROTOCOL_VERSION, "sequence": message["sequence"],
         "request_id": message["request_id"], "type": "ack",
@@ -407,7 +439,16 @@ def main():
     log("TX_WRITTEN", path=str(tx_path), sequence=response["sequence"], request_id=response["request_id"],
         ack_state=delivery_state, bytes=tx_path.stat().st_size, checksum=response["checksum"],
         elapsed_ms=response["agent_elapsed_ms"])
-    print("IO_LOOP_RESULT " + json.dumps({"rx": message, "tx": response}, sort_keys=True), flush=True)
+    # Do not print the token-bearing route into Kaggle execution logs.
+    visible_response = dict(response)
+    if visible_response.get("proxy_route"):
+        route = visible_response["proxy_route"]
+        visible_response["proxy_route"] = {
+            "host": route.get("host"), "kernel_id": route.get("kernel_id"),
+            "token_present": bool(route.get("token")),
+            "path_shape": "/k/{}/[TOKEN]/proxy".format(route.get("kernel_id")),
+        }
+    print("IO_LOOP_RESULT " + json.dumps({"rx": message, "tx": visible_response}, sort_keys=True), flush=True)
 
 if __name__ == "__main__":
     main()
