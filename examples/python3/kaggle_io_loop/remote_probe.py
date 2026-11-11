@@ -1,60 +1,63 @@
 #!/usr/bin/env python3
-"""Discover the live Kaggle Jupyter proxy route from the full process list.
+"""Find the Kaggle proxy token using the notebook's full process listing.
 
-Equivalent to inspecting `ps auxww`: scan every readable process command line,
-not only explicit --ServerApp.base_url / --NotebookApp.base_url arguments.
-Only the tokenized route is written to /kaggle/working/webvm_proxy_route.json
-for return through the existing RX/TX channel. Never print the token.
+The live process table is searched with `ps auxww`, as requested. The
+matching token is written only to /kaggle/working/webvm_proxy_route.json
+for return through the existing RX/TX channel. It is never printed.
 """
-import glob
 import json
 import re
+import subprocess
 from pathlib import Path
 
 HOST = "kkb-production.jupyter-proxy.kaggle.net"
 RESULT = Path("/kaggle/working/webvm_proxy_route.json")
-ROUTE_RE = re.compile(r"(/k/([0-9]+)/([A-Za-z0-9._~-]+)/proxy/?)(?=$|[\s'\\";,])")
+ROUTE_RE = re.compile(r"/k/([0-9]+)/([^/\s'\"?]+)/proxy(?:/|$)")
 
-def process_cmdlines():
-    """Yield (pid, argv) for every readable process, like ps auxww."""
-    for cmdline_path in glob.glob("/proc/[0-9]*/cmdline"):
-        try:
-            pid = int(cmdline_path.split("/")[2])
-            raw = Path(cmdline_path).read_bytes()
-        except (OSError, ValueError):
-            continue
-        args = [
-            value.decode("utf-8", "replace")
-            for value in raw.split(b"\0") if value
-        ]
-        if args:
-            yield pid, args
+try:
+    ps = subprocess.run(
+        ["ps", "auxww"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    process_lines = ps.stdout.splitlines()
+except (OSError, subprocess.SubprocessError) as exc:
+    try:
+        RESULT.unlink()
+    except FileNotFoundError:
+        pass
+    print(
+        "WEBVM_PROXY_ROUTE_DISCOVERY found=false method=ps_auxww "
+        "error_type={}".format(type(exc).__name__),
+        flush=True,
+    )
+    raise SystemExit(0)
 
-process_count = 0
-jupyter_count = 0
+jupyter_lines = [
+    line for line in process_lines
+    if "jupyter" in line.lower() or "notebook" in line.lower()
+]
+search_groups = (jupyter_lines, process_lines)
 found = None
-for pid, args in process_cmdlines():
-    process_count += 1
-    joined = " ".join(args)
-    is_jupyter = "jupyter" in joined.lower() or "notebook" in joined.lower()
-    if is_jupyter:
-        jupyter_count += 1
-    # Search the entire argv text, not just the value of a base_url option.
-    # Prefer a match on a Jupyter/Notebook process, but retain any match as
-    # fallback because wrappers can carry the route in their own arguments.
-    matches = list(ROUTE_RE.finditer(joined))
-    if matches and (is_jupyter or found is None):
-        match = matches[0]
-        found = {
-            "host": HOST,
-            "path": match.group(1).rstrip("/"),
-            "kernel_id": match.group(2),
-            "token": match.group(3),
-            "source_pid": pid,
-            "source_is_jupyter": is_jupyter,
-        }
-        if is_jupyter:
+source_group = None
+
+# Search the entire ps command line, prioritising Jupyter/Notebook processes.
+for group_name, lines in (("jupyter_process", jupyter_lines), ("all_processes", process_lines)):
+    for line in lines:
+        match = ROUTE_RE.search(line)
+        if match:
+            found = {
+                "host": HOST,
+                "path": "/k/{}/{}/proxy".format(match.group(1), match.group(2)),
+                "kernel_id": match.group(1),
+                "token": match.group(2),
+            }
+            source_group = group_name
             break
+    if found:
+        break
 
 if not found:
     try:
@@ -62,17 +65,17 @@ if not found:
     except FileNotFoundError:
         pass
     print(
-        "WEBVM_PROXY_ROUTE_DISCOVERY found=false process_count={} jupyter_process_count={} "
-        "searched=full_cmdline".format(process_count, jupyter_count),
+        "WEBVM_PROXY_ROUTE_DISCOVERY found=false method=ps_auxww "
+        "process_count={} jupyter_process_count={}".format(
+            max(0, len(process_lines) - 1), len(jupyter_lines)),
         flush=True,
     )
 else:
     RESULT.parent.mkdir(parents=True, exist_ok=True)
     RESULT.write_text(json.dumps(found, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "WEBVM_PROXY_ROUTE_DISCOVERY found=true source_pid={} source_is_jupyter={} "
-        "kernel_id={} token_present=true searched=full_cmdline".format(
-            found["source_pid"], str(found["source_is_jupyter"]).lower(),
-            found["kernel_id"]),
+        "WEBVM_PROXY_ROUTE_DISCOVERY found=true method=ps_auxww "
+        "source={} kernel_id={} token_present=true".format(
+            source_group, found["kernel_id"]),
         flush=True,
     )
