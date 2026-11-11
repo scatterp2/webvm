@@ -130,7 +130,7 @@ def collect_network_diagnostics():
             report["jupyter_proxy_token_present"] = True
             report["jupyter_proxy_kernel_id"] = route_match.group(1)
     except (OSError, subprocess.SubprocessError) as exc:
-        report["process_list_method"] = "ps_auxww"
+        report["process_list_method"] = "ps_aux"
         report["process_list_error"] = type(exc).__name__
     try:
         with socket.create_connection(("127.0.0.1", 8889), timeout=1):
