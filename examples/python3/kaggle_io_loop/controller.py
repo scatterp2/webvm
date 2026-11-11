@@ -380,7 +380,15 @@ def validate_output(path, message, logger):
     if message["type"] == "python_b64":
         checks["execution_succeeded"] = response.get("execution", {}).get("exit_code") == 0
         checks["execution_not_timed_out"] = response.get("execution", {}).get("timed_out") is False
-    logger.event("OUTPUT_VALIDATION", checks=checks, response=response)
+    log_response = dict(response)
+    if isinstance(log_response.get("proxy_route"), dict):
+        route = log_response["proxy_route"]
+        log_response["proxy_route"] = {
+            "host": route.get("host"), "kernel_id": route.get("kernel_id"),
+            "token_present": bool(route.get("token")),
+            "path_shape": "/k/{}/[TOKEN]/proxy".format(route.get("kernel_id")),
+        }
+    logger.event("OUTPUT_VALIDATION", checks=checks, response=log_response)
     if not all(checks.values()):
         raise RuntimeError("TX response validation failed: " + repr(checks))
     response["checksum"] = checksum
