@@ -850,24 +850,38 @@ def run_streamed_subprocess(command, env, label, timeout=1200, success_marker=No
             except (OSError, ValueError):
                 pass
 
-def probe_kaggle_https_proxy_from_webvm():
-    """Send a marker in HTTPS to Kaggle's public Jupyter-proxy host and record its HTTP response."""
+def probe_kaggle_https_proxy_from_webvm(proxy_route):
+    """POST a hex-encoded marker to the exact tokenized Kaggle Jupyter-proxy route."""
     import hashlib
+    import re
     import socket
     import ssl
     import struct
     import time
 
     host = "kkb-production.jupyter-proxy.kaggle.net"
-    marker_id = "WVM-HTTPS-" + str(time.time_ns())
+    if not isinstance(proxy_route, dict) or proxy_route.get("host") != host:
+        print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=false stage=route_validation reason=missing_or_wrong_host", flush=True)
+        return False
+
+    base_path = str(proxy_route.get("path") or "")
+    kernel_id = str(proxy_route.get("kernel_id") or "")
+    token = str(proxy_route.get("token") or "")
+    match = re.fullmatch(r"/k/([0-9]+)/([A-Za-z0-9._~-]+)/proxy/?", base_path)
+    if (not match or match.group(1) != kernel_id or match.group(2) != token
+            or not token):
+        print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=false stage=route_validation reason=invalid_tokenized_path", flush=True)
+        return False
+
+    marker_id = "WVM-TOKENIZED-" + str(time.time_ns())
     marker = ("WEBVM_RAW_FRAME_MARKER:" + marker_id).encode("ascii")
     frame = (b"\xff" * 6) + bytes.fromhex("020000000001") + struct.pack("!H", 0x88B5) + marker
     frame += b"\x00" * max(0, 60 - len(frame))
     frame_hex = frame.hex()
     digest = hashlib.sha256(frame).hexdigest()
-    path = "/__webvm_probe__/" + marker_id + "?frame_sha256=" + digest
+    request_path = base_path.rstrip("/") + "/__webvm_probe__/" + marker_id + "?frame_sha256=" + digest
     request = (
-        "POST " + path + " HTTP/1.1\r\n"
+        "POST " + request_path + " HTTP/1.1\r\n"
         "Host: " + host + "\r\n"
         "X-WebVM-Probe-ID: " + marker_id + "\r\n"
         "X-WebVM-Raw-Frame-Hex: " + frame_hex + "\r\n"
@@ -875,26 +889,27 @@ def probe_kaggle_https_proxy_from_webvm():
         "Content-Length: 0\r\n"
         "Connection: close\r\n\r\n"
     ).encode("ascii")
+
     try:
         addresses = sorted({item[4][0] for item in socket.getaddrinfo(
             host, 443, type=socket.SOCK_STREAM
         )})
-        print("TCP_LINK_KAGGLE_HTTPS_PROXY_PROBE_RESOLVED host={} addresses={} marker_id={} frame_bytes={} frame_sha256={}".format(
-            host, ",".join(addresses[:8]), marker_id, len(frame), digest), flush=True)
     except Exception as exc:
-        print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=dns host={} error_type={} detail={}".format(
-            host, type(exc).__name__, str(exc)[:240]), flush=True)
+        print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=false stage=dns error_type={} detail={}".format(
+            type(exc).__name__, str(exc)[:200]), flush=True)
         return False
+
+    print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_SEND host={} kernel_id={} route=/k/{}/[TOKEN]/proxy marker_id={} frame_bytes={} frame_hex_chars={} sha256={} addresses={}".format(
+        host, kernel_id, kernel_id, marker_id, len(frame), len(frame_hex), digest,
+        ",".join(addresses[:4])), flush=True)
 
     for address in addresses[:4]:
         try:
             started = time.monotonic()
-            with socket.create_connection((address, 443), timeout=8) as raw:
-                raw.settimeout(8)
+            with socket.create_connection((address, 443), timeout=10) as raw:
+                raw.settimeout(10)
                 with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as client:
                     client.sendall(request)
-                    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_SENT host={} ip={} port=443 marker_id={} tx_http_bytes={} frame_hex_chars={} frame_sha256={}".format(
-                        host, address, marker_id, len(request), len(frame_hex), digest), flush=True)
                     response = bytearray()
                     while b"\r\n\r\n" not in response and len(response) < 16384:
                         part = client.recv(4096)
@@ -906,17 +921,24 @@ def probe_kaggle_https_proxy_from_webvm():
                     if separator < 0:
                         raise ConnectionError("TLS connection closed without HTTP response headers")
                     status_line = bytes(response[:separator]).decode("iso-8859-1", "replace").split("\r\n", 1)[0]
-                    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=true host={} ip={} marker_id={} response_status={!r} response_header_bytes={} elapsed_ms={} same_tls_connection=true note=HTTP_response_proves_request_reached_frontend_not_notebook_interface".format(
-                        host, address, marker_id, status_line, separator, elapsed_ms), flush=True)
+                    print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=true host={} kernel_id={} marker_id={} response_status={!r} tx_http_bytes={} response_header_bytes={} elapsed_ms={} tokenized_route=true same_tls_connection=true".format(
+                        host, kernel_id, marker_id, status_line, len(request), separator, elapsed_ms), flush=True)
                     return True
         except Exception as exc:
-            print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RETRY host={} ip={} marker_id={} error_type={} detail={}".format(
-                host, address, marker_id, type(exc).__name__, str(exc)[:240]), flush=True)
-    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=tls_http_response host={} marker_id={} addresses_tried={}".format(
-        host, marker_id, min(len(addresses), 4)), flush=True)
+            print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RETRY host={} marker_id={} error_type={} detail={}".format(
+                host, marker_id, type(exc).__name__, str(exc)[:200]), flush=True)
+
+    print("TCP_LINK_KAGGLE_TOKENIZED_PROXY_RESULT passed=false stage=tls_http_response host={} kernel_id={} marker_id={} addresses_tried={}".format(
+        host, kernel_id, marker_id, min(len(addresses), 4)), flush=True)
     return False
 
 
+def verify_tcp_link_from_webvm(proxy_route):
+    """Send the actual marker to the tokenized proxy URL obtained through RX/TX."""
+    passed = probe_kaggle_https_proxy_from_webvm(proxy_route)
+    print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed={} tokenized_route=true notebook_interface_capture=not_measured".format(
+        bool(passed)), flush=True)
+    return passed
 def verify_tcp_link_from_webvm():
     """Send a marker to the public Kaggle HTTPS proxy; RX/TX is the control channel."""
     passed = probe_kaggle_https_proxy_from_webvm()
@@ -1044,6 +1066,16 @@ def run_io_loop_proof():
             try:
                 run_streamed_subprocess(proof_command, env, "IO_LOOP_CONTROLLER", timeout=1200, success_marker="LOOP_PROOF_PASS")
                 proof_result["passed"] = True
+                tx_path = Path("/home/user/kaggle-io-loop-run/output/tx_response.json")
+                if not tx_path.is_file():
+                    print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=tx_route_file_missing", flush=True)
+                else:
+                    tx_result = json.loads(tx_path.read_text(encoding="utf-8"))
+                    proxy_route = tx_result.get("proxy_route")
+                    if not proxy_route:
+                        print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=proxy_route_not_returned", flush=True)
+                    else:
+                        verify_tcp_link_from_webvm(proxy_route)
                 print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
                       flush=True)
             except Exception as exc:
@@ -1212,22 +1244,9 @@ def run_io_loop_proof():
     # to cross-machine delivery. Skip it so it cannot block the TCP proof.
     print("WEBVM_TERMINAL_SELFTEST_SKIPPED reason=loopback_socket_test_not_required", flush=True)
 
-    # RX/TX is the sole remote-control/transport mechanism for this experiment.
-    # Do not launch a separate Tailscale bridge or wait for a tailnet peer address.
-    def _run_public_proxy_delivery_test():
-        try:
-            passed = verify_tcp_link_from_webvm()
-            print("RX_TX_PUBLIC_PROXY_MARKER_COMPLETED passed={}".format(
-                bool(passed)), flush=True)
-        except Exception as exc:
-            print("RX_TX_PUBLIC_PROXY_MARKER_ERROR error={}: {}".format(
-                type(exc).__name__, str(exc)[:300]), flush=True)
-    threading.Thread(
-        target=_run_public_proxy_delivery_test,
-        name="webvm-rxtx-public-proxy-marker-test",
-        daemon=True,
-    ).start()
-    print("RX_TX_PUBLIC_PROXY_MARKER_TEST_STARTED transport=RX_TX no_tailscale=true", flush=True)
+    # The tokenized proxy marker is sent exactly once by the initial RX/TX
+    # completion callback, immediately after the route arrives in tx_response.json.
+    print("RX_TX_TOKENIZED_PROXY_MARKER_TEST_SCHEDULED_AFTER_ROUTE_DISCOVERY no_tailscale=true", flush=True)
 
     # Keep a command channel alive for the lifetime of this WebVM process.
     # Editing remote_probe.py on GitHub delivers a new Python payload over RX/TX;
