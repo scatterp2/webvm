@@ -918,112 +918,11 @@ def probe_kaggle_https_proxy_from_webvm():
 
 
 def verify_tcp_link_from_webvm():
-    """Send an encoded Ethernet marker to the Kaggle proxy and verify its same-connection reply."""
-    import hashlib
-    import re
-    import struct
-    import time
-
-    # Always perform the direct HTTPS-to-Kaggle-proxy marker send first. This
-    # does not depend on Tailscale peer discovery and records the real HTTP reply.
-    https_proxy_passed = probe_kaggle_https_proxy_from_webvm()
-    print("TCP_LINK_KAGGLE_HTTPS_PROXY_PROBE_COMPLETED passed={}".format(bool(https_proxy_passed)), flush=True)
-
-    # This optional direct-Tailscale check is only meaningful after RX/TX has
-    # bootstrapped the bridge. Never burn ten minutes waiting for its IP here.
-    env_file = Path("/data/kaggle-tcp-link.env")
-    peer_ip = None
-    ip_prefix = 'export WEBVM_KAGGLE_TCP_LINK_IP="'
-    try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            if line.startswith(ip_prefix) and line.endswith('"'):
-                candidate = line[len(ip_prefix):-1].strip()
-                if candidate.startswith("100.") and all(ch.isdigit() or ch == "." for ch in candidate):
-                    peer_ip = candidate
-                    break
-    except OSError:
-        pass
-
-    if not peer_ip:
-        print("TCP_LINK_CROSS_MACHINE_DELIVERY_SKIP reason=peer_ip_not_ready transport=RX_TX_is_required", flush=True)
-        return bool(https_proxy_passed)
-
-    marker_id = "WVM-" + str(time.time_ns())
-    marker = ("WEBVM_RAW_FRAME_MARKER:" + marker_id).encode("ascii")
-    # This is deliberately an Ethernet-frame-shaped byte string carried as hex
-    # inside HTTP. It is NOT injected as a Layer-2 Ethernet frame.
-    frame = (b"\xff" * 6) + bytes.fromhex("020000000001") + struct.pack("!H", 0x88B5) + marker
-    frame += b"\x00" * max(0, 60 - len(frame))
-    frame_hex = frame.hex()
-    frame_sha256 = hashlib.sha256(frame).hexdigest()
-    if not re.fullmatch(r"[0-9a-f]+", frame_hex):
-        raise RuntimeError("internal marker hex encoding failed")
-
-    request = (
-        "POST http://webvm-probe.invalid/__webvm_probe__ HTTP/1.1\r\n"
-        "Host: webvm-probe.invalid\r\n"
-        "X-WebVM-Probe-ID: " + marker_id + "\r\n"
-        "X-WebVM-Raw-Frame-Hex: " + frame_hex + "\r\n"
-        "X-WebVM-Frame-SHA256: " + frame_sha256 + "\r\n"
-        "Content-Length: 0\r\n"
-        "Connection: close\r\n\r\n"
-    ).encode("ascii")
-
-    for attempt in range(1, 4):
-        try:
-            started = time.monotonic()
-            with socket.create_connection((peer_ip, 18088), timeout=8) as client:
-                client.settimeout(8)
-                client.sendall(request)
-                print("TCP_LINK_MARKER_SENT attempt={} peer={} port=18088 marker_id={} frame_bytes={} http_request_bytes={} frame_sha256={}".format(
-                    attempt, peer_ip, marker_id, len(frame), len(request), frame_sha256), flush=True)
-
-                response = bytearray()
-                while b"\r\n\r\n" not in response and len(response) < 16384:
-                    part = client.recv(4096)
-                    if not part:
-                        raise ConnectionError("peer closed before HTTP response headers")
-                    response.extend(part)
-                separator = response.find(b"\r\n\r\n")
-                if separator < 0:
-                    raise RuntimeError("response headers exceeded 16 KiB")
-                header_bytes = bytes(response[:separator])
-                body = bytearray(response[separator + 4:])
-                header_lines = header_bytes.decode("iso-8859-1").split("\r\n")
-                status_line = header_lines[0]
-                headers = {}
-                for line in header_lines[1:]:
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        headers[key.strip().lower()] = value.strip()
-                content_length = int(headers.get("content-length", "0"))
-                while len(body) < content_length:
-                    part = client.recv(min(4096, content_length - len(body)))
-                    if not part:
-                        raise ConnectionError("peer closed before full response body")
-                    body.extend(part)
-            elapsed_ms = round((time.monotonic() - started) * 1000, 2)
-            body_text = bytes(body[:content_length]).decode("ascii", "replace")
-            expected_body = "MARKER_RECEIVED id={} sha256={} frame_bytes={}".format(
-                marker_id, frame_sha256, len(frame))
-            if (not status_line.startswith("HTTP/1.1 501 ")
-                    or headers.get("x-webvm-probe-id") != marker_id
-                    or headers.get("x-webvm-frame-sha256") != frame_sha256
-                    or body_text != expected_body):
-                raise RuntimeError("receiver did not echo matching marker; status={!r} id={!r} sha256={!r} body={!r}".format(
-                    status_line, headers.get("x-webvm-probe-id"),
-                    headers.get("x-webvm-frame-sha256"), body_text[:300]))
-            print("TCP_LINK_CROSS_MACHINE_DELIVERY_PASS transport=Tailscale_TCP_HTTP marker_id={} peer={} port=18088 tx_frame_bytes={} tx_http_bytes={} rx_body_bytes={} receiver_sha256={} response_status=501 intentional_reject=true same_connection=true elapsed_ms={}".format(
-                marker_id, peer_ip, len(frame), len(request), len(body), frame_sha256, elapsed_ms), flush=True)
-            return True
-        except Exception as exc:
-            print("TCP_LINK_CROSS_MACHINE_DELIVERY_RETRY attempt={}/3 marker_id={} error_type={} detail={}".format(
-                attempt, marker_id, type(exc).__name__, str(exc)[:300]), flush=True)
-            if attempt < 3:
-                time.sleep(3)
-    print("TCP_LINK_CROSS_MACHINE_DELIVERY_FAIL stage=marker_round_trip attempts=3 marker_id={} peer={} port=18088".format(
-        marker_id, peer_ip), flush=True)
-    return False
+    """Send a marker to the public Kaggle HTTPS proxy; RX/TX is the control channel."""
+    passed = probe_kaggle_https_proxy_from_webvm()
+    print("RX_TX_PUBLIC_PROXY_MARKER_RESULT passed={} note=frontend_response_only_not_notebook_capture".format(
+        bool(passed)), flush=True)
+    return passed
 
 
 def run_io_loop_proof():
@@ -1313,61 +1212,22 @@ def run_io_loop_proof():
     # to cross-machine delivery. Skip it so it cannot block the TCP proof.
     print("WEBVM_TERMINAL_SELFTEST_SKIPPED reason=loopback_socket_test_not_required", flush=True)
 
-    # Submit the existing long-running Tailscale bridge. Authentication is
-    # handled inside that bridge; no auth material is sent through RX/TX.
-    tcp_command = [
-        sys.executable, str(target_dir / "controller.py"),
-        "--dataset-id", USERNAME + "/webvm-io-loop-rx",
-        "--kernel-id", USERNAME + "/webvm-tcp-link",
-        "--work-dir", "/home/user/kaggle-tcp-link-run",
-        "--timeout-seconds", "900",
-        "--poll-seconds", "10",
-        "--serve-tcp-link",
-        "--use-existing-tailscale-bridge",
-    ]
-    print("TCP_LINK_CONTROLLER_START kernel_id={}".format(
-        USERNAME + "/webvm-tcp-link"), flush=True)
-
-    # Tailscale is downstream of the RX/TX channel, never a substitute for it.
-    # Do not submit the bridge unless the actual RX/TX round-trip has passed.
-    def _run_tcp_controller_background():
-        proof_finished.wait()
-        if not proof_result["passed"]:
-            print("TCP_LINK_NOT_STARTED reason=initial_rx_tx_proof_not_passed; transport=RX_TX_required", flush=True)
-            return
-        print("TCP_LINK_START_REASON initial_rx_tx_proof_passed", flush=True)
-        try:
-            run_streamed_subprocess(tcp_command, env, "TCP_LINK_CONTROLLER", timeout=1200)
-            print("TCP_LINK_BRIDGE_SUBMITTED transport=tailscale-socks5-http-connect tailnet_port=18088", flush=True)
-        except Exception as exc:
-            print("TCP_LINK_BACKGROUND_FAILED error={}: {}".format(
-                type(exc).__name__, str(exc)[:300]), flush=True)
-
-    threading.Thread(
-        target=_run_tcp_controller_background,
-        name="webvm-tcp-link-controller",
-        daemon=True,
-    ).start()
-    print("TCP_LINK_CONTROLLER_BACKGROUND_STARTED command_channel=unblocked", flush=True)
-
-    # Actually send a uniquely identified, hex-encoded Ethernet-shaped marker
-    # to the Kaggle-side proxy handler. The receiver validates/logs it, intentionally
-    # returns HTTP 501, and echoes the marker ID + digest on the same TCP connection.
-    # This tests encoded marker delivery, not Layer-2 Ethernet injection.
-    def _run_tcp_proxy_delivery_test():
+    # RX/TX is the sole remote-control/transport mechanism for this experiment.
+    # Do not launch a separate Tailscale bridge or wait for a tailnet peer address.
+    def _run_public_proxy_delivery_test():
         try:
             passed = verify_tcp_link_from_webvm()
-            print("TCP_LINK_CROSS_MACHINE_DELIVERY_RESULT passed={}".format(
+            print("RX_TX_PUBLIC_PROXY_MARKER_COMPLETED passed={}".format(
                 bool(passed)), flush=True)
         except Exception as exc:
-            print("TCP_LINK_CROSS_MACHINE_DELIVERY_TEST_ERROR error={}: {}".format(
+            print("RX_TX_PUBLIC_PROXY_MARKER_ERROR error={}: {}".format(
                 type(exc).__name__, str(exc)[:300]), flush=True)
     threading.Thread(
-        target=_run_tcp_proxy_delivery_test,
-        name="webvm-tcp-proxy-delivery-test",
+        target=_run_public_proxy_delivery_test,
+        name="webvm-rxtx-public-proxy-marker-test",
         daemon=True,
     ).start()
-    print("TCP_LINK_CROSS_MACHINE_DELIVERY_TEST_STARTED", flush=True)
+    print("RX_TX_PUBLIC_PROXY_MARKER_TEST_STARTED transport=RX_TX no_tailscale=true", flush=True)
 
     # Keep a command channel alive for the lifetime of this WebVM process.
     # Editing remote_probe.py on GitHub delivers a new Python payload over RX/TX;
