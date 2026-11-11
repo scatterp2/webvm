@@ -108,32 +108,30 @@ def collect_network_diagnostics():
         except Exception as exc:
             report["iptables_nat_prerouting"] = {"error": type(exc).__name__}
 
-    for proc_path in glob.glob("/proc/[0-9]*/cmdline"):
-        try:
-            args = [v.decode("utf-8", "replace") for v in Path(proc_path).read_bytes().split(b"\0") if v]
-        except OSError:
-            continue
-        if not any("jupyter" in value.lower() or "notebook" in value.lower() for value in args):
-            continue
-        base_url = None
-        for index, value in enumerate(args):
-            if value.startswith(("--NotebookApp.base_url=", "--ServerApp.base_url=")):
-                base_url = value.split("=", 1)[1]
+    # Inspect the complete process listing, matching remote_probe.py.
+    try:
+        ps_result = subprocess.run(["ps", "auxww"], capture_output=True, text=True, timeout=10, check=True)
+        process_lines = ps_result.stdout.splitlines()
+        jupyter_lines = [line for line in process_lines if "jupyter" in line.lower() or "notebook" in line.lower()]
+        route_match = None
+        for candidate_lines in (jupyter_lines, process_lines):
+            for line in candidate_lines:
+                match = re.search(r"/k/([0-9]+)/([^/ ]+)/proxy", line)
+                if match:
+                    route_match = match
+                    break
+            if route_match:
                 break
-            if value in ("--NotebookApp.base_url", "--ServerApp.base_url") and index + 1 < len(args):
-                base_url = args[index + 1]
-                break
-        if base_url:
-            match = re.search(r"/k/(\d+)/([^/]+)/proxy/?$", base_url)
-            if match:
-                report["jupyter_proxy_route_found"] = True
-                report["jupyter_proxy_token_present"] = bool(match.group(2))
-                report["jupyter_proxy_kernel_id"] = match.group(1)
-            else:
-                # Report only the route shape; never return a URL that could contain a token.
-                report["jupyter_base_url_shape"] = "present_unrecognized_format"
-            break
-
+        report["process_list_method"] = "ps_auxww"
+        report["process_count"] = max(0, len(process_lines) - 1)
+        report["jupyter_process_count"] = len(jupyter_lines)
+        if route_match:
+            report["jupyter_proxy_route_found"] = True
+            report["jupyter_proxy_token_present"] = True
+            report["jupyter_proxy_kernel_id"] = route_match.group(1)
+    except (OSError, subprocess.SubprocessError) as exc:
+        report["process_list_method"] = "ps_auxww"
+        report["process_list_error"] = type(exc).__name__
     try:
         with socket.create_connection(("127.0.0.1", 8889), timeout=1):
             report["port_8889_listening"] = True
