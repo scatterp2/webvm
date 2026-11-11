@@ -41,3 +41,4 @@ Deploy RX/TX terminal service and private Kaggle shell port; expose connection i
 Deploy Tailscale exit-node indicator fix: keep the selected exit node latched across follow-up netmaps.
 42: Deploy Host-header-derived launcher with lazy adjuster start for Kaggle iframe proxy.
 43: Fix auto-connect redirect: skip popup when no authKey, use cx.networkLogin() when authKey present.
+44: Re-enable load_pi_impl()/main() in pi.py; kill stale ports before start_proxy().
