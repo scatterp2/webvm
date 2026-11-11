@@ -1027,7 +1027,7 @@ main()
     execution_output = execution.get("output") if isinstance(execution, dict) else None
     if isinstance(execution_output, str) and "WEBVM_FULL_PS_AUX_BEGIN" in execution_output:
         print("RX_TX_REMOTE_PROCESS_LIST_BEGIN", flush=True)
-        print(execution_output, end="" if execution_output.endswith("\\n") else "\\n", flush=True)
+        print(execution_output, end="" if execution_output.endswith("\n") else "\n", flush=True)
         print("RX_TX_REMOTE_PROCESS_LIST_END", flush=True)
 
     # Download the executed notebook separately so the proxy/NAT diagnostic
