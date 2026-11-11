@@ -13,9 +13,41 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+import subprocess
+import os
+import sys
 
 PI_IMPL_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/pi_impl.py"
 
+def start_proxy():
+    """Start the wrapper/adjuster proxy so port 28080 is listening."""
+    launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
+    if not launcher.is_file():
+        print("PROXY_LAUNCHER_MISSING path={}".format(launcher), flush=True)
+        return
+    print("PROXY_STARTING launcher={}".format(launcher), flush=True)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(
+        [sys.executable, str(launcher)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+    for _ in range(60):
+        if process.poll() is not None:
+            print("PROXY_LAUNCHER_EXITED code={}".format(process.returncode), flush=True)
+            return
+        try:
+            import socket
+            s = socket.create_connection(("127.0.0.1", 28080), timeout=0.5)
+            s.close()
+            print("PROXY_READY port=28080 pid={}".format(process.pid), flush=True)
+            return
+        except OSError:
+            time.sleep(1)
+    print("PROXY_START_TIMEOUT pid={}".format(process.pid), flush=True)
 
 def load_pi_impl():
     last_error = None
@@ -61,5 +93,6 @@ def load_pi_impl():
 
 
 if __name__ == "__main__":
+    start_proxy()
     load_pi_impl()
     main()
