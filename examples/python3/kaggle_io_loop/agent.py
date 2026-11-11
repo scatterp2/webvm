@@ -110,7 +110,7 @@ def collect_network_diagnostics():
 
     # Inspect the complete process listing, matching remote_probe.py.
     try:
-        ps_result = subprocess.run(["ps", "auxww"], capture_output=True, text=True, timeout=10, check=True)
+        ps_result = subprocess.run(["ps", "-aux"], capture_output=True, text=True, timeout=10, check=True)
         process_lines = ps_result.stdout.splitlines()
         jupyter_lines = [line for line in process_lines if "jupyter" in line.lower() or "notebook" in line.lower()]
         route_match = None
@@ -122,7 +122,7 @@ def collect_network_diagnostics():
                     break
             if route_match:
                 break
-        report["process_list_method"] = "ps_auxww"
+        report["process_list_method"] = "ps_aux"
         report["process_count"] = max(0, len(process_lines) - 1)
         report["jupyter_process_count"] = len(jupyter_lines)
         if route_match:
@@ -375,7 +375,7 @@ def main():
                     "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
                     "exit_code": result.returncode,
                     "elapsed_ms": round((time.monotonic() - started_exec) * 1000, 2),
-                    "output": (result.stdout or "")[-7000:],
+                    "output": (result.stdout or "")[-20000:],
                     "timed_out": False,
                 }
             except subprocess.TimeoutExpired as exc:
@@ -386,7 +386,7 @@ def main():
                     "sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
                     "exit_code": None,
                     "elapsed_ms": round((time.monotonic() - started_exec) * 1000, 2),
-                    "output": str(output)[-7000:],
+                    "output": str(output)[-20000:],
                     "timed_out": True,
                 }
             response_payload = "EXEC:" + execution["sha256"] + ":" + str(execution["exit_code"])
