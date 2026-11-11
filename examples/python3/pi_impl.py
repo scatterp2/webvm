@@ -1337,6 +1337,8 @@ def start_web_adjuster_sidecar():
     hash_path = Path("/tmp/web-adjuster-launcher.sha256")
     log_path = Path("/tmp/web-adjuster.log")
 
+    local_launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
+
     try:
         request = Request(
             launcher_url + "?t=" + str(int(time.time() * 1000)),
@@ -1404,8 +1406,37 @@ def start_web_adjuster_sidecar():
         print("WEB_ADJUSTER_START_REQUESTED pid={} wrapper_port=28080 proxy_port=28081 sha256={} log={}".format(
             child.pid, digest[:12], log_path), flush=True)
     except Exception as exc:
-        print("WEB_ADJUSTER_START_FAILED error={}: {}".format(
-            type(exc).__name__, str(exc)[:300]), flush=True)
+        if local_launcher.is_file():
+            print("WEB_ADJUSTER_GITHUB_FAILED error={}: {} — falling back to local launcher".format(
+                type(exc).__name__, str(exc)[:200]), flush=True)
+            try:
+                source = local_launcher.read_text(encoding="utf-8")
+                compile(source, str(local_launcher), "exec")
+                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                launcher_path.write_text(source, encoding="utf-8")
+                log_file = open(log_path, "ab", buffering=0)
+                try:
+                    child = subprocess.Popen(
+                        [sys.executable, str(launcher_path)],
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        close_fds=True,
+                    )
+                finally:
+                    log_file.close()
+                pid_path.write_text(str(child.pid) + "\n", encoding="ascii")
+                hash_path.write_text(digest + "\n", encoding="ascii")
+                print("WEB_ADJUSTER_START_REQUESTED pid={} source=local sha256={} log={}".format(
+                    child.pid, digest[:12], log_path), flush=True)
+                return
+            except Exception as fallback_exc:
+                print("WEB_ADJUSTER_LOCAL_FALLBACK_FAILED error={}: {}".format(
+                    type(fallback_exc).__name__, str(fallback_exc)[:300]), flush=True)
+        else:
+            print("WEB_ADJUSTER_START_FAILED error={}: {}".format(
+                type(exc).__name__, str(exc)[:300]), flush=True)
 
 
 def main():

@@ -28,13 +28,17 @@ def start_proxy():
     print("PROXY_STARTING launcher={}".format(launcher), flush=True)
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    log_file = open("/tmp/web-adjuster.log", "ab", buffering=0)
     process = subprocess.Popen(
         [sys.executable, str(launcher)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         env=env,
         start_new_session=True,
+        close_fds=True,
     )
+    log_file.close()
     for _ in range(60):
         if process.poll() is not None:
             print("PROXY_LAUNCHER_EXITED code={}".format(process.returncode), flush=True)

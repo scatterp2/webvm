@@ -193,12 +193,11 @@ def start_adjuster(host: str) -> None:
         str(executable),
         "--address=" + BIND,
         "--port=" + str(ADJUSTER_PORT),
-        # The public host is used as the host suffix so rewritten links point
-        # back at this node instead of the upstream site.
         "--host-suffix=" + host,
+        "--default-site=www.kaggle.com",
         "--wildcard-dns=False",
         "--open-proxy",
-        "--viewsource=True",
+        "--real-proxy",
         "--bodyAppend=" + INJECTION_SCRIPT,
     ]
     log("STARTING_PROXY port={} host={}".format(ADJUSTER_PORT, host))
@@ -282,26 +281,27 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
 <body>
 <header>
 <strong>Web Adjuster &rarr; Proxy iframe test</strong>
-<p>Proxy: <a id="adjuster-link" href="#">open Web Adjuster directly</a></p>
+<p>Direct proxy: <a id="adjuster-link" href="#" target="_blank" rel="noopener">open Web Adjuster (port __ADJUSTER_PORT__)</a>
+ | Same-origin proxy: <a id="wrapper-proxy-link" href="/proxy/" target="_blank" rel="noopener">/proxy/</a></p>
 <p id="status">Waiting for the adjuster to come up...</p>
 </header>
-<iframe id="proxy-frame" title="Proxy through Web Adjuster"></iframe>
+<iframe id="proxy-frame" title="Kaggle through Web Adjuster (same-origin proxy)"></iframe>
 <script>
 (function() {
   var status = document.getElementById('status');
   var frame = document.getElementById('proxy-frame');
-  var link = document.getElementById('adjuster-link');
   var host = window.location.hostname;
-  var adjusterUrl = 'http://' + host + ':' + __ADJUSTER_PORT__ + '/';
-  link.href = adjusterUrl;
-  link.target = '_blank';
-  link.rel = 'noopener';
+  var directUrl = 'http://' + host + ':' + __ADJUSTER_PORT__ + '/';
+  var proxyUrl = '/proxy/';
+  document.getElementById('adjuster-link').href = directUrl;
+  document.getElementById('wrapper-proxy-link').href = proxyUrl;
 
   var loaded = false;
   frame.addEventListener('load', function() {
     loaded = true;
     status.textContent = 'Iframe load event fired at ' + new Date().toISOString()
-      + ' - this alone does not prove the page rendered correctly.';
+      + ' - checking for injected marker...';
+    window.setTimeout(checkInjection, 500);
   });
   frame.addEventListener('error', function() {
     status.textContent = 'Iframe error event fired at ' + new Date().toISOString();
@@ -312,10 +312,8 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
       .then(function(r) { return r.json(); })
       .then(function(s) {
         if (s.state === 'ready') {
-          if (!loaded) { frame.src = adjusterUrl; }
-          status.textContent = 'Proxy ready at ' + adjusterUrl
-            + ' - checking the frame for the injected marker.';
-          checkInjection();
+          if (!loaded) { frame.src = proxyUrl; }
+          status.textContent = 'Proxy ready - loading Kaggle through same-origin /proxy/ endpoint...';
           return;
         }
         status.textContent = 'Adjuster state: ' + s.state
@@ -331,16 +329,20 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
   function checkInjection() {
     try {
       var doc = frame.contentDocument;
-      if (!doc) { return; }
+      if (!doc) {
+        status.textContent += ' (contentDocument is null - cross-origin or about:blank)';
+        return;
+      }
       var el = doc.getElementById('webvm-adjuster-injection-proof');
       var attr = doc.documentElement.getAttribute('data-webvm-adjuster-injected');
       if (el || attr === 'true') {
-        status.textContent = 'JS/DOM INJECTION CONFIRMED: marker element present = '
-          + (!!el) + ', documentElement attribute = ' + attr
-          + ', marker text = ' + (el ? el.textContent : 'n/a');
+        status.textContent = 'JS/DOM INJECTION CONFIRMED: marker=' + (!!el)
+          + ', attr=' + attr + ', text=' + (el ? el.textContent : 'n/a');
+      } else {
+        status.textContent += ' (no injection marker found yet - page may still be loading)';
       }
     } catch (e) {
-      status.textContent = 'Injection check blocked by same-origin policy: ' + e;
+      status.textContent = 'Injection check error: ' + e;
     }
   }
 
@@ -356,6 +358,9 @@ def render_page() -> str:
     return PAGE_TEMPLATE.replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
 
 
+FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -366,6 +371,42 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _reverse_proxy(self, downstream_path: str) -> None:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+
+        target = "http://127.0.0.1:{}/{}".format(
+            ADJUSTER_PORT, downstream_path.lstrip("/"))
+        try:
+            req = Request(target)
+            for name in ("Accept", "Accept-Language", "Accept-Encoding",
+                         "Cookie", "Referer", "User-Agent"):
+                val = self.headers.get(name)
+                if val:
+                    req.add_header(name, val)
+            with urlopen(req, timeout=30) as resp:
+                body = resp.read(4 * 1024 * 1024)
+                self.send_response(resp.status)
+                for key, val in resp.getheaders():
+                    lower = key.lower()
+                    if lower in FRAME_BLOCKED_HEADERS:
+                        continue
+                    if lower == "content-security-policy" and "frame-ancestors" in val.lower():
+                        continue
+                    if lower in ("content-length", "transfer-encoding",
+                                 "connection", "keep-alive"):
+                        continue
+                    self.send_header(key, val)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        except HTTPError as exc:
+            body = "Proxy upstream returned {}\n".format(exc.code).encode()
+            self._send(exc.code, "text/plain; charset=utf-8", body)
+        except (URLError, OSError) as exc:
+            msg = "Proxy fetch failed: {}\n".format(exc).encode()
+            self._send(502, "text/plain; charset=utf-8", msg)
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -384,9 +425,15 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(payload).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
             return
+        if path.startswith("/proxy/") or path == "/proxy":
+            downstream = path[6:] or "/"
+            host = self.headers.get("Host", "")
+            host = host.split(":")[0] or "localhost"
+            ensure_adjuster_started(host)
+            self._reverse_proxy(downstream)
+            return
         if path in ("/", "/index.html"):
             host = self.headers.get("Host", "")
-            # Strip the port; the adjuster needs a bare host as host_suffix.
             host = host.split(":")[0] or "localhost"
             ensure_adjuster_started(host)
             body = render_page().encode("utf-8")
