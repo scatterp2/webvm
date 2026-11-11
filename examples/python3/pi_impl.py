@@ -1341,70 +1341,14 @@ def _kill_stale_launcher():
 
 
 def start_web_adjuster_sidecar():
-    """Start the Web Adjuster wrapper IN-PROCESS (as a daemon thread).
+    """Use the wrapper already started by the disk-image pi.py's start_proxy().
 
-    CheerpX's cooperative scheduler starves subprocess-spawned Python
-    interpreters, so we exec the launcher module inside this process
-    and run its main() on a daemon thread instead.
+    CheerpX cannot reliably start a second Python process (subprocess is starved
+    by the cooperative scheduler) or run serve_forever() in a daemon thread
+    (it never yields back to the main thread). So we skip the new launcher
+    entirely and test the one that start_proxy() already brought up on :28080.
     """
-    import hashlib
-    from urllib.request import Request, urlopen
-
-    launcher_url = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
-    local_launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
-
-    source = None
-    digest = "?"
-
-    try:
-        request = Request(
-            launcher_url + "?t=" + str(int(time.time() * 1000)),
-            headers={"Cache-Control": "no-cache", "User-Agent": "webvm-web-adjuster-bootstrap/1.0"},
-        )
-        with urlopen(request, timeout=30) as response:
-            source = response.read().decode("utf-8")
-        compile(source, "launcher.py", "exec")
-        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
-        print("WEB_ADJUSTER_LAUNCHER_FETCHED source=github chars={} sha256={}".format(
-            len(source), digest), flush=True)
-    except Exception as exc:
-        print("WEB_ADJUSTER_GITHUB_FAILED error={}: {}".format(
-            type(exc).__name__, str(exc)[:200]), flush=True)
-        if local_launcher.is_file():
-            try:
-                source = local_launcher.read_text(encoding="utf-8")
-                compile(source, str(local_launcher), "exec")
-                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
-                print("WEB_ADJUSTER_LAUNCHER_FETCHED source=local chars={} sha256={}".format(
-                    len(source), digest), flush=True)
-            except Exception as e2:
-                print("WEB_ADJUSTER_LOCAL_FALLBACK_FAILED error={}: {}".format(
-                    type(e2).__name__, str(e2)[:300]), flush=True)
-
-    if source is None:
-        print("WEB_ADJUSTER_START_FAILED reason=no_launcher_source", flush=True)
-        return
-
-    _kill_stale_launcher()
-
-    ns = {"__name__": "__main__", "__file__": "launcher.py"}
-    exec(compile(source, "launcher.py", "exec"), ns)
-    launcher_main = ns.get("main")
-    if not callable(launcher_main):
-        print("WEB_ADJUSTER_START_FAILED reason=no_main_in_launcher", flush=True)
-        return
-
-    def _run_launcher():
-        try:
-            launcher_main()
-        except Exception as exc:
-            print("[WEB_ADJUSTER] THREAD_CRASHED error={}: {}".format(
-                type(exc).__name__, str(exc)[:300]), flush=True)
-
-    t = threading.Thread(target=_run_launcher, name="web-adjuster-wrapper", daemon=True)
-    t.start()
-    print("WEB_ADJUSTER_START_REQUESTED mode=in-process wrapper_port=28080 proxy_port=28081 sha256={}".format(
-        digest), flush=True)
+    print("WEB_ADJUSTER_SIDECAR_MODE reusing_existing_launcher_from_start_proxy", flush=True)
 
 
 def _run_endpoint_tests():
