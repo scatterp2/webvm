@@ -83,3 +83,18 @@ This is the active end-to-end networking experiment; it is distinct from the Dat
 - Keep the test bounded, use non-sensitive marker data, avoid changing firewall/server state, and do not print tokens or credentials.
 
 Implementation note: the WebVM bootstrap fetches `tcp_socks5.py` from the repository and injects a small, bounded marker-validation branch into the in-memory/local copy before the Kaggle notebook is generated. The repository copy of the proxy service is left unchanged. The branch records `MARKER_RECEIVED`, validates the frame hex and SHA-256, then intentionally returns HTTP 501 with the same marker ID and digest; the WebVM sender verifies that response on the same socket.
+
+
+## Interactive-runtime blocking file response (new test)
+
+`interactive_file_rpc.py` is a separate handler for the **interactive** Kaggle notebook runtime. It binds to loopback port 8765 and must be started from a cell in that same interactive notebook; submitting it through `kaggle kernels push` would start it in the wrong runtime.
+
+The handler keeps the original HTTP request open while it decodes and runs the command, writes the command's combined stdout/stderr bytes to `/kaggle/working/hex_rpc_test/results/<requested-name>.txt`, and returns those exact bytes as the body of the *same HTTP response*. It does not answer with 404 while a command is running and does not require a second fetch.
+
+Supported request forms:
+
+- `GET /<128-hex-request-id>.txt?cmd_b64=<base64-command>`: stable random request filename; command is carried in that same request.
+- `GET /<hex-encoded-base64-command>.txt`: command is encoded in the filename itself.
+- `POST /<128-hex-request-id>.txt` with a Base64 command body.
+
+Run the source in the interactive notebook and then run a local loopback test before testing the external proxy route. The server is intentionally loopback-only. To reach it remotely, the interactive Jupyter server must have a working port-proxy route to port 8765; the existence of the file handler alone does not prove that route is configured. Do not claim WebVM-to-interactive-runtime delivery until a request through the actual tokenized proxy returns the expected command output on that same HTTP response.
