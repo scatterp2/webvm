@@ -1339,6 +1339,19 @@ def start_web_adjuster_sidecar():
 
     local_launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
 
+    def _kill_stale_launcher():
+        """Kill any process occupying ports 28080/28081 so the new launcher can bind."""
+        for port in (28080, 28081):
+            try:
+                subprocess.run(
+                    ["fuser", "-k", "{}/tcp".format(port)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=5, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        time.sleep(0.5)
+
     try:
         request = Request(
             launcher_url + "?t=" + str(int(time.time() * 1000)),
@@ -1388,6 +1401,7 @@ def start_web_adjuster_sidecar():
                         break
                     time.sleep(0.25)
 
+        _kill_stale_launcher()
         launcher_path.write_text(source, encoding="utf-8")
         log_file = open(log_path, "ab", buffering=0)
         try:
@@ -1413,6 +1427,7 @@ def start_web_adjuster_sidecar():
                 source = local_launcher.read_text(encoding="utf-8")
                 compile(source, str(local_launcher), "exec")
                 digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                _kill_stale_launcher()
                 launcher_path.write_text(source, encoding="utf-8")
                 log_file = open(log_path, "ab", buffering=0)
                 try:
