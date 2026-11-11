@@ -879,10 +879,10 @@ def probe_kaggle_https_proxy_from_webvm():
         addresses = sorted({item[4][0] for item in socket.getaddrinfo(
             host, 443, type=socket.SOCK_STREAM
         )})
-        print("KAGGLE_HTTPS_PROXY_PROBE_RESOLVED host={} addresses={} marker_id={} frame_bytes={} frame_sha256={}".format(
+        print("TCP_LINK_KAGGLE_HTTPS_PROXY_PROBE_RESOLVED host={} addresses={} marker_id={} frame_bytes={} frame_sha256={}".format(
             host, ",".join(addresses[:8]), marker_id, len(frame), digest), flush=True)
     except Exception as exc:
-        print("KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=dns host={} error_type={} detail={}".format(
+        print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=dns host={} error_type={} detail={}".format(
             host, type(exc).__name__, str(exc)[:240]), flush=True)
         return False
 
@@ -893,7 +893,7 @@ def probe_kaggle_https_proxy_from_webvm():
                 raw.settimeout(8)
                 with ssl.create_default_context().wrap_socket(raw, server_hostname=host) as client:
                     client.sendall(request)
-                    print("KAGGLE_HTTPS_PROXY_MARKER_SENT host={} ip={} port=443 marker_id={} tx_http_bytes={} frame_hex_chars={} frame_sha256={}".format(
+                    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_SENT host={} ip={} port=443 marker_id={} tx_http_bytes={} frame_hex_chars={} frame_sha256={}".format(
                         host, address, marker_id, len(request), len(frame_hex), digest), flush=True)
                     response = bytearray()
                     while b"\r\n\r\n" not in response and len(response) < 16384:
@@ -906,13 +906,13 @@ def probe_kaggle_https_proxy_from_webvm():
                     if separator < 0:
                         raise ConnectionError("TLS connection closed without HTTP response headers")
                     status_line = bytes(response[:separator]).decode("iso-8859-1", "replace").split("\r\n", 1)[0]
-                    print("KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=true host={} ip={} marker_id={} response_status={!r} response_header_bytes={} elapsed_ms={} same_tls_connection=true note=HTTP_response_proves_request_reached_frontend_not_notebook_interface".format(
+                    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=true host={} ip={} marker_id={} response_status={!r} response_header_bytes={} elapsed_ms={} same_tls_connection=true note=HTTP_response_proves_request_reached_frontend_not_notebook_interface".format(
                         host, address, marker_id, status_line, separator, elapsed_ms), flush=True)
                     return True
         except Exception as exc:
-            print("KAGGLE_HTTPS_PROXY_MARKER_RETRY host={} ip={} marker_id={} error_type={} detail={}".format(
+            print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RETRY host={} ip={} marker_id={} error_type={} detail={}".format(
                 host, address, marker_id, type(exc).__name__, str(exc)[:240]), flush=True)
-    print("KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=tls_http_response host={} marker_id={} addresses_tried={}".format(
+    print("TCP_LINK_KAGGLE_HTTPS_PROXY_MARKER_RESULT passed=false stage=tls_http_response host={} marker_id={} addresses_tried={}".format(
         host, marker_id, min(len(addresses), 4)), flush=True)
     return False
 
@@ -927,7 +927,7 @@ def verify_tcp_link_from_webvm():
     # Always perform the direct HTTPS-to-Kaggle-proxy marker send first. This
     # does not depend on Tailscale peer discovery and records the real HTTP reply.
     https_proxy_passed = probe_kaggle_https_proxy_from_webvm()
-    print("KAGGLE_HTTPS_PROXY_PROBE_COMPLETED passed={}".format(bool(https_proxy_passed)), flush=True)
+    print("TCP_LINK_KAGGLE_HTTPS_PROXY_PROBE_COMPLETED passed={}".format(bool(https_proxy_passed)), flush=True)
 
     env_file = Path("/data/kaggle-tcp-link.env")
     peer_ip = None
