@@ -77,9 +77,9 @@ This is the active end-to-end networking experiment; it is distinct from the Dat
 
 - A successful Dataset upload/download proves only API-mediated file transfer.
 - A successful kernel push or `RUNNING` status proves only submission/execution status.
-- `peer_ip_not_ready` means the separate Tailscale peer-address lookup did not produce an address; it is not an attempted marker transmission.
-- The existing SOCKS5 greeting test against tailnet port 18088 is a separate test. It must not be used as the result for the Kaggle proxy-address experiment.
-- If the proxy rejects or drops the HTTP request before it reaches the notebook, report that as an observed proxy-path result and explain what the available evidence can and cannot establish. Do not claim the Kaggle notebook interface received bytes unless the notebook-side capture/handler actually observed them.
+- A missing or malformed tokenized route means no marker request was sent; report that as a route-discovery failure, not a network result.
+- Do not run Tailscale peer discovery, SOCKS5 greetings, or any tailnet test as a substitute for this request.
+- Record the exact HTTP status returned on the tokenized route. A proxy/Jupyter HTTP response proves the request reached that route; it does not by itself prove packet-level capture inside the notebook namespace.
 - Keep the test bounded, use non-sensitive marker data, avoid changing firewall/server state, and do not print tokens or credentials.
 
 Implementation note: the WebVM bootstrap fetches `tcp_socks5.py` from the repository and injects a small, bounded marker-validation branch into the in-memory/local copy before the Kaggle notebook is generated. The repository copy of the proxy service is left unchanged. The branch records `MARKER_RECEIVED`, validates the frame hex and SHA-256, then intentionally returns HTTP 501 with the same marker ID and digest; the WebVM sender verifies that response on the same socket.
