@@ -197,8 +197,7 @@ def prepare_credentials():
     if json_file.is_file():
         try:
             legacy = json.loads(json_file.read_text(encoding="utf-8"))
-            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))
-        except (OSError, ValueError, AttributeError):
+            has_legacy_key = bool(legacy.get("username") and legacy.get("key"))        except (OSError, ValueError, AttributeError):
             has_legacy_key = False
     if not has_token and not has_legacy_key:
         raise RuntimeError(
@@ -397,8 +396,7 @@ def write_notebook():
 #                     "    print('GPU test error:', repr(exc))\n"
 #                 ]
                 "source": runtime_source.splitlines(keepends=True),
-            }
-        ],
+            }        ],
         "metadata": {
             "kernelspec": {
                 "display_name": "Python 3",
@@ -597,8 +595,7 @@ def deploy():
             "[system_default_sect]\n"
             "MinProtocol = TLSv1.2\n"
             "MaxProtocol = TLSv1.2\n",
-            encoding="utf-8",
-        )
+            encoding="utf-8",        )
         tls12_env = env.copy()
         tls12_env["OPENSSL_CONF"] = str(tls_config)
         print("KAGGLE_PUSH_TLS12_FALLBACK action=retry", flush=True)
@@ -797,8 +794,7 @@ def run_streamed_subprocess(command, env, label, timeout=1200, success_marker=No
                 # The child emits this only after the RX/TX output has been
                 # downloaded and all request/checksum/payload checks passed.
                 marker_completed = True
-                try:
-                    process.wait(timeout=5)
+                try:                    process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.terminate()
                     try:
@@ -997,8 +993,7 @@ def run_io_loop_proof():
                         b"X-WebVM-Frame-SHA256: " + actual_digest.encode("ascii") + b"\r\n"
                         b"Content-Type: text/plain\r\n"
                         b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
-                        b"Connection: close\r\n\r\n" + body
-                    )
+                        b"Connection: close\r\n\r\n" + body                    )
                     return
                 except Exception as exc:
                     _emit("MARKER_REJECTED", marker_id=marker_id[:100],
@@ -1197,8 +1192,7 @@ def run_io_loop_proof():
         }
         print("WEBVM_TERMINAL_SERVER_DIAGNOSTIC " + _json.dumps(
             _server_state, sort_keys=True), flush=True)
-    except Exception as _server_diag_exc:
-        print("WEBVM_TERMINAL_SERVER_DIAGNOSTIC_FAIL error={}: {}".format(
+    except Exception as _server_diag_exc:        print("WEBVM_TERMINAL_SERVER_DIAGNOSTIC_FAIL error={}: {}".format(
             type(_server_diag_exc).__name__, str(_server_diag_exc)[:300]), flush=True)
 
     def _run_terminal_rx_tx_selftest():
@@ -1329,8 +1323,56 @@ def run_io_loop_proof():
                 type(exc).__name__), flush=True)
 
 
+def start_web_adjuster_sidecar():
+    """Start the separate Web Adjuster iframe smoke test without touching Kaggle credentials."""
+    from urllib.request import Request, urlopen
+
+    launcher_url = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
+    launcher_path = Path("/tmp/web_adjuster_launcher.py")
+    pid_path = Path("/tmp/web-adjuster-launcher.pid")
+    log_path = Path("/tmp/web-adjuster.log")
+
+    try:
+        if pid_path.is_file():
+            try:
+                old_pid = int(pid_path.read_text(encoding="ascii").strip())
+                os.kill(old_pid, 0)
+                print("WEB_ADJUSTER_START_SKIPPED reason=launcher_pid_alive pid={}".format(old_pid), flush=True)
+                return
+            except (ValueError, OSError):
+                pass
+
+        request = Request(
+            launcher_url + "?t=" + str(int(time.time() * 1000)),
+            headers={"Cache-Control": "no-cache", "User-Agent": "webvm-web-adjuster-bootstrap/1.0"},
+        )
+        with urlopen(request, timeout=30) as response:
+            source = response.read().decode("utf-8")
+        compile(source, str(launcher_path), "exec")
+        launcher_path.write_text(source, encoding="utf-8")
+        log_file = open(log_path, "ab", buffering=0)
+        try:
+            child = subprocess.Popen(
+                [sys.executable, str(launcher_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        finally:
+            log_file.close()
+        pid_path.write_text(str(child.pid) + "\n", encoding="ascii")
+        print("WEB_ADJUSTER_START_REQUESTED pid={} wrapper_port=28080 proxy_port=28081 log={}".format(
+            child.pid, log_path), flush=True)
+    except Exception as exc:
+        print("WEB_ADJUSTER_START_FAILED error={}: {}".format(
+            type(exc).__name__, str(exc)[:300]), flush=True)
+
+
 def main():
     prepare_system()
+    start_web_adjuster_sidecar()
     prepare_credentials()
 
     # Prioritize the active RX/TX proof and live TCP bridge. The legacy
@@ -1341,4 +1383,3 @@ def main():
     print("GPU_DIAGNOSTIC_DEFERRED reason=prioritize_RX_TX_and_live_TCP_proof",
           flush=True)
     run_io_loop_proof()
-
