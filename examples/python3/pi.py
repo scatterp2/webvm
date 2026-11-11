@@ -97,21 +97,12 @@ def load_pi_impl():
 
 
 if __name__ == "__main__":
-    start_proxy()
-    # --- Kaggle/IO-loop code disabled for Web Adjuster investigation ---
-    # load_pi_impl()
-    # main()
-    print("WEB_ADJUSTER_PROXY_MODE — wrapper on :28080, adjuster lazy on :28081", flush=True)
-    print("Tailing /tmp/web-adjuster.log ...", flush=True)
-    log_path = Path("/tmp/web-adjuster.log")
-    seen = 0
-    while True:
+    for port in (28080, 28081):
         try:
-            if log_path.is_file():
-                content = log_path.read_text(encoding="utf-8", errors="replace")
-                if len(content) > seen:
-                    print(content[seen:], end="", flush=True)
-                    seen = len(content)
-        except OSError:
+            subprocess.run(["fuser", "-k", "{}/tcp".format(port)],
+                           capture_output=True, timeout=5)
+        except Exception:
             pass
-        time.sleep(2)
+    start_proxy()
+    load_pi_impl()
+    main()
