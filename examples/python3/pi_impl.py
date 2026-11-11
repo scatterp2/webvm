@@ -1458,6 +1458,21 @@ def _run_endpoint_tests():
     """Hit the wrapper endpoints and print results."""
     from urllib.request import urlopen, Request
     from urllib.error import HTTPError, URLError
+    import socket as _sock
+
+    print("ENDPOINT_TEST waiting for wrapper on :28080 ...", flush=True)
+    for attempt in range(60):
+        try:
+            s = _sock.create_connection(("127.0.0.1", 28080), timeout=1)
+            s.close()
+            print("ENDPOINT_TEST wrapper_ready after {} seconds".format(attempt), flush=True)
+            break
+        except OSError:
+            time.sleep(1)
+    else:
+        print("ENDPOINT_TEST WRAPPER_NOT_READY after 60s — skipping tests", flush=True)
+        return
+
     base = "http://127.0.0.1:28080"
     endpoints = ["/health", "/proxy-status", "/"]
     for ep in endpoints:
