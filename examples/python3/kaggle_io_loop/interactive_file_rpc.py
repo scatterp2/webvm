@@ -56,15 +56,33 @@ class Handler(BaseHTTPRequestHandler):
         print("FILE_RPC " + (fmt % args).split(" ")[0], flush=True)
 
     def do_GET(self):
-        path = urlsplit(self.path).path
-        name = path.rsplit("/", 1)[-1]
+        parsed = urlsplit(self.path)
+        name = parsed.path.rsplit("/", 1)[-1]
         if not name.endswith(".txt"):
             self.send_error(404, "request path must end in .txt")
             return
+
+        # Preferred test form: a random 128-hex ID names the result file,
+        # while cmd_b64 carries the Base64 command in the *same* HTTP request.
+        request_id = name[:-4]
+        if REQUEST_ID_RE.fullmatch(request_id):
+            from urllib.parse import parse_qs
+            encoded_values = parse_qs(parsed.query, keep_blank_values=True).get("cmd_b64", [])
+            if len(encoded_values) != 1:
+                self.send_error(400, "128-hex request ID requires exactly one cmd_b64 parameter")
+                return
+            try:
+                command = decode_command(encoded_values[0])
+            except ValueError as exc:
+                self.send_error(400, str(exc))
+                return
+            self._execute_and_return(name, command)
+            return
+
+        # Alternate form: filename itself is hex(Base64(command)).
         encoded_hex = name[:-4]
-        # GET uses a filename that is the hex encoding of a Base64 command.
         if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){1,16384}", encoded_hex):
-            self.send_error(400, "filename must be hex-encoded Base64 command")
+            self.send_error(400, "filename must be a 128-hex request ID or hex-encoded Base64 command")
             return
         try:
             encoded = bytes.fromhex(encoded_hex).decode("ascii")
