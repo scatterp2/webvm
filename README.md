@@ -6,9 +6,9 @@
 
 The Kaggle API RX/TX channel is the only remote control/transport mechanism for this experiment. **Do not launch a Tailscale bridge, do not depend on a tailnet IP, and do not wait for `peer_ip_not_ready`.** That wait was a dead end: it did not send the requested marker.
 
-The current WebVM runtime sends a unique frame-shaped byte sequence encoded as hex in an HTTPS request to `kkb-production.jupyter-proxy.kaggle.net:443`. It records the actual response from the public proxy frontend. This confirms only that the frontend returned a response; it does not by itself prove that the Kaggle notebook's network interface observed the request.
+The WebVM obtains the live tokenized Jupyter proxy route from the running Kaggle notebook through the existing RX/TX result artifact, then sends a unique frame-shaped marker encoded as hex in an HTTPS POST to `https://kkb-production.jupyter-proxy.kaggle.net/k/{kernel_id}/{token}/proxy/__webvm_probe__/{marker_id}`. The sender records the response on that same TLS connection. The token is passed only in the RX/TX artifact and in the HTTPS request path; it must not be printed into notebook/controller logs.
 
-Use the RX/TX command channel to coordinate a Kaggle-side packet observation during the WebVM send. Record whether the marker's corresponding connection is visible at the Kaggle notebook interface, and state the observation layer precisely. If the proxy terminates TLS upstream and no corresponding packet reaches the notebook namespace, report that as the result rather than adding Tailscale or another unrelated transport.
+This is the requested tokenized-route send. A response proves the request reached the tokenized proxy/Jupyter route, while packet capture at the notebook interface remains a separate observation. Record the HTTP status and observation layer precisely. Do not substitute a request to the bare hostname, and do not add Tailscale or another unrelated transport.
 
 The existing Dataset-upload/notebook/output loop remains the control channel for commands and results. It is not, by itself, proof that arbitrary WebVM network packets reached the notebook interface. Do not claim end-to-end packet delivery or a same-connection Kaggle response unless the receiver-side evidence and matching response are actually recorded.
 
