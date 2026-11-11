@@ -978,6 +978,56 @@ def run_io_loop_proof():
                 )
                 with urlopen(request, timeout=25) as response:
                     source = response.read().decode("utf-8")
+                if filename == "tcp_socks5.py":
+                    # Add a bounded diagnostic branch to the downloaded Kaggle proxy
+                    # source at runtime. This keeps the proxy implementation file itself
+                    # untouched while making receiver-side marker evidence explicit.
+                    marker_anchor = '''            if method.upper() == "CONNECT":
+                host, port = _parse_host_port(target, 443)'''
+                    marker_branch = r'''            # Diagnostic-only endpoint: verify the WebVM marker reached this
+            # Kaggle-side proxy handler, then intentionally reject without forwarding.
+            marker_headers = {name.lower(): value for name, value in headers}
+            marker_id = marker_headers.get("x-webvm-probe-id", "")
+            marker_hex = marker_headers.get("x-webvm-raw-frame-hex", "")
+            marker_digest = marker_headers.get("x-webvm-frame-sha256", "")
+            if marker_id and target == "http://webvm-probe.invalid/__webvm_probe__":
+                try:
+                    import hashlib
+                    raw_marker = bytes.fromhex(marker_hex)
+                    actual_digest = hashlib.sha256(raw_marker).hexdigest()
+                    if (len(marker_hex) > 4096 or len(raw_marker) < 14
+                            or actual_digest != marker_digest
+                            or not marker_id.startswith("WVM-")):
+                        raise ValueError("marker validation failed")
+                    expected_marker = ("WEBVM_RAW_FRAME_MARKER:" + marker_id).encode("ascii")
+                    if expected_marker not in raw_marker:
+                        raise ValueError("marker ID not present in encoded frame")
+                    _emit("MARKER_RECEIVED", marker_id=marker_id,
+                          marker_sha256=actual_digest, frame_bytes=len(raw_marker),
+                          observation_layer="Kaggle proxy application handler",
+                          response="intentional HTTP 501; no forwarding attempted")
+                    body = ("MARKER_RECEIVED id={} sha256={} frame_bytes={}".format(
+                        marker_id, actual_digest, len(raw_marker))).encode("ascii")
+                    client.sendall(
+                        b"HTTP/1.1 501 Not Implemented\r\n"
+                        b"X-WebVM-Probe-ID: " + marker_id.encode("ascii") + b"\r\n"
+                        b"X-WebVM-Frame-SHA256: " + actual_digest.encode("ascii") + b"\r\n"
+                        b"Content-Type: text/plain\r\n"
+                        b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                        b"Connection: close\r\n\r\n" + body
+                    )
+                    return
+                except Exception as exc:
+                    _emit("MARKER_REJECTED", marker_id=marker_id[:100],
+                          error_type=type(exc).__name__, detail=str(exc)[:200])
+                    client.sendall(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                    return
+
+'''
+                    if marker_anchor not in source:
+                        raise RuntimeError("tcp_socks5.py marker insertion point not found")
+                    source = source.replace(marker_anchor, marker_branch + marker_anchor, 1)
+                    print("TCP_LINK_MARKER_HANDLER_PATCHED source=tcp_socks5.py mode=runtime-injection", flush=True)
                 compile(source, str(target_dir / filename), "exec")
                 (target_dir / filename).write_text(source, encoding="utf-8")
                 print("IO_LOOP_SOURCE_FETCHED file={} attempt={}/10 characters={}".format(
