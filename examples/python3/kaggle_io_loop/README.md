@@ -68,10 +68,10 @@ This is the active end-to-end networking experiment; it is distinct from the Dat
 
 ### Required sequence
 
-1. **Public HTTPS probe (independent):** WebVM resolves `kkb-production.jupyter-proxy.kaggle.net`, connects with TLS to port 443, and sends a unique frame-shaped marker as hex in an HTTP request. It records the HTTP status returned on that same TLS connection even if the frontend rejects the request. This is evidence of frontend reachability, not proof of notebook-interface capture.
-2. **Kaggle-hosted receiver probe (exact marker round trip):** when the Tailscale peer address is available, WebVM sends a unique marker encoded as hex in an HTTP request to the Kaggle-side proxy endpoint at peer port 18088. The receiver handler validates the marker bytes and SHA-256, emits `MARKER_RECEIVED`, intentionally rejects forwarding with HTTP 501, and returns the marker ID and digest in the same connection's response.
-3. Record destination, request ID, byte counts, SHA-256, response status, and elapsed time. Never put proxy tokens or other secrets in logs.
-4. Emit `PASS_PROXY_MARKER_ROUND_TRIP` only when the receiver-side handler validates the exact marker and WebVM validates the matching same-connection response. The public HTTPS result is separate and cannot substitute for this receiver-side PASS. If peer discovery fails, still run and report the public HTTPS probe, then report the private receiver probe as unavailable.
+1. **Discover the live route through the existing RX/TX exchange:** the Kaggle payload scans the live Jupyter process arguments for `/k/{kernel_id}/{token}/proxy/`, writes the route to `/kaggle/working/webvm_proxy_route.json`, and the agent attaches it to `tx_response.json`. The token is not printed into Kaggle notebook output or controller logs.
+2. **Send from WebVM to the tokenized public proxy URL:** immediately after the existing RX/TX result is downloaded, WebVM sends one HTTPS POST to `https://kkb-production.jupyter-proxy.kaggle.net/k/{kernel_id}/{token}/proxy/__webvm_probe__/{marker_id}`. The marker's raw frame bytes are hex-encoded in `X-WebVM-Raw-Frame-Hex`; the request also carries its ID and SHA-256. The token is used in the URL path, not omitted or replaced with a bare-host request.
+3. Record the kernel ID, marker ID, frame byte count, hex length, SHA-256, response status, elapsed time, and the fact that the route was tokenized. Never print or persist the token in logs.
+4. The HTTP response is evidence that the tokenized proxy/Jupyter route handled the request. It is not by itself packet-level capture at the notebook interface; report that distinction. Do not launch Tailscale or run another API-only proof to substitute for this send.
 
 ### Interpretation rules
 
