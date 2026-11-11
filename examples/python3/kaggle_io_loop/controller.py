@@ -1023,6 +1023,12 @@ main()
     command(log, ["kaggle", "kernels", "output", args.kernel_id, "-p", str(output_dir),
                   "-o", "--file-pattern", "^tx_response\\.json$"], timeout=300, check=True)
     response = validate_output(output_dir / "tx_response.json", message, log)
+    execution = response.get("execution")
+    execution_output = execution.get("output") if isinstance(execution, dict) else None
+    if isinstance(execution_output, str) and "WEBVM_FULL_PS_AUX_BEGIN" in execution_output:
+        print("RX_TX_REMOTE_PROCESS_LIST_BEGIN", flush=True)
+        print(execution_output, end="" if execution_output.endswith("\\n") else "\\n", flush=True)
+        print("RX_TX_REMOTE_PROCESS_LIST_END", flush=True)
 
     # Download the executed notebook separately so the proxy/NAT diagnostic
     # emitted before the RX/TX agent is visible in the remote runtime log.
