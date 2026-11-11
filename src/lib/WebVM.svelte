@@ -395,9 +395,16 @@
 
 	async function tryAutoConnect() {
 	if(autoConnectAttempted || !cx) return;
-	
+
 	autoConnectAttempted = true;
-	
+
+	if(networkInterface.authKey) {
+		// Auth key present in the URL hash — CheerpX connects directly
+		// through the networkInterface, no login popup needed.
+		cx.networkLogin();
+		return;
+	}
+
 	await handleConnect();
 	}
 	
