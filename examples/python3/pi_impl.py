@@ -1291,9 +1291,10 @@ def run_io_loop_proof():
     ).start()
     print("TCP_LINK_CONTROLLER_BACKGROUND_STARTED command_channel=unblocked", flush=True)
 
-    # Actually exercise the peer proxy once the browser/DataDevice publishes its
-    # address. This verifies WebVM -> Kaggle Tailscale proxy -> HTTPS target and
-    # confirms response bytes return to WebVM; it is not a raw Ethernet test.
+    # Actually send a uniquely identified, hex-encoded Ethernet-shaped marker
+    # to the Kaggle-side proxy handler. The receiver validates/logs it, intentionally
+    # returns HTTP 501, and echoes the marker ID + digest on the same TCP connection.
+    # This tests encoded marker delivery, not Layer-2 Ethernet injection.
     def _run_tcp_proxy_delivery_test():
         try:
             passed = verify_tcp_link_from_webvm()
