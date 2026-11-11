@@ -939,12 +939,6 @@ def verify_tcp_link_from_webvm(proxy_route):
     print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed={} tokenized_route=true notebook_interface_capture=not_measured".format(
         bool(passed)), flush=True)
     return passed
-def verify_tcp_link_from_webvm():
-    """Send a marker to the public Kaggle HTTPS proxy; RX/TX is the control channel."""
-    passed = probe_kaggle_https_proxy_from_webvm()
-    print("RX_TX_PUBLIC_PROXY_MARKER_RESULT passed={} note=frontend_response_only_not_notebook_capture".format(
-        bool(passed)), flush=True)
-    return passed
 
 
 def run_io_loop_proof():
