@@ -2,31 +2,46 @@
 
 > Keep this section current when changing the reset mechanism or Qwen experiment. These notes are intended to let an AI agent continue the work without asking the user to repeat repository context.
 
-## Current objective: RX/TX-controlled WebVM ↔ Kaggle proxy experiment
+## Current objective: browser-mediated Kaggle control through the reachable VM
 
-The Kaggle API RX/TX channel is the only remote control/transport mechanism for this experiment. **Do not launch a Tailscale bridge, do not depend on a tailnet IP, and do not wait for `peer_ip_not_ready`.** That wait was a dead end: it did not send the requested marker.
+The previous RX/TX/Jupyter-proxy-token approach is **blocked and must not be treated as a working transport**.
 
-The WebVM obtains the live tokenized Jupyter proxy route from the running Kaggle notebook through the existing RX/TX result artifact, then sends a unique frame-shaped marker encoded as hex in an HTTPS POST to `https://kkb-production.jupyter-proxy.kaggle.net/k/{kernel_id}/{token}/proxy/__webvm_probe__/{marker_id}`. The sender records the response on that same TLS connection. The token is passed only in the RX/TX artifact and in the HTTPS request path; it must not be printed into notebook/controller logs.
+### What was tried and what was not achieved
 
-This is the requested tokenized-route send. A response proves the request reached the tokenized proxy/Jupyter route, while packet capture at the notebook interface remains a separate observation. Record the HTTP status and observation layer precisely. Do not substitute a request to the bare hostname, and do not add Tailscale or another unrelated transport.
+- The Kaggle API dataset/kernel RX/TX loop can transport files and command results through submitted notebook executions, but it does not expose a persistent, direct connection to Kaggle.
+- We could not access/read the running Kaggle files or process state through that RX/TX mechanism in the way required to obtain the live tokenized Jupyter proxy route.
+- Because the proxy route/token was not successfully obtained through RX/TX, the intended request to the tokenized Kaggle Jupyter proxy was **not established as a working end-to-end path**. Do not describe it as proven or assume the token is available in an RX/TX artifact.
+- Repeatedly waiting for `peer_ip_not_ready`, trying the bare proxy hostname, or repeating the same token-discovery/RX/TX attempt does not resolve this blocker. Do not resume that line of work without new evidence that the route can actually be obtained.
+- A successful dataset upload, kernel submission, `RUNNING` status, or ordinary file round-trip proves only that stage—not that WebVM can reach Kaggle's proxy or that a marker was observed at the receiver.
 
-The existing Dataset-upload/notebook/output loop remains the control channel for commands and results. It is not, by itself, proof that arbitrary WebVM network packets reached the notebook interface. Do not claim end-to-end packet delivery or a same-connection Kaggle response unless the receiver-side evidence and matching response are actually recorded.
+### New direction
 
+Investigate a browser-mediated design instead of trying to extract the Kaggle proxy token from the notebook:
 
+1. Treat the reachable VM address `100.92.188.123` as a candidate location for a proxy/control service; verify reachability and which ports/protocols are actually available before assuming anything.
+2. Let a real browser render Kaggle and run its JavaScript, rather than attempting to launch another browser inside WebVM.
+3. Investigate either a proxied Kaggle page in an iframe (subject to framing policy, redirects, and authentication limitations) or a separately opened Kaggle window controlled through an explicit browser-side bridge.
+4. Use a request/response channel between the browser-side controller and the VM so a command can wait for its matching result.
+5. Keep the existing Kaggle API RX/TX loop available as a known file-transport mechanism, but do not mistake it for the browser bridge or a persistent connection.
+
+A reverse proxy only mediates requests routed through it; it cannot automatically inspect or control an already-open cross-origin Kaggle tab. A proxy also does not automatically preserve Kaggle authentication when its origin changes. Any iframe, popup, cookie, header, or browser-control behaviour must be tested and recorded rather than assumed.
+
+### Evidence requirements
+
+Report separately: (a) VM address/port reachability from the intended browser, (b) proxy-to-Kaggle fetch and response headers, (c) whether the page renders, (d) whether authentication works, and (e) whether a browser command receives a matching response through the VM. Do not claim success for a later stage based only on an earlier one.
 
 Relevant files:
 - `reset` — plain-text reset generation; changing it triggers the deployed WebVM reset poller.
 - `src/app.html` — polls `reset` and dispatches the browser reset event.
+- `src/lib/WebVM.svelte` — WebVM browser-host integration point.
+- `src/lib/network.js` — existing browser networking integration.
 - `examples/python3/pi.py` — automatically starts the runtime implementation.
 - `examples/python3/pi_impl.py` — runtime orchestration and WebVM-side sender.
 - `examples/python3/kaggle_io_loop/controller.py` — Kaggle API submission, status/output retrieval and JSONL logs.
 - `examples/python3/kaggle_io_loop/agent.py` — notebook-side receiver/diagnostics and response generation.
-- `examples/python3/kaggle_io_loop/tcp_socks5.py` — separate Tailscale SOCKS5/HTTP CONNECT service, not a substitute for the proxy-address test.
-- `examples/python3/kaggle_io_loop/README.md` — protocol and end-to-end test instructions.
+- `examples/python3/kaggle_io_loop/README.md` — RX/TX protocol and test instructions.
 
-Evidence requirements: distinguish (a) Kaggle API file round-trip, (b) WebVM → proxy request delivery, (c) Kaggle-side observation of the marker, and (d) same-connection response back to WebVM. Only (b)+(c)+(d) together satisfy the active objective. A GitHub Actions pass, Dataset upload, kernel submission, `RUNNING` status, or `peer_ip_not_ready` polling does not satisfy it.
-
-The Qwen weight-space interpretation experiment remains in `examples/python3/kaggle_runtime.py` and its prior submission path, but is not the active task until the IO loop is proven.
+Do not launch a Tailscale bridge for this objective, do not wait on `peer_ip_not_ready`, and do not edit configuration/credential files as part of this investigation. The Qwen weight-space interpretation experiment remains separate and is not the active task.
 
 ## How the WebVM reset is triggered and verified
 
