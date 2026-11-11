@@ -1064,12 +1064,19 @@ def run_io_loop_proof():
                 if not tx_path.is_file():
                     print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=tx_route_file_missing", flush=True)
                 else:
-                    tx_result = json.loads(tx_path.read_text(encoding="utf-8"))
-                    proxy_route = tx_result.get("proxy_route")
-                    if not proxy_route:
-                        print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=proxy_route_not_returned", flush=True)
-                    else:
-                        verify_tcp_link_from_webvm(proxy_route)
+                    try:
+                        tx_result = json.loads(tx_path.read_text(encoding="utf-8"))
+                        proxy_route = tx_result.get("proxy_route")
+                        if not proxy_route:
+                            print("RX_TX_TOKENIZED_PROXY_MARKER_RESULT passed=false stage=proxy_route_not_returned", flush=True)
+                        else:
+                            verify_tcp_link_from_webvm(proxy_route)
+                    finally:
+                        # Remove the token-bearing local TX artifact after the one send attempt.
+                        try:
+                            tx_path.unlink()
+                        except OSError:
+                            pass
                 print("RX_TX_CURRENT_DEPLOYMENT_PROOF_PASS transport=kaggle-api-dataset-and-kernel-output",
                       flush=True)
             except Exception as exc:
