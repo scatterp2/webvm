@@ -31,25 +31,21 @@ Also add `networkData` to the import from `$lib/network.js`.
 
 **Auth key format:** Passed via URL fragment `#authKey=<key>`. Tailscale ephemeral auth keys start with `tskey-auth-`. The key is read in `network.js` from `window.location.hash`.
 
-### Goal 2: Add lightweight telnet listener for direct AI access
+### Goal 2: Lightweight telnet listener for direct AI access (IMPLEMENTED)
 
-**Problem:** Currently the only way to interact with the running WebVM is by pasting text into the terminal via the browser. An AI agent (Claude) needs to connect directly to run commands.
+**Status:** Implemented in `examples/python3/telnet_shell.py`, started from `pi_impl.py` `main()`.
 
-**Solution:** Add a telnet server inside WebVM that listens on a known port. The AI connects from the host machine using `plink.exe` (PuTTY) or any raw TCP client. This is lightweight — no SSH overhead, just a raw shell over TCP.
-
-**Architecture:**
+**How it works:**
 - WebVM boots → Tailscale connects → gets a 100.x.x.x address
-- A simple telnet daemon starts on port 23 (or 2323) bound to 0.0.0.0
+- `telnet_shell.py` starts on `0.0.0.0:2323` (raw TCP, no telnet negotiation)
+- Each connection spawns `/bin/sh -i` via subprocess, bridged to the socket
 - The AI runs: `plink.exe -raw -P 2323 <tailscale-ip>` to get a shell
-- Commands and output flow over raw TCP
 
-**Existing code:** `examples/python3/kaggle_io_loop/terminal_service.py` already implements a telnet-style server on port 2323, but it routes commands through the heavy Kaggle RX/TX loop. It needs to be simplified to just exec commands locally.
+**Key files:**
+- `examples/python3/telnet_shell.py` — the daemon (fetched from main at boot, local fallback)
+- `examples/python3/pi_impl.py` `main()` — starts the daemon
 
-**What to do:**
-1. Create a lightweight telnet daemon that spawns `/bin/bash` for each connection
-2. Bind to `0.0.0.0:2323` so it's reachable via the Tailscale address
-3. Start it from `pi.py` or `pi_impl.py` at boot
-4. Test with `plink.exe -raw -P 2323 <tailscale-ip>` from the host
+**CheerpX notes:** subprocess works when started early in boot. The daemon uses threads for socket↔process bridging. If `/bin/sh` subprocess fails under CheerpX's cooperative scheduler, consider using the CheerpX console API instead.
 
 ### Goal 3: Make the Web Adjuster proxy work
 

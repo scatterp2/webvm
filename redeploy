@@ -45,3 +45,4 @@ Deploy Tailscale exit-node indicator fix: keep the selected exit node latched ac
 45: Default Tailscale authKey so the VM auto-connects without needing the URL hash.
 46: Fix auto-connect: commit authKey default, add runtime delay before networkLogin.
 47: Align Tailscale auto-connect with upstream PR #235; simplify tryAutoConnect; document goals.
+48: Add lightweight telnet shell daemon on port 2323 for direct AI agent access.

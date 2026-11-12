@@ -1438,6 +1438,31 @@ def main():
     prepare_system()
     start_web_adjuster_sidecar()
 
+    # Start lightweight telnet shell for direct AI agent access (Goal 2).
+    # Fetches telnet_shell.py from main so fixes activate on reset.
+    try:
+        telnet_url = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/telnet_shell.py"
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+        try:
+            req = Request(
+                telnet_url + "?t=" + str(int(time.time() * 1000)),
+                headers={"Cache-Control": "no-cache", "User-Agent": "webvm-telnet/1.0"},
+            )
+            with urlopen(req, timeout=20) as resp:
+                telnet_source = resp.read().decode("utf-8")
+            compile(telnet_source, telnet_url, "exec")
+            exec(compile(telnet_source, telnet_url, "exec"), globals(), globals())
+            print("TELNET_SHELL_FETCHED source=main characters={}".format(len(telnet_source)), flush=True)
+        except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
+            print("TELNET_SHELL_FETCH_FALLBACK error={}: {}".format(type(exc).__name__, exc), flush=True)
+            telnet_path = Path(__file__).resolve().parent / "telnet_shell.py"
+            if telnet_path.is_file():
+                exec(compile(telnet_path.read_text(encoding="utf-8"), str(telnet_path), "exec"), globals(), globals())
+        start_telnet_shell()
+    except Exception as exc:
+        print("TELNET_SHELL_START_FAILED error={}: {}".format(type(exc).__name__, str(exc)[:200]), flush=True)
+
     # --- Kaggle RX/TX and IO loop commented out for Web Adjuster investigation ---
     # prepare_credentials()
     # print("GPU_DIAGNOSTIC_DEFERRED reason=prioritize_RX_TX_and_live_TCP_proof",
@@ -1447,6 +1472,7 @@ def main():
     print("WEB_ADJUSTER_ONLY_MODE — Kaggle code disabled for proxy testing", flush=True)
     print("Wrapper: http://0.0.0.0:28080/", flush=True)
     print("Adjuster: http://0.0.0.0:28081/", flush=True)
+    print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
     # --- Auto-test endpoints ---
     _run_endpoint_tests()
