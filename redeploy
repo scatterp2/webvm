@@ -51,3 +51,4 @@ Deploy Tailscale exit-node indicator fix: keep the selected exit node latched ac
 print tailscale ip on boot
 proxy panel with cors and srcdoc
 service worker proxy bridge
+sw diagnostic and versioned worker

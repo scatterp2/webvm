@@ -98,6 +98,45 @@ async function handleProxyBridge(url) {
 	}
 }
 
+// A diagnostic route: reports what the service worker itself is able to
+// fetch.  Used to tell a mixed-content block apart from an unreachable
+// address.  /webvm/httpsproxy/diag?ip=<address>
+async function handleDiag(url) {
+	const ip = url.searchParams.get("ip") || "";
+	const targets = [
+		"http://" + ip + ":28082/health",
+		"https://" + ip + ":28443/health",
+		"https://example.com/",
+		"http://example.com/",
+	];
+	const results = [];
+	for (const target of targets) {
+		const started = Date.now();
+		try {
+			const upstream = await fetch(target, { cache: "no-store" });
+			const body = await upstream.text();
+			results.push({
+				target: target,
+				ok: true,
+				status: upstream.status,
+				ms: Date.now() - started,
+				body: body.slice(0, 120),
+			});
+		} catch (err) {
+			results.push({
+				target: target,
+				ok: false,
+				ms: Date.now() - started,
+				name: err && err.name,
+				error: String(err),
+			});
+		}
+	}
+	return new Response(JSON.stringify(results, null, 2), {
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
 function serviceWorkerInit() {
 	// Init the service worker.
 	self.addEventListener("install", () => self.skipWaiting());
@@ -108,7 +147,11 @@ function serviceWorkerInit() {
 			const requestUrl = new URL(e.request.url);
 			if (requestUrl.origin === self.location.origin
 				&& requestUrl.pathname.startsWith(PROXY_BRIDGE_PREFIX)) {
-				e.respondWith(handleProxyBridge(requestUrl));
+				if (requestUrl.pathname.endsWith("/diag")) {
+					e.respondWith(handleDiag(requestUrl));
+				} else {
+					e.respondWith(handleProxyBridge(requestUrl));
+				}
 				return;
 			}
 			e.respondWith(handleFetch(e.request));
