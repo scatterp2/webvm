@@ -339,6 +339,68 @@ def build_self_contained(url, host_header):
     return status, out_headers, text.encode("utf-8")
 
 
+# --------------------------------------------------------------------------
+# Inline jobs
+#
+# Building the self-contained document takes tens of seconds (every
+# sub-resource is fetched one at a time).  A browser request that stays
+# idle that long is dropped — the fetch failed after ~7 s while the proxy
+# was still working.  So the build runs as a background job and the client
+# polls for it; every request stays short.
+# --------------------------------------------------------------------------
+
+_INLINE_JOBS = {}
+_INLINE_JOBS_LOCK = threading.Lock()
+_INLINE_JOB_SEQ = [0]
+
+
+def start_inline_job(url, host_header):
+    """Start building a self-contained document; returns the job id."""
+    with _INLINE_JOBS_LOCK:
+        _INLINE_JOB_SEQ[0] += 1
+        job_id = str(_INLINE_JOB_SEQ[0])
+        job = {"id": job_id, "url": url, "state": "running",
+               "bytes": 0, "error": "", "doc": None, "headers": []}
+        _INLINE_JOBS[job_id] = job
+        # Keep the table small.
+        if len(_INLINE_JOBS) > 16:
+            for key in list(_INLINE_JOBS)[:-16]:
+                _INLINE_JOBS.pop(key, None)
+
+    def work():
+        try:
+            status, headers, body = build_self_contained(url, host_header)
+            job["state"] = "ready"
+            job["bytes"] = len(body)
+            job["doc"] = body
+            job["headers"] = headers
+        except Exception as exc:
+            job["state"] = "failed"
+            job["error"] = "{}: {}".format(type(exc).__name__, str(exc)[:200])
+            log("INLINE_JOB_FAILED id={} error={}".format(job_id, job["error"]))
+
+    threading.Thread(target=work, daemon=True,
+                     name="inline-job-" + job_id).start()
+    return job_id
+
+
+def inline_job_status(job_id):
+    with _INLINE_JOBS_LOCK:
+        job = _INLINE_JOBS.get(job_id)
+        if job is None:
+            return {"state": "unknown"}
+        return {"state": job["state"], "bytes": job["bytes"],
+                "error": job["error"], "url": job["url"]}
+
+
+def inline_job_document(job_id):
+    with _INLINE_JOBS_LOCK:
+        job = _INLINE_JOBS.get(job_id)
+        if job is None or job["state"] != "ready":
+            return None, [], b""
+        return job["state"], job["headers"], job["doc"]
+
+
 def strip_frame_ancestors(csp: str) -> str:
     """Remove only the frame-ancestors directive from a CSP header."""
     kept = []
@@ -1019,11 +1081,36 @@ PAGE_TEMPLATE = """<!doctype html>
   if (__BRIDGE_FLAG__) {
     document.getElementById('status').textContent =
       'Bridge mode: fetching the self-contained document...';
-    console.log('[bridge] fetching the self-contained document');
-    fetch('/proxy-inline/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
-      .then(function (r) {
-        console.log('[bridge] inline fetch status', r.status);
-        return r.text();
+    console.log('[bridge] starting the inline job');
+    fetch('/proxy-inline/start/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (job) {
+        console.log('[bridge] job', job.id);
+        var id = job.id;
+        // Poll instead of holding one long request open: building the
+        // document takes tens of seconds and an idle browser connection
+        // is dropped after a few seconds.
+        function poll() {
+          return fetch('/proxy-inline/status/' + id, {cache: 'no-store'})
+            .then(function (r) { return r.json(); })
+            .then(function (s) {
+              if (s.state === 'failed') {
+                throw new Error(s.error || 'inline job failed');
+              }
+              if (s.state !== 'ready') {
+                document.getElementById('status').textContent =
+                  'Bridge mode: building the document (' + s.state + ')...';
+                return new Promise(function (resolve) {
+                  setTimeout(function () { poll().then(resolve); }, 1500);
+                });
+              }
+              document.getElementById('status').textContent =
+                'Bridge mode: fetching the document (' + s.bytes + ' bytes)...';
+              return fetch('/proxy-inline/doc/' + id, {cache: 'no-store'})
+                .then(function (r) { return r.text(); });
+            });
+        }
+        return poll();
       })
       .then(function (html) {
         console.log('[bridge] document bytes', html.length);
@@ -1219,22 +1306,27 @@ class Handler(object):
                 return
             self._proxy_url(url, method=request.method, body=request.body or None)
             return
-        if path.startswith("/proxy-inline/"):
-            url = target_from_path(path.replace("/proxy-inline", "/proxy", 1))
+        if path.startswith("/proxy-inline/start/"):
+            url = target_from_path(path.replace("/proxy-inline/start", "/proxy", 1))
             if not url:
                 self._send(400, "text/plain; charset=utf-8",
                            b"Missing target URL\n")
                 return
-            bump("requests")
-            try:
-                status, headers, body = build_self_contained(url, self.proxy_origin())
-            except Exception as exc:
-                log("INLINE_FAILED url={} error={}: {}".format(
-                    url, type(exc).__name__, str(exc)[:150]))
-                self._send(502, "text/plain; charset=utf-8",
-                           ("Inline fetch failed: {}\n".format(exc)).encode("utf-8"))
+            job_id = start_inline_job(url, self.proxy_origin())
+            self._send_json(200, {"id": job_id, "state": "running", "url": url})
+            return
+        if path.startswith("/proxy-inline/status/"):
+            job_id = path.rsplit("/", 1)[-1]
+            self._send_json(200, inline_job_status(job_id))
+            return
+        if path.startswith("/proxy-inline/doc/"):
+            job_id = path.rsplit("/", 1)[-1]
+            state, headers, body = inline_job_document(job_id)
+            if state != "ready":
+                self._send(202, "application/json; charset=utf-8",
+                           b'{"state":"not ready"}')
                 return
-            send_response(self.request, status, headers, body,
+            send_response(self.request, 200, headers, body,
                           client=self.client_label())
             return
         if path in ("/", "/index.html"):
