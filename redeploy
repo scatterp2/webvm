@@ -57,3 +57,4 @@ proxy panel tries all origins
 final proxy panel
 proxy bridge popup
 optional coi headers so the proxy bridge popup can talk back
+delete coi headers when disabled

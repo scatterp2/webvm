@@ -25,6 +25,13 @@ async function handleFetch(request) {
 	if (wantsCoi) {
 		newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
 		newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+	} else {
+		// Delete them rather than merely not adding them: the original
+		// response may still carry them (a cached response from before,
+		// or a server that sets them), and copying them through would
+		// keep the page cross-origin isolated.
+		newHeaders.delete("Cross-Origin-Embedder-Policy");
+		newHeaders.delete("Cross-Origin-Opener-Policy");
 	}
 	newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
 	/**
