@@ -1,3 +1,0 @@
-for p in /proc/[0-9]*; do tr '\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -i -e tail -e serve
-ls /usr/bin/tailscale* /usr/sbin/tailscale* /sbin/tailscale* /bin/tailscale* 2>&1
-ls /opt 2>&1

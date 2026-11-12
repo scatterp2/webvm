@@ -46,10 +46,18 @@
 	var proxyStatus = "";
 	var proxyFrameEl = null;
 	const PROXY_TLS_PORT = 28443;
+	// A Tailscale Serve endpoint publishes the proxy with a publicly trusted
+	// certificate, so no development CA has to be trusted.  It has to be
+	// enabled on the tailnet first (see the README).
+	const TAILSCALE_SERVE_ORIGIN = "https://desktop-21m8c49.tailf987e.ts.net";
 
 	// Candidate proxy origins, tried in order.  The first one that answers
 	// wins.  A different origin can be forced with #proxyOrigin=<url> in the
 	// page hash, e.g. a Tailscale Serve endpoint published for the tailnet.
+	//
+	// 1. the WebVM's own TLS listener (needs the development CA trusted)
+	// 2. a Tailscale Serve endpoint for the tailnet (publicly trusted
+	//    certificate, but Serve has to be enabled on the tailnet)
 	function proxyOriginCandidates()
 	{
 		const candidates = [];
@@ -64,6 +72,8 @@
 			candidates.push(override.replace(/\/$/, ""));
 		if($currentDnsNameStore)
 			candidates.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
+		if(TAILSCALE_SERVE_ORIGIN)
+			candidates.push(TAILSCALE_SERVE_ORIGIN);
 		return candidates;
 	}
 	$: proxyOrigin = proxyOriginCandidates();
