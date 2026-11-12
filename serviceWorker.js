@@ -11,9 +11,21 @@ async function handleFetch(request) {
 	}
 	// We add headers to the original response its headers, in order to enable cross-origin-isolation. And make it independent of the server config.
 	const newHeaders = new Headers(r.headers);
-	// COEP & COOP for cross-origin-isolation.
-	newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
-	newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+	// Cross-origin isolation (COEP + COOP) is optional here.
+	//
+	// COOP: same-origin puts the page in its own browsing context group,
+	// which means a popup it opens has a null window.opener and cannot
+	// post a message back.  That breaks the proxy bridge, which relies on
+	// the bridge popup handing the proxied document to this page.
+	//
+	// CheerpX does not need cross-origin isolation (it has a non-isolated
+	// fallback), so the headers are off by default and can be switched
+	// back on per page load with ?coi=1 in the page URL.
+	const wantsCoi = request && request.url && request.url.indexOf("coi=1") !== -1;
+	if (wantsCoi) {
+		newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+		newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+	}
 	newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
 	/**
 	 * This workaround is necessary due to a limitation of CheerpOS, which relies on the response URL being set to the resolved URL.
