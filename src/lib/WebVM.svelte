@@ -90,56 +90,48 @@
 
 	async function loadProxyFrame()
 	{
-		const bases = proxyBases();
-		if(bases.https.length === 0 && bases.http.length === 0) {
+		if(!proxyHttpBase) {
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
-		let lastError = "no candidate";
-		for(const origin of bases.https) {
-			const url = origin + "/proxy/" + encodeURIComponent(proxyTarget);
-			proxyStatus = "Fetching " + proxyTarget + " from " + origin + "...";
-			try {
-				const res = await fetch(url, {cache: "no-store", mode: "cors", credentials: "omit"});
-				if(!res.ok) {
-					lastError = origin + ": HTTP " + res.status;
-					continue;
-				}
-				const html = await res.text();
-				if(proxyFrameEl) {
-					proxyFrameEl.srcdoc = html;
-					proxyStatus = "Loaded " + res.status + " (" + html.length
-						+ " bytes) from " + origin
-						+ " - srcdoc frame keeps DOM access.";
-				}
+		proxyStatus = "Opening the proxy bridge for " + proxyTarget + "...";
+		// The page is https and the proxy is http, so the page cannot fetch
+		// it itself.  A popup opened on the proxy's own http origin can:
+		// it asks the proxy for a self-contained document (every
+		// sub-resource is inlined server side, where the mixed-content
+		// rule does not apply) and posts it back here.  Injecting it with
+		// srcdoc keeps the frame same-origin with this page, so the DOM
+		// of the proxied page stays reachable.
+		try {
+			const popup = window.open(
+				proxyHttpBase + "/?bridge=1&target="
+					+ encodeURIComponent(proxyTarget),
+				"webvm-proxy-bridge", "width=900,height=700");
+			if(!popup) {
+				proxyStatus = "The browser blocked the popup - allow popups "
+					+ "for this site and try again.";
 				return;
-			} catch (e) {
-				lastError = origin + ": " + e;
 			}
+			proxyStatus = "Waiting for the bridge popup to return the "
+				+ proxyTarget + " document...";
+		} catch (e) {
+			proxyStatus = "Could not open the bridge popup (" + e + ").";
 		}
-		for(const origin of bases.http) {
-			const url = "/webvm/httpsproxy?base=" + encodeURIComponent(origin)
-				+ "&target=" + encodeURIComponent(proxyTarget);
-			proxyStatus = "Fetching " + proxyTarget + " through the service worker from "
-				+ origin + "...";
-			try {
-				const res = await fetch(url, {cache: "no-store"});
-				const html = await res.text();
-				if(!res.ok || html.startsWith("proxy bridge failed")) {
-					lastError = origin + ": " + html.slice(0, 120);
-					continue;
-				}
-				if(proxyFrameEl) {
-					proxyFrameEl.srcdoc = html;
-					proxyStatus = "Loaded " + res.status + " (" + html.length
-						+ " bytes) via the service worker - srcdoc frame keeps DOM access.";
-				}
-				return;
-			} catch (e) {
-				lastError = origin + ": " + e;
+	}
+
+	function handleProxyMessage(event)
+	{
+		const data = event.data;
+		if(!data || typeof data !== "object") return;
+		if(data.type === "webvm-proxy-html") {
+			if(proxyFrameEl) {
+				proxyFrameEl.srcdoc = data.html;
+				proxyStatus = "Loaded " + data.html.length
+					+ " bytes through the bridge - srcdoc frame keeps DOM access.";
 			}
+		} else if(data.type === "webvm-proxy-error") {
+			proxyStatus = "Bridge failed (" + data.error + ").";
 		}
-		proxyStatus = "Every proxy origin failed (" + lastError + ").";
 	}
 
 	function toggleProxyPanel()
@@ -513,12 +505,17 @@
 
 	onMount(() => {
 		window.addEventListener('webvm-reset-request', handleGenerationReset);
+		// The proxy bridge popup posts the self-contained document back here.
+		window.addEventListener('message', handleProxyMessage);
 		// app.html runs in the document head, before this component mounts.
 		if (window.__webvmPendingResetGeneration) {
 			pendingResetGeneration = String(window.__webvmPendingResetGeneration);
 		}
 		void initTerminal();
-		return () => window.removeEventListener('webvm-reset-request', handleGenerationReset);
+		return () => {
+			window.removeEventListener('webvm-reset-request', handleGenerationReset);
+			window.removeEventListener('message', handleProxyMessage);
+		};
 	});
 
 	// Auto-connect using the auth key supplied through networkInterface by the page URL hash.

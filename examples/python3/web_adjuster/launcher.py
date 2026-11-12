@@ -211,6 +211,134 @@ def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
     return text
 
 
+# --------------------------------------------------------------------------
+# Self-contained documents
+#
+# The WebVM page is https, and Chrome blocks an http:// subresource there as
+# mixed content.  A document that is injected into an https page with
+# srcdoc therefore cannot reference the proxy's http:// URLs.
+#
+# The fix is to make the document self-contained: every sub-resource is
+# fetched **server side** (where the mixed-content rule does not apply) and
+# inlined as a data: URI.  The resulting document has no external
+# references left, so it can be injected into an https page as-is.
+# --------------------------------------------------------------------------
+
+_ATTR_URL_RE = re.compile(
+    r"""(?P<pre>\b(?:src|href)\s*=\s*)(?P<q>["'])(?P<url>[^"']*)(?P=q)""",
+    re.IGNORECASE,
+)
+
+INLINE_MAX_RESOURCES = 40
+INLINE_MAX_TOTAL = 6 * 1024 * 1024
+
+
+def inline_subresources(text, base_url, limit=INLINE_MAX_RESOURCES,
+                        max_total=INLINE_MAX_TOTAL):
+    """Replace a document's sub-resources with data: URIs.
+
+    Returns (text, inlined_count, total_bytes).
+    """
+    spans = []
+    seen = set()
+    for match in _ATTR_URL_RE.finditer(text):
+        url = match.group("url").strip()
+        if not url or url.startswith(("data:", "#", "javascript:", "mailto:")):
+            continue
+        absolute = absolutize(url, base_url)
+        parts = urlsplit(absolute)
+        if parts.scheme not in ("http", "https"):
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        spans.append((match.start("url"), match.end("url"), absolute))
+        if len(spans) >= limit:
+            break
+
+    inlined = 0
+    total = 0
+    # Replace from the end so the earlier offsets stay valid.
+    for start, end, absolute in reversed(spans):
+        if total >= max_total:
+            break
+        try:
+            status, headers, body = upstream_fetch(
+                absolute, headers={"Accept": "*/*", "User-Agent": "webvm-inline/1.0"}
+            )
+        except Exception as exc:
+            log("INLINE_FAILED url={} error={}: {}".format(
+                absolute, type(exc).__name__, str(exc)[:120]))
+            continue
+        if status >= 400 or not body:
+            continue
+        content_type = ""
+        for name, value in headers:
+            if name.lower() == "content-type":
+                content_type = value.split(";")[0].strip() or "application/octet-stream"
+                break
+        if not content_type:
+            content_type = "application/octet-stream"
+        if content_type.startswith("text/html"):
+            # An HTML sub-frame cannot be inlined meaningfully.
+            continue
+        import base64
+        payload = base64.b64encode(body).decode("ascii")
+        data_uri = "data:{};base64,{}".format(content_type, payload)
+        text = text[:start] + data_uri + text[end:]
+        inlined += 1
+        total += len(body)
+    return text, inlined, total
+
+
+def build_self_contained(url, host_header):
+    """Fetch a page and inline its sub-resources, returning a single document."""
+    status, headers, body = upstream_fetch(
+        url, headers={"Accept": "text/html,application/xhtml+xml,*/*",
+                       "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                                     "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                     "Chrome/124.0 Safari/537.36"}
+    )
+    content_type = ""
+    for name, value in headers:
+        if name.lower() == "content-type":
+            content_type = value.lower()
+    if "html" not in content_type and body[:200].lstrip()[:1] != b"<":
+        return status, headers, body
+
+    text = body.decode("utf-8", "replace")
+    text, inlined, total = inline_subresources(text, url)
+    # Now rewrite whatever absolute URLs are left (there should be few) and
+    # inject the proof script.
+    text = rewrite_html(text, url)
+    script = build_injection_script(extract_nonce(text))
+    lowered = text.lower()
+    index = lowered.rfind("</body>")
+    if index == -1:
+        text = text + script
+    else:
+        text = text[:index] + script + text[index:]
+    log("INLINE_DONE url={} resources={} bytes={}".format(url, inlined, total))
+    out_headers = []
+    for name, value in headers:
+        lower = name.lower()
+        if lower in HOP_BY_HOP or lower in ("content-length", "content-encoding"):
+            continue
+        if lower in FRAME_BLOCKED_HEADERS:
+            continue
+        if lower == "content-security-policy":
+            value = relax_csp_for_injection(strip_frame_ancestors(value))
+            if not value:
+                continue
+        if lower == "set-cookie":
+            value = sanitize_set_cookie(value)
+        out_headers.append((name, value))
+    out_headers.append(("Content-Type", "text/html; charset=utf-8"))
+    out_headers.append(("Access-Control-Allow-Origin", "*"))
+    out_headers.append(("Cross-Origin-Resource-Policy", "cross-origin"))
+    return status, out_headers, text.encode("utf-8")
+
+
 def strip_frame_ancestors(csp: str) -> str:
     """Remove only the frame-ancestors directive from a CSP header."""
     kept = []
@@ -850,6 +978,33 @@ PAGE_TEMPLATE = """<!doctype html>
     if (!confirmed) { checkInjection(); }
     window.setTimeout(poll, 2000);
   })();
+
+  // Bridge mode: this page was opened as a popup by the WebVM page.  Fetch
+  // the self-contained document (its sub-resources are already inlined, so
+  // it has no http:// references left) and hand it to the opener, which
+  // injects it with srcdoc.  That keeps the frame same-origin with the
+  // https page, which is what preserves DOM access.
+  if (__BRIDGE_FLAG__) {
+    document.getElementById('status').textContent =
+      'Bridge mode: fetching the self-contained document...';
+    fetch('/proxy-inline/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({type: 'webvm-proxy-html', html: html}, '*');
+          window.close();
+        } else {
+          document.getElementById('status').textContent =
+            'No opener to hand the document to.';
+        }
+      })
+      .catch(function (e) {
+        document.getElementById('status').textContent = 'Bridge failed: ' + e;
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({type: 'webvm-proxy-error', error: String(e)}, '*');
+        }
+      });
+  }
 })();
 </script>
 </body>
@@ -857,11 +1012,12 @@ PAGE_TEMPLATE = """<!doctype html>
 """
 
 
-def render_page(target, proxy_origin=None):
+def render_page(target, proxy_origin=None, bridge=False):
     return (PAGE_TEMPLATE
             .replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
             .replace("__IFRAME_SRC__", proxy_path(target, proxy_origin))
-            .replace("__TARGET_JSON__", json.dumps(target)))
+            .replace("__TARGET_JSON__", json.dumps(target))
+            .replace("__BRIDGE_FLAG__", "true" if bridge else "false"))
 
 
 class Handler(object):
@@ -1011,9 +1167,28 @@ class Handler(object):
                 return
             self._proxy_url(url, method=request.method, body=request.body or None)
             return
+        if path.startswith("/proxy-inline/"):
+            url = target_from_path(path.replace("/proxy-inline", "/proxy", 1))
+            if not url:
+                self._send(400, "text/plain; charset=utf-8",
+                           b"Missing target URL\n")
+                return
+            bump("requests")
+            try:
+                status, headers, body = build_self_contained(url, self.proxy_origin())
+            except Exception as exc:
+                log("INLINE_FAILED url={} error={}: {}".format(
+                    url, type(exc).__name__, str(exc)[:150]))
+                self._send(502, "text/plain; charset=utf-8",
+                           ("Inline fetch failed: {}\n".format(exc)).encode("utf-8"))
+                return
+            send_response(self.request, status, headers, body,
+                          client=self.client_label())
+            return
         if path in ("/", "/index.html"):
             target_url = params.get("target") or DEFAULT_TARGET
-            body = render_page(target_url, self.proxy_origin()).encode("utf-8")
+            bridge = params.get("bridge") in ("1", "true", "yes")
+            body = render_page(target_url, self.proxy_origin(), bridge).encode("utf-8")
             self._send(200, "text/html; charset=utf-8", body)
             return
         self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
