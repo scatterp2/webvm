@@ -21,6 +21,10 @@ let exitNode = writable(false);
 // so keep the peer we saw and only clear the indicator when it goes away.
 let selectedExitNodePeer = null;
 const kaggleTcpLink = writable(null);
+// Reactive copy of this node's Tailscale address. The plain
+// `networkData.currentIp` property is not reactive, so the terminal banner
+// in WebVM.svelte needs a store to react to.
+const currentIpStore = writable(null);
 let attachedDataDevice = null;
 let currentKaggleTcpLink = null;
 
@@ -131,6 +135,7 @@ function stateUpdateCb(state)
 function netmapUpdateCb(map)
 {
 	networkData.currentIp = map.self.addresses[0];
+	currentIpStore.set(networkData.currentIp);
 	const peers = Array.isArray(map.peers) ? map.peers : [];
 
 	const exitNodePeer = peers.find((peer) => peer.exitNode);
@@ -282,6 +287,10 @@ export function updateButtonData(state, handleConnect) {
 
 export const networkInterface = { authKey: authKey, controlUrl: controlUrl, loginUrlCb: loginUrlCb, stateUpdateCb: stateUpdateCb, netmapUpdateCb: netmapUpdateCb };
 
-export const networkData = { currentIp: null, connectionState: connectionState, exitNode: exitNode, kaggleTcpLink: kaggleTcpLink, loginUrl: null, dashboardUrl: dashboardUrl }
+export const networkData = { currentIp: null, currentIpStore: currentIpStore, connectionState: connectionState, exitNode: exitNode, kaggleTcpLink: kaggleTcpLink, loginUrl: null, dashboardUrl: dashboardUrl }
+
+// Named export as well, so components can auto-subscribe with $currentIpStore
+// instead of relying on the compiler resolving $networkData.currentIpStore.
+export { currentIpStore };
 
 resetLoginPromise();

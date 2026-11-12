@@ -17,7 +17,13 @@ args = sys.argv[2:]
 if args and args[0] == "-p":
     PORT = int(args[1])
     args = args[2:]
-COMMANDS = args or ["id"]
+if args and args[0] == "--file":
+    # Read one command per line from a local file.  Avoids all shell
+    # quoting problems for commands that contain quotes or semicolons.
+    with open(args[1], "r", encoding="utf-8") as handle:
+        COMMANDS = [line.rstrip("\n") for line in handle if line.strip()]
+else:
+    COMMANDS = args or ["id"]
 
 
 def read_until(sock, marker, hard_timeout=45.0):

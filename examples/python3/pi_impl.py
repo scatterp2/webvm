@@ -1356,6 +1356,121 @@ FORWARD_PORT_CANDIDATES = (28081, 28083)
 PROXY_SELF_TEST_URL = "https://example.com/"
 
 
+# --------------------------------------------------------------------------
+# Tailscale address discovery
+#
+# The WebVM image has no `ip`, no `hostname -I` and no working `ps`, and
+# /proc is not reliably populated, so the node's 100.x address has to be
+# found another way.  The trick that works is a *UDP* connect: it performs
+# no I/O, it only asks the kernel which local address would be used to
+# reach the destination.  Connecting to 100.100.100.100 (Tailscale's Quad100
+# service, reachable over tailscale0 on every node) therefore returns this
+# node's Tailscale IPv4 address.
+# --------------------------------------------------------------------------
+
+QUAD100 = ("100.100.100.100", 41641)
+
+
+def _ip_from_udp_route():
+    """Local address the kernel would use to reach Quad100 (Tailscale)."""
+    import socket as _socket
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        sock.settimeout(2)
+        sock.connect(QUAD100)
+        return sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _ip_from_ifconfig():
+    """Parse `ifconfig` for a 100.x address (the image ships net-tools)."""
+    import re as _re
+    try:
+        result = subprocess.run(
+            ["ifconfig"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = result.stdout.decode("utf-8", "replace")
+    match = _re.search(r"inet (100\.\d+\.\d+\.\d+)", text)
+    return match.group(1) if match else None
+
+
+def _ip_from_proc():
+    """Last resort: read /proc/net/fib_trie or /proc/net/tailscale."""
+    import re as _re
+    for path in ("/proc/net/fib_trie", "/proc/net/tailscale"):
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for candidate in _re.findall(r"100\.\d+\.\d+\.\d+", text):
+            if not candidate.startswith("100.100."):
+                return candidate
+    return None
+
+
+def discover_tailscale_ip():
+    """Return this node's Tailscale IPv4 address, or None."""
+    for probe in (_ip_from_udp_route, _ip_from_ifconfig, _ip_from_proc):
+        try:
+            address = probe()
+        except Exception:
+            address = None
+        if address and address.startswith("100.") \
+                and not address.startswith("100.100."):
+            return address
+    return None
+
+
+def print_connection_banner(timeout=120):
+    """Poll until Tailscale assigns an address, then print how to connect.
+
+    Runs in a daemon thread so it never delays the proxy or the telnet
+    shell.  The Tailscale address is assigned a couple of seconds after
+    CheerpX starts, so it is usually not known when pi.py boots.
+    """
+    import threading as _threading
+    import time as _time
+
+    def _worker():
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            address = discover_tailscale_ip()
+            if address:
+                print("", flush=True)
+                print("=" * 68, flush=True)
+                print("TAILSCALE_IP {}".format(address), flush=True)
+                print("TELNET   plink.exe -raw -P 2323 {}".format(address),
+                      flush=True)
+                print("PROXY    http://{}:{}/".format(address, WRAPPER_PORT_INPROC),
+                      flush=True)
+                print("FORWARD  http://{}:{}/".format(address, FORWARD_PORT_CANDIDATES[0]),
+                      flush=True)
+                print("=" * 68, flush=True)
+                print("", flush=True)
+                return
+            _time.sleep(2)
+        print("TAILSCALE_IP_NOT_FOUND timeout={}s".format(timeout), flush=True)
+
+    thread = _threading.Thread(target=_worker, name="tailscale-ip-banner", daemon=True)
+    thread.start()
+    return thread
+
+
 def start_web_adjuster_sidecar():
     """Fetch launcher.py from GitHub and run the HTTP proxy as daemon threads
     in this process: wrapper on 28082, forward proxy on 28081.
@@ -1532,6 +1647,9 @@ def _run_endpoint_tests():
 
 def main():
     prepare_system()
+    # Print the Tailscale address as soon as it is assigned.  Runs in a
+    # background thread so it never delays the proxy or the telnet shell.
+    print_connection_banner()
     start_web_adjuster_sidecar()
 
     # Start lightweight telnet shell for direct AI agent access (Goal 2).
@@ -1548,14 +1666,20 @@ def main():
             with urlopen(req, timeout=20) as resp:
                 telnet_source = resp.read().decode("utf-8")
             compile(telnet_source, telnet_url, "exec")
-            exec(compile(telnet_source, telnet_url, "exec"), globals(), globals())
+            # Own namespace with __name__ != "__main__": exec'ing into globals()
+            # would run telnet_shell.py's __main__ block, which ends in
+            # threading.Event().wait() and blocks main() forever, so the
+            # proxy self-test below would never run.
+            telnet_ns = {"__name__": "webvm_telnet_shell", "__file__": telnet_url}
+            exec(compile(telnet_source, telnet_url, "exec"), telnet_ns)
             print("TELNET_SHELL_FETCHED source=main characters={}".format(len(telnet_source)), flush=True)
         except (HTTPError, URLError, TimeoutError, OSError, SyntaxError) as exc:
             print("TELNET_SHELL_FETCH_FALLBACK error={}: {}".format(type(exc).__name__, exc), flush=True)
             telnet_path = Path(__file__).resolve().parent / "telnet_shell.py"
             if telnet_path.is_file():
-                exec(compile(telnet_path.read_text(encoding="utf-8"), str(telnet_path), "exec"), globals(), globals())
-        start_telnet_shell()
+                telnet_ns = {"__name__": "webvm_telnet_shell", "__file__": str(telnet_path)}
+                exec(compile(telnet_path.read_text(encoding="utf-8"), str(telnet_path), "exec"), telnet_ns)
+        telnet_ns["start_telnet_shell"]()
     except Exception as exc:
         print("TELNET_SHELL_START_FAILED error={}: {}".format(type(exc).__name__, str(exc)[:200]), flush=True)
 

@@ -134,16 +134,74 @@ This is the reason the proxy exists, not just a smoke test:
 
 #### Verification status
 
+**Goal 3 is VERIFIED.** Measured against the live WebVM on `2026-01-14`.
+
 | Item | Status |
 |---|---|
 | `examples/python3/test_proxy_local.py` — full local suite on the host | **PASS** (`/health`, `/proxy-status`, iframe page, proxied `https://example.com/` returns 200 + title `Example Domain` + marker injected + no `x-frame-options`, forward-proxy absolute-URI mode) |
-| Wrapper answers `/health` inside WebVM on `:28082` | PASS (observed `HTTP/1.1 200 OK` + `ok`) |
-| Wrapper answers `/health` inside WebVM on `:28080` (legacy subprocess) | PASS but flaky — it produced the `Errno 107` failure |
-| Forward proxy `:28081` / `:28083` inside WebVM | **NOT YET VERIFIED** |
-| Real site fetched through the proxy **inside WebVM** | **NOT YET VERIFIED** — needs a reset so the new `pi_impl.py` is fetched |
-| `PROXY_SELF_TEST_PASS` in the WebVM terminal | **NOT YET VERIFIED** |
-| `x-frame-options` / CSP stripping observed against a real target | **NOT YET VERIFIED** |
-| Kaggle loaded through the proxy in an iframe | **NOT YET VERIFIED** (Goal 4) |
+| Wrapper answers `/health` inside WebVM on `:28082` | **PASS** — `HTTP/1.1 200 OK` + `ok` |
+| Forward proxy `:28081` inside WebVM | **PASS** — absolute-URI request `GET http://example.com/` → `HTTP/1.1 200 OK`, marker injected |
+| Real site fetched through the proxy **inside WebVM** | **PASS** — `https://example.com/` → `200`, `content-type: text/html; charset=utf-8`, title `Example Domain`, 1106 bytes, `x-frame-options` absent, marker injected |
+| Kaggle fetched through the proxy inside WebVM | **PASS (fetch)** — `https://www.kaggle.com/` → `200`, 21206 bytes, `x-frame-options` absent, marker injected, absolute URLs rewritten to `/proxy/<encoded>` (e.g. `<base href="/proxy/https%3A%2F%2Fwww.google.com%2Frecaptcha%2F...">`). Kaggle answered with its **reCAPTCHA "Checking your browser"** interstitial, not the app |
+| `PROXIED status=200` lines in the WebVM terminal | **PASS** — confirms the request went through the in-process proxy |
+| `x-frame-options` stripped | **PASS** — header absent from the proxied response |
+| Script injection | **PASS** — `WEBVM_ADJUSTER_INJECTED` and `data-webvm-adjuster-injected` both present in the proxied body |
+| `Errno 107` traceback | **GONE** — no `socketserver` is used any more |
+| `PROXY_SELF_TEST_PASS` in the WebVM terminal | **NOT YET OBSERVED** — the self-test never ran because of the telnet `exec` bug below; fixed, needs a fresh reset to confirm |
+| Kaggle **app** (not the reCAPTCHA interstitial) loaded and usable in the iframe | **NOT YET VERIFIED** — Goal 4 |
+| JS/DOM injection confirmed inside the iframe | **NOT YET VERIFIED** — the iframe's document was still `readyState: "loading"` after 85 s for the heavy Kaggle page; the check is now robust and polls, but needs a re-run |
+
+#### Additional bug found while verifying — `main()` was blocked
+
+`pi_impl.py` exec'd `telnet_shell.py` into `globals()`. Because
+`globals()["__name__"]` is `"__main__"`, that ran `telnet_shell.py`'s
+`if __name__ == "__main__":` block, which ends in
+`threading.Event().wait()` — an **infinite block**. `main()` never
+returned, so everything after the telnet setup (the "Wrapper: ..." banner
+and the whole `_run_endpoint_tests()` self-test) never ran. The symptom
+was a terminal that showed the telnet lines and then nothing else.
+
+Fixed by exec'ing `telnet_shell.py` into its own namespace with
+`__name__ = "webvm_telnet_shell"`, then calling
+`telnet_ns["start_telnet_shell"]()` explicitly.
+
+#### Printing the correct Tailscale IP on boot
+
+The Tailscale address changes on **every boot**, so it can never be
+hard-coded. Two independent mechanisms now print it:
+
+1. **Browser side** (`src/lib/network.js` + `src/lib/WebVM.svelte`) —
+   the netmap already reports this node's address
+   (`map.self.addresses[0]`). A new reactive store `currentIpStore` is
+   exported from `network.js`, and `WebVM.svelte` writes a banner into the
+   xterm terminal as soon as it is known:
+
+   ```
+   ====================================================================
+   TAILSCALE_IP 100.115.174.109
+   TELNET   plink.exe -raw -P 2323 100.115.174.109
+   PROXY    http://100.115.174.109:28082/
+   FORWARD  http://100.115.174.109:28081/
+   ====================================================================
+   ```
+
+   This needs a **Pages rebuild** (`redeploy`), because `src/` is compiled
+   into the site.
+
+2. **VM side** (`examples/python3/pi_impl.py`) — `discover_tailscale_ip()`
+   finds the address from inside the VM with three fallbacks, in order:
+   - **UDP route trick** (primary): a UDP `connect()` to `100.100.100.100`
+     (Tailscale's Quad100 service) sends no packets but makes the kernel
+     reveal the local address it would use, which is this node's Tailscale
+     IPv4. This works even though `ip`, `hostname -I` and `ps` do not.
+   - `ifconfig` (the image ships `/usr/sbin/ifconfig`, but it prints
+     **nothing** under CheerpX, so this fallback is effectively useless)
+   - `/proc/net/fib_trie` or `/proc/net/tailscale`
+
+   The banner is printed from a daemon thread, so it never delays the
+   proxy or the telnet shell. This one only needs a **browser reset**,
+   because `pi_impl.py` is fetched from `main` at runtime.
+
 
 ### Goal 4: Load Kaggle via proxy in iframe (browser integration)
 
@@ -172,14 +230,22 @@ Chrome. Options, none verified yet:
    browser will warn).
 
 **Challenges:**
+- **Kaggle answers with a reCAPTCHA interstitial.** Fetching
+  `https://www.kaggle.com/` through the proxy returned Google's
+  "Checking your browser - reCAPTCHA" page (21206 bytes), not the Kaggle
+  app. The proxy itself is fine — this is Kaggle/Google bot detection.
+  Getting past it needs a realistic browser fingerprint, and the proxied
+  response still has to look like a normal navigation (cookies, referer,
+  sec-ch-ua headers). **Do not report Goal 4 as done until the actual
+  Kaggle app renders inside the iframe.**
 - Kaggle authentication: cookies are rewritten to the proxy origin, so
   logging in through the proxied page should work, but it must be tested
   explicitly — never assumed.
 - Kaggle's SPA makes many additional requests; all absolute URLs are
   rewritten to route back through the proxy, but relative and API calls
   still need checking.
-- Kaggle is a heavy SPA — the proxy is single-threaded per connection and
-  CheerpX is slow, so a full page load may take a long time.
+- Kaggle is a heavy SPA — the proxy handles one request per thread and
+  CheerpX is slow, so a full page load may take minutes.
 
 **How to test:**
 1. Get the WebVM Tailscale IP (`tailscale status`, or `discover.py`).
@@ -207,8 +273,12 @@ suspicions and partial observations, not confirmed root causes.**
 | 4 | The WASM runtime crashed once with `RuntimeError: function signature mismatch` / `Uncaught TypeError: e is not a function` | Browser console | **Low / unexplained.** Did not correlate with a specific action. The VM kept serving afterwards. Worth watching for — if it recurs, capture what ran immediately before it |
 | 5 | `fuser -k` against the legacy launcher may be what destabilises the old ports, and it risks the WASM runtime | `fuser` is invoked at boot by both `pi.py` and `telnet_shell.py` | Low. `pi_impl.py` no longer calls it; the baked `pi.py` still does until the next image rebuild |
 | 6 | The reset generation must be **>=** the generation in the `reset` file on `main`, otherwise no reset fires | Console said `Reset signal already handled for generation 1734` while the URL carried `?reset=1715` | **High** — use the current generation from the `reset` file |
-| 7 | The WebVM Tailscale IP changes on every boot, so a hard-coded IP in a test script goes stale immediately | `100.98.161.16` → gone; `100.71.2.31` → gone; now `100.122.41.24` | **High** — always discover the live IP first |
+| 7 | The WebVM Tailscale IP changes on every boot, so a hard-coded IP in a test script goes stale immediately | `100.98.161.16` → gone; `100.71.2.31` → gone; `100.122.41.24` → gone; `100.80.88.9` → gone; currently `100.115.174.109` | **High** — always run `discover.py` first; the IP is now also printed on boot |
 | 8 | The browser tab can fail to boot the app with `Failed to fetch dynamically imported module` (SvelteKit chunk load failure), leaving a black screen | Browser console on the first load of the session | Medium. A plain re-navigation fixed it. Related to the `cross-world service worker resource mismatch` warning |
+| 9 | `ifconfig` exists at `/usr/sbin/ifconfig` but prints **nothing** under CheerpX; `/proc/net/` and `/sys/class/net/` are not populated either. The only reliable in-VM way to learn the Tailscale address is the UDP-route trick to `100.100.100.100` | `command -v ifconfig` → `/usr/sbin/ifconfig`, but `ifconfig tailscale0`, `ifconfig -a \| grep 'inet 100'`, `ls /proc/net/` and `ls /sys/class/net/` all produced no output | **High** — used as the primary method |
+| 10 | `pi_impl.py` exec'ing `telnet_shell.py` into `globals()` runs its `__main__` block and blocks `main()` forever on `threading.Event().wait()` | Terminal showed the telnet lines and then nothing; no "Wrapper:" banner, no `ENDPOINT_TEST` | **High** — fixed by using a dedicated namespace |
+| 11 | A reset generation **older** than the one in the `reset` file does not fire a reset, so a stale `?reset=` in the URL silently does nothing | Console: `Reset signal already handled for generation 1734` while the URL carried `?reset=1715` | **High** |
+| 12 | The Pages deploy workflow only runs when the `redeploy` file changes, so `src/` changes are not published by an ordinary push | `.github/workflows/deploy.yml` `paths: - 'redeploy'` | **High** — touch `redeploy` after changing anything under `src/` |
 
 ## Host-side tooling (kept in the repo)
 

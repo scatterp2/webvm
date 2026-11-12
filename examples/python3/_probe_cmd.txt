@@ -1,0 +1,1 @@
+python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.connect(('100.100.100.100', 41641)); print('UDP_ROUTE_IP=' + s.getsockname()[0])"

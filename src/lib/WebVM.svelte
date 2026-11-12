@@ -6,7 +6,7 @@
 	import '$lib/global.css';
 	import '@xterm/xterm/css/xterm.css'
 	import '@fortawesome/fontawesome-free/css/all.min.css'
-	import { networkInterface, networkData, startLogin, attachDataDevice } from '$lib/network.js'
+	import { networkInterface, networkData, currentIpStore, startLogin, attachDataDevice } from '$lib/network.js'
 	import { cpuActivity, diskActivity, cpuPercentage, diskLatency } from '$lib/activities.js'
 	import { introMessage, errorMessage, unexpectedErrorMessage } from '$lib/messages.js'
 	import { displayConfig, handleToolImpl } from '$lib/anthropic.js'
@@ -410,6 +410,26 @@
 	// Watch for cx to become available and trigger auto-connect
 	$: if(cx && !autoConnectAttempted) {
 		tryAutoConnect();
+	}
+
+	// Print this node's Tailscale address into the terminal as soon as the
+	// netmap reports it.  The address changes on every boot, so it must
+	// never be hard-coded anywhere.
+	let printedTailscaleIp = "";
+	$: {
+		const ip = $currentIpStore;
+		if (ip && ip !== printedTailscaleIp && term) {
+			printedTailscaleIp = ip;
+			term.write(
+				"\r\n" +
+				"====================================================================\r\n" +
+				"TAILSCALE_IP " + ip + "\r\n" +
+				"TELNET   plink.exe -raw -P 2323 " + ip + "\r\n" +
+				"PROXY    http://" + ip + ":28082/\r\n" +
+				"FORWARD  http://" + ip + ":28081/\r\n" +
+				"====================================================================\r\n"
+			);
+		}
 	}
 
 

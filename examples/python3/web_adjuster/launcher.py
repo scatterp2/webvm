@@ -522,6 +522,7 @@ PAGE_TEMPLATE = """<!doctype html>
   link.href = 'http://' + window.location.hostname + ':' + __ADJUSTER_PORT__ + '/';
 
   var loaded = false;
+  var confirmed = false;
   frame.addEventListener('load', function() {
     loaded = true;
     status.textContent = 'Iframe load event fired at ' + new Date().toISOString()
@@ -535,20 +536,39 @@ PAGE_TEMPLATE = """<!doctype html>
   function checkInjection() {
     try {
       var doc = frame.contentDocument;
-      if (!doc) { return; }
+      if (!doc) {
+        status.textContent = 'Iframe document is not reachable yet - retrying...';
+        return false;
+      }
+      if (!doc.documentElement) {
+        status.textContent = 'Iframe is still parsing (readyState='
+          + doc.readyState + ') - retrying...';
+        return false;
+      }
       var el = doc.getElementById('webvm-adjuster-injection-proof');
       var attr = doc.documentElement.getAttribute('data-webvm-adjuster-injected');
       if (el || attr === 'true') {
+        confirmed = true;
         status.textContent = 'JS/DOM INJECTION CONFIRMED: marker element present = '
           + (!!el) + ', documentElement attribute = ' + attr
           + ', marker text = ' + (el ? el.textContent : 'n/a');
+        return true;
       }
+      status.textContent = 'Iframe loaded (title="' + (doc.title || '?')
+        + '") but the injection marker is not there yet - retrying...';
+      return false;
     } catch (e) {
-      status.textContent = 'Injection check blocked by same-origin policy: ' + e;
+      status.textContent = 'Injection check failed: ' + e;
+      return false;
     }
   }
 
-  window.setTimeout(checkInjection, 3000);
+  // The proxied page can take a long time to parse under CheerpX, so keep
+  // polling until the marker shows up.
+  (function poll() {
+    if (!confirmed) { checkInjection(); }
+    window.setTimeout(poll, 2000);
+  })();
 })();
 </script>
 </body>

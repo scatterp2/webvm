@@ -80,7 +80,8 @@ def main():
         print("\n    adjuster did NOT reach ready state")
 
     print("\n[4] GET /proxy/{}  (real site THROUGH the proxy)".format(TARGET))
-    status, headers, body = raw_get(PORT, "/proxy/" + TARGET, timeout=40)
+    from urllib.parse import quote
+    status, headers, body = raw_get(PORT, "/proxy/" + quote(TARGET, safe=""), timeout=40)
     print("    status:", status)
     if headers:
         for k in ("server", "x-frame-options", "content-security-policy",
