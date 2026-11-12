@@ -1570,7 +1570,11 @@ def _start_tls_wrapper(launcher_ns):
     content, and the WebVM page is https://.  The proxy therefore also
     listens with TLS, using a real Let's Encrypt certificate for
     webvm-proxy.tailf987e.ts.net (generated via Tailscale cert).
+
+    Fallback: if the LE cert fails to load (CheerpX OpenSSL emulation
+    issue with EC keys), generate a self-signed RSA cert inside the VM.
     """
+    import subprocess
     import threading as _threading
     from urllib.request import Request, urlopen
     from urllib.error import HTTPError, URLError
@@ -1583,7 +1587,15 @@ def _start_tls_wrapper(launcher_ns):
               flush=True)
         return
 
+    start_tls = launcher_ns.get("start_tls_wrapper")
+    if start_tls is None:
+        print("TLS_START_UNSUPPORTED launcher_has_no_start_tls_wrapper",
+              flush=True)
+        return
+
+    # --- Attempt 1: fetch the real LE cert from GitHub ---
     local = Path(__file__).resolve().parent / "web_adjuster" / "tls"
+    le_ok = True
     for name in TLS_FILES:
         destination = target_dir / name
         try:
@@ -1594,15 +1606,14 @@ def _start_tls_wrapper(launcher_ns):
             )
             with urlopen(req, timeout=20) as resp:
                 data = resp.read()
-            # Strip \r so PEM files have Unix line endings — the WebVM's
-            # OpenSSL chokes on CRLF in PEM data.
             if name.endswith((".crt", ".key", ".pem")):
                 data = data.replace(b"\r\n", b"\n")
             destination.write_bytes(data)
-            print("TLS_FILE_FETCHED name={} bytes={}".format(name, len(data)),
-                  flush=True)
+            readback = destination.read_bytes()
+            match = "OK" if readback == data else "MISMATCH(wrote={},read={})".format(len(data), len(readback))
+            print("TLS_FILE_FETCHED name={} bytes={} verify={}".format(
+                name, len(data), match), flush=True)
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            # Fall back to the copy that ships next to this file.
             fallback = local / name
             if fallback.is_file():
                 try:
@@ -1615,25 +1626,52 @@ def _start_tls_wrapper(launcher_ns):
                     pass
             print("TLS_FILE_FAILED name={} error={}: {}".format(
                 name, type(exc).__name__, exc), flush=True)
-            return
+            le_ok = False
+            break
 
-    # The cert file may contain a full chain (leaf + intermediates).
-    # Some OpenSSL builds choke on the chain — try the full file first,
-    # fall back to just the leaf certificate.
     cert_path = target_dir / "proxy-leaf.crt"
     key_path = target_dir / "proxy-leaf.key"
 
-    start_tls = launcher_ns.get("start_tls_wrapper")
-    if start_tls is None:
-        print("TLS_START_UNSUPPORTED launcher_has_no_start_tls_wrapper",
-              flush=True)
+    if le_ok:
+        try:
+            start_tls(TLS_PORT, cert_path, key_path)
+            print("TLS_PROXY_STARTED port={} cert=LE".format(TLS_PORT),
+                  flush=True)
+            return
+        except Exception as exc:
+            print("TLS_LE_FAILED error={}: {} — trying self-signed RSA".format(
+                type(exc).__name__, str(exc)[:200]), flush=True)
+    else:
+        print("TLS_LE_FETCH_FAILED — trying self-signed RSA", flush=True)
+
+    # --- Attempt 2: generate a self-signed RSA cert inside the VM ---
+    ss_cert = target_dir / "selfsigned.crt"
+    ss_key = target_dir / "selfsigned.key"
+    try:
+        result = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(ss_key), "-out", str(ss_cert),
+             "-days", "365", "-nodes",
+             "-subj", "/CN=webvm-proxy.tailf987e.ts.net"],
+            capture_output=True, timeout=60,
+        )
+        if result.returncode != 0:
+            print("TLS_SELFSIGNED_OPENSSL_FAILED rc={} stderr={}".format(
+                result.returncode, result.stderr[:300]), flush=True)
+            return
+        print("TLS_SELFSIGNED_GENERATED cert_bytes={} key_bytes={}".format(
+            ss_cert.stat().st_size, ss_key.stat().st_size), flush=True)
+    except (FileNotFoundError, TimeoutError, OSError) as exc:
+        print("TLS_SELFSIGNED_FAILED error={}: {}".format(
+            type(exc).__name__, exc), flush=True)
         return
 
     try:
-        start_tls(TLS_PORT, cert_path, key_path)
-        print("TLS_PROXY_STARTED port={}".format(TLS_PORT), flush=True)
+        start_tls(TLS_PORT, ss_cert, ss_key)
+        print("TLS_PROXY_STARTED port={} cert=selfsigned-RSA".format(TLS_PORT),
+              flush=True)
     except Exception as exc:
-        print("TLS_START_FAILED error={}: {}".format(
+        print("TLS_SELFSIGNED_START_FAILED error={}: {}".format(
             type(exc).__name__, str(exc)[:200]), flush=True)
 
 
