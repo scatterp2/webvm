@@ -1554,23 +1554,32 @@ def start_web_adjuster_sidecar():
 
 
 def _run_endpoint_tests():
-    """Hit the wrapper endpoints and print results."""
+    """Hit the wrapper endpoints and print results.
+
+    IMPORTANT: every socket call here must be BLOCKING (no `timeout=`).
+    Python implements socket timeouts with select(), and CheerpX does not
+    implement select()/poll() on sockets — a "timeout" there does not fire
+    but wedges the cooperative scheduler instead, which stops the proxy's
+    accept loop and makes the proxy look dead.
+
+    The proxy's own upstream watchdog bounds how long a proxied request can
+    take, so a blocking read here is safe.
+    """
     from urllib.request import urlopen, Request
     from urllib.error import HTTPError, URLError
     import socket as _sock
 
     wrapper_port = WRAPPER_PORT_INPROC
     print("ENDPOINT_TEST waiting for wrapper on :{} ...".format(wrapper_port), flush=True)
-    for attempt in range(60):
-        try:
-            s = _sock.create_connection(("127.0.0.1", wrapper_port), timeout=1)
-            s.close()
-            print("ENDPOINT_TEST wrapper_ready after {} seconds".format(attempt), flush=True)
-            break
-        except OSError:
-            time.sleep(1)
-    else:
-        print("ENDPOINT_TEST WRAPPER_NOT_READY after 60s — skipping tests", flush=True)
+    try:
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+        s.settimeout(None)
+        s.connect(("127.0.0.1", wrapper_port))
+        s.close()
+        print("ENDPOINT_TEST wrapper_ready", flush=True)
+    except OSError as exc:
+        print("ENDPOINT_TEST WRAPPER_NOT_READY error={}: {}".format(
+            type(exc).__name__, exc), flush=True)
         return
 
     base = "http://127.0.0.1:{}".format(wrapper_port)
@@ -1580,7 +1589,7 @@ def _run_endpoint_tests():
         tag = "ENDPOINT_TEST"
         try:
             req = Request(url, headers={"User-Agent": "webvm-selftest/1.0"})
-            with urlopen(req, timeout=15) as resp:
+            with urlopen(req) as resp:
                 status = resp.status
                 headers = dict(resp.headers)
                 body = resp.read(2000).decode("utf-8", errors="replace")
@@ -1603,12 +1612,22 @@ def _run_endpoint_tests():
             print("{} url={} NETWORK_ERROR error={}: {}".format(
                 tag, url, type(e).__name__, e), flush=True)
 
+    # The upstream fetch through the proxy is slow under CheerpX and makes a
+    # real outbound request, so it is opt-in.  The host-side tooling
+    # (examples/python3/proxy_once.py, proxy_test.py) does this check from
+    # outside the VM, where it cannot interfere with anything.
+    if os.environ.get("WEBVM_PROXY_SELFTEST", "") not in ("1", "true", "yes"):
+        print("PROXY_TEST skipped reason=set_WEBVM_PROXY_SELFTEST=1_to_enable",
+              flush=True)
+        print("SELF_TEST_COMPLETE", flush=True)
+        return
+
     from urllib.parse import quote
     proxy_url = base + "/proxy/" + quote(PROXY_SELF_TEST_URL, safe="")
     tag = "PROXY_TEST"
     try:
         req = Request(proxy_url, headers={"User-Agent": "webvm-selftest/1.0"})
-        with urlopen(req, timeout=60) as resp:
+        with urlopen(req) as resp:
             status = resp.status
             headers = dict(resp.headers)
             body = resp.read(8000).decode("utf-8", errors="replace")
@@ -1696,11 +1715,18 @@ def main():
     print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
     # --- Auto-test endpoints ---
-    # Run the self-test in a daemon thread: it performs a real upstream
-    # fetch, which under CheerpX is slow, and it must not delay the proxy
-    # or the telnet shell from serving real requests.
+    # Run the self-test in a daemon thread, and only after a delay: it must
+    # not race the proxy's startup, and a connect to a port that is not
+    # listening yet would block on select(), which CheerpX does not
+    # implement -- that wedges the cooperative scheduler and makes the
+    # whole proxy look dead.
     import threading as _threading
-    _threading.Thread(target=_run_endpoint_tests, daemon=True,
+
+    def _delayed_selftest():
+        time.sleep(30)
+        _run_endpoint_tests()
+
+    _threading.Thread(target=_delayed_selftest, daemon=True,
                       name="endpoint-selftest").start()
 
     print("Tailing /tmp/web-adjuster.log ...", flush=True)
