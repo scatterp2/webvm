@@ -1081,50 +1081,16 @@ PAGE_TEMPLATE = """<!doctype html>
   if (__BRIDGE_FLAG__) {
     document.getElementById('status').textContent =
       'Bridge mode: fetching the self-contained document...';
-    console.log('[bridge] starting the inline job');
-    fetch('/proxy-inline/start/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
-      .then(function (r) { return r.json(); })
-      .then(function (job) {
-        console.log('[bridge] job', job.id);
-        var id = job.id;
-        // Poll instead of holding one long request open: building the
-        // document takes tens of seconds and an idle browser connection
-        // is dropped after a few seconds.
-        function poll() {
-          return fetch('/proxy-inline/status/' + id, {cache: 'no-store'})
-            .then(function (r) { return r.json(); })
-            .then(function (s) {
-              if (s.state === 'failed') {
-                throw new Error(s.error || 'inline job failed');
-              }
-              if (s.state !== 'ready') {
-                document.getElementById('status').textContent =
-                  'Bridge mode: building the document (' + s.state + ')...';
-                return new Promise(function (resolve) {
-                  setTimeout(function () { poll().then(resolve); }, 1500);
-                });
-              }
-              document.getElementById('status').textContent =
-                'Bridge mode: fetching the document (' + s.bytes + ' bytes)...';
-              // Fetch the document in parts: a large transfer over the
-              // CheerpX socket never completes.
-              var parts = Math.max(1, Math.ceil(s.bytes / 16000));
-              var chunks = [];
-              function fetchPart(n) {
-                if (n >= parts) { return Promise.resolve(chunks.join('')); }
-                return fetch('/proxy-inline/doc/' + id + '?part=' + n + '&total=' + parts, {cache: 'no-store'})
-                  .then(function (r) { return r.text(); })
-                  .then(function (piece) {
-                    chunks.push(piece);
-                    document.getElementById('status').textContent =
-                      'Bridge mode: fetched part ' + (n + 1) + '/' + parts + '...';
-                    return fetchPart(n + 1);
-                  });
-              }
-              return fetchPart(0);
-            });
-        }
-        return poll();
+    console.log('[bridge] fetching the document');
+    // A single proxied fetch.  Building a fully inlined document means one
+    // upstream fetch per sub-resource, and the WebVM can only do one TLS
+    // handshake at a time -- that saturates the VM.  The sub-resource URLs
+    // in the document are absolute and point back at the proxy, so they
+    // load as soon as the proxy has a trusted https origin.
+    fetch('/proxy/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
+      .then(function (r) {
+        console.log('[bridge] proxy status', r.status);
+        return r.text();
       })
       .then(function (html) {
         console.log('[bridge] document bytes', html.length);
