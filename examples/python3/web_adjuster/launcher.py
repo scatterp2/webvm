@@ -327,6 +327,47 @@ def _cache_put(key, value):
         _CACHE[key] = (time.time() + _CACHE_TTL, value)
 
 
+def _close_quietly(sock):
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+def _watchdog(sock, timeout):
+    """Close a socket after `timeout` seconds.
+
+    CheerpX does not implement select()/poll() on sockets, and Python
+    implements socket timeouts with select().  A timeout therefore never
+    fires here and the read blocks forever.  A watchdog thread that closes
+    the socket is the only reliable way to bound a network operation.
+    """
+    timer = threading.Timer(timeout, _close_quietly, (sock,))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _open_upstream(scheme, host, port, timeout):
+    """Open a socket to the upstream and do the TLS handshake if needed."""
+    import socket as _socket
+
+    raw = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    raw.settimeout(None)          # blocking: select() is unavailable
+    timer = _watchdog(raw, timeout)
+    try:
+        raw.connect((host, port))
+        log("UPSTREAM_PHASE url_connect host={} port={} ok".format(host, port))
+        if scheme == "https":
+            raw = _ssl_context().wrap_socket(raw, server_hostname=host)
+            log("UPSTREAM_PHASE tls_done host={} port={}".format(host, port))
+    except Exception:
+        timer.cancel()
+        _close_quietly(raw)
+        raise
+    return raw, timer
+
+
 def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                    attempts=3):
     """Fetch an absolute http/https URL.  Returns (status, headers, body).
@@ -376,22 +417,27 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     for attempt in range(1, attempts + 1):
         started = time.time()
         conn = None
+        timer = None
         reused = False
         try:
             conn = _pool_get(key)
             if conn is not None:
                 reused = True
-            else:
-                if parts.scheme == "https":
-                    conn = http.client.HTTPSConnection(
-                        host, port, timeout=timeout, context=_ssl_context()
-                    )
+                if getattr(conn, "sock", None) is None:
+                    conn = None
+                    reused = False
                 else:
-                    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+                    timer = _watchdog(conn.sock, timeout)
+            if conn is None:
+                raw, timer = _open_upstream(parts.scheme, host, port, timeout)
+                conn = http.client.HTTPConnection(host, port, timeout=None)
+                conn.sock = raw
             conn.request(method, path, body=body, headers=outgoing)
             resp = conn.getresponse()
             data = resp.read(MAX_BODY)
             result = (resp.status, resp.getheaders(), data)
+            if timer is not None:
+                timer.cancel()
             if reused or not resp.will_close:
                 _pool_put(key, conn)
                 conn = None
@@ -405,7 +451,10 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
             return result
         except (OSError, http.client.HTTPException) as exc:
             last_error = exc
+            if timer is not None:
+                timer.cancel()
             if conn is not None:
+                _close_quietly(getattr(conn, "sock", None))
                 try:
                     conn.close()
                 except OSError:
