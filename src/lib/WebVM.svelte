@@ -31,86 +31,47 @@
 	// --- Proxied page panel ---------------------------------------------
 	// The panel shows a page fetched through the WebVM's own HTTP proxy.
 	//
-	// The proxy publishes itself over HTTPS (port 28443) as well as HTTP,
-	// because this page is served over https and Chrome blocks an http://
-	// frame here as mixed content.  The node's DNS name comes from the
-	// netmap, because the address changes on every boot.
-	//
-	// The page is fetched with fetch() and injected into the frame with
-	// srcdoc.  The proxy sends CORS headers, so the fetch is readable, and
-	// a srcdoc frame inherits THIS page's origin, which keeps full DOM
-	// access to the proxied content.  A direct frame src would be
-	// cross-origin and the DOM would be unreachable.
+	// This page is served over https and the proxy listens on plain http,
+	// so the page cannot fetch the proxy directly: Chrome blocks an http://
+	// subresource here as mixed content, before the request is even made.
+	// The site's service worker bridges the gap — it fetches the proxy's
+	// http:// address from its own context and hands the page a same-origin
+	// response, which the page injects with srcdoc.  A srcdoc frame
+	// inherits this page's origin, so the DOM of the proxied page stays
+	// reachable.
 	var proxyPanelOpen = false;
 	var proxyTarget = "https://www.kaggle.com/";
 	var proxyStatus = "";
 	var proxyFrameEl = null;
-	const PROXY_TLS_PORT = 28443;
-	// A Tailscale Serve endpoint publishes the proxy with a publicly trusted
-	// certificate, so no development CA has to be trusted.  It has to be
-	// enabled on the tailnet first (see the README).
-	const TAILSCALE_SERVE_ORIGIN = "https://desktop-21m8c49.tailf987e.ts.net";
 
-	// Candidate proxy origins, tried in order.  The first one that answers
-	// wins.  A different origin can be forced with #proxyOrigin=<url> in the
-	// page hash, e.g. a Tailscale Serve endpoint published for the tailnet.
-	//
-	// 1. the WebVM's own TLS listener (needs the development CA trusted)
-	// 2. a Tailscale Serve endpoint for the tailnet (publicly trusted
-	//    certificate, but Serve has to be enabled on the tailnet)
-	function proxyOriginCandidates()
-	{
-		const candidates = [];
-		let override = null;
-		if(typeof window !== "undefined")
-		{
-			const hash = window.location.hash.substr(1);
-			const params = new URLSearchParams("?" + hash);
-			override = params.get("proxyOrigin");
-		}
-		if(override)
-			candidates.push(override.replace(/\/$/, ""));
-		if($currentDnsNameStore)
-			candidates.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
-		if(TAILSCALE_SERVE_ORIGIN)
-			candidates.push(TAILSCALE_SERVE_ORIGIN);
-		return candidates;
-	}
-	$: proxyOrigin = proxyOriginCandidates();
+	// The WebVM's plain-http proxy origin, taken from the netmap because
+	// the address changes on every boot.
+	$: proxyHttpBase = $currentIpStore
+		? ("http://" + $currentIpStore + ":28082")
+		: "";
+	// The same-origin route the service worker answers.
+	$: proxyBridgeUrl = proxyHttpBase
+		? ("/webvm/httpsproxy?base=" + encodeURIComponent(proxyHttpBase)
+			+ "&target=" + encodeURIComponent(proxyTarget))
+		: "";
 
 	async function loadProxyFrame()
 	{
-		const candidates = proxyOriginCandidates();
-		if(candidates.length === 0) {
+		if(!proxyBridgeUrl) {
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
-		let lastError = "no candidate";
-		for(const origin of candidates) {
-			const url = origin + "/proxy/" + encodeURIComponent(proxyTarget);
-			proxyStatus = "Fetching " + proxyTarget + " through " + origin + "...";
-			try {
-				const res = await fetch(url, {cache: "no-store"});
-				const html = await res.text();
-				if(proxyFrameEl) {
-					proxyFrameEl.srcdoc = html;
-					proxyStatus = "Loaded " + res.status + " (" + html.length
-						+ " bytes) from " + origin
-						+ " - srcdoc frame keeps DOM access.";
-				}
-				return;
-			} catch (e) {
-				lastError = origin + ": " + e;
+		proxyStatus = "Fetching " + proxyTarget + " through the proxy bridge...";
+		try {
+			const res = await fetch(proxyBridgeUrl, {cache: "no-store"});
+			const html = await res.text();
+			if(proxyFrameEl) {
+				proxyFrameEl.srcdoc = html;
+				proxyStatus = "Loaded " + res.status + " (" + html.length
+					+ " bytes) - srcdoc frame keeps DOM access.";
 			}
-		}
-		// Fall back to a direct frame: it still renders, but the DOM is
-		// then cross-origin and unreachable from this page.
-		proxyStatus = "Fetch failed (" + lastError
-			+ ") - falling back to a direct frame.";
-		if(proxyFrameEl && candidates.length) {
-			proxyFrameEl.removeAttribute("srcdoc");
-			proxyFrameEl.src = candidates[0] + "/proxy/"
-				+ encodeURIComponent(proxyTarget);
+		} catch (e) {
+			proxyStatus = "Proxy bridge failed (" + e + ").";
 		}
 	}
 

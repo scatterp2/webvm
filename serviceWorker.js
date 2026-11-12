@@ -33,6 +33,71 @@ async function handleFetch(request) {
 	return moddedResponse;
 }
 
+// --------------------------------------------------------------------------
+// WebVM proxy bridge
+//
+// The WebVM page is served over https, and the WebVM's HTTP proxy listens
+// on plain http.  Chrome blocks an http:// subresource on an https:// page
+// as mixed content *before* the request is made, so the page cannot reach
+// the proxy itself.
+//
+// A service worker runs in its own context, so it can fetch the proxy's
+// http:// address and hand the result back as a same-origin response.
+// That keeps the page free of mixed content and lets the page inject the
+// result with srcdoc, which keeps the DOM of the proxied page reachable.
+//
+// Two routes:
+//   /webvm/httpsproxy?base=<origin>&target=<url>   -> the proxied document
+//   /webvm/httpsproxy/raw?base=<origin>&path=<p>  -> one proxied resource
+// --------------------------------------------------------------------------
+
+const PROXY_BRIDGE_PREFIX = "/webvm/httpsproxy";
+
+function bridgeParams(url) {
+	return {
+		base: (url.searchParams.get("base") || "").replace(/\/$/, ""),
+		target: url.searchParams.get("target") || "",
+		path: url.searchParams.get("path") || "",
+	};
+}
+
+// Point the proxy's own URLs back at this bridge, so the sub-resources of
+// the injected document are fetched same-origin instead of over http://.
+function rewriteProxyUrls(html, base) {
+	if (!base) return html;
+	const replacement = PROXY_BRIDGE_PREFIX + "/raw?base=" + encodeURIComponent(base)
+		+ "&path=/proxy/";
+	return html.split(base + "/proxy/").join(replacement);
+}
+
+async function handleProxyBridge(url) {
+	const params = bridgeParams(url);
+	if (!params.base) {
+		return new Response("missing base", { status: 400 });
+	}
+	const target = params.path
+		? params.base + params.path
+		: params.base + "/proxy/" + encodeURIComponent(params.target);
+	try {
+		const upstream = await fetch(target, { cache: "no-store" });
+		const text = await upstream.text();
+		if (params.path) {
+			return new Response(text, {
+				status: upstream.status,
+				headers: {
+					"Content-Type": upstream.headers.get("Content-Type") || "application/octet-stream",
+				},
+			});
+		}
+		return new Response(rewriteProxyUrls(text, params.base), {
+			status: upstream.status,
+			headers: { "Content-Type": "text/html; charset=utf-8" },
+		});
+	} catch (err) {
+		return new Response("proxy bridge failed: " + err, { status: 502 });
+	}
+}
+
 function serviceWorkerInit() {
 	// Init the service worker.
 	self.addEventListener("install", () => self.skipWaiting());
@@ -40,6 +105,12 @@ function serviceWorkerInit() {
 	// Listen for fetch requests and call handleFetch function.
 	self.addEventListener("fetch", function (e) {
 		try {
+			const requestUrl = new URL(e.request.url);
+			if (requestUrl.origin === self.location.origin
+				&& requestUrl.pathname.startsWith(PROXY_BRIDGE_PREFIX)) {
+				e.respondWith(handleProxyBridge(requestUrl));
+				return;
+			}
 			e.respondWith(handleFetch(e.request));
 		} catch (err) {
 			console.log("Serviceworker NetworkError:" + err);
