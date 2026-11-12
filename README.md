@@ -4,48 +4,38 @@
 
 ## Active Goals (in priority order)
 
-### Goal 1: Fix Tailscale auto-connect (CRITICAL)
+### Goal 1: Fix Tailscale auto-connect (DONE)
 
-**Problem:** The WebVM needs to auto-connect to Tailscale using an auth key without user interaction. The current implementation uses timing hacks (3-second delay, 15-second Promise.race) that are fragile.
+**Status:** Deployed and working. Auto-connect fires 2 seconds after CheerpX init, calls `cx.networkLogin()`. Gets a 100.x.x.x Tailscale IP each boot.
 
-**Upstream fix (leaningtech/webvm PR #235, commit 16c9fad):** In `handleConnect()`, add an early-return branch when `authKey` is set — skip the popup entirely:
-```js
-if(networkInterface.authKey) {
-  networkData.connectionState.set("LOGINSTARTING");
-  cx.networkLogin();
-  return;
-}
-```
-Also add `networkData` to the import from `$lib/network.js`.
+**Key files:**
+- `src/lib/network.js` line 4: hardcoded `DEFAULT_AUTH_KEY`
+- `src/lib/WebVM.svelte` `tryAutoConnect()` (line ~393): fires 2s after cx init, calls `cx.networkLogin()`
+- `src/lib/WebVM.svelte` `handleConnect()` (line ~416): early-return with authKey
 
-**Our codebase state:**
-- `src/lib/network.js` line 4: hardcoded `DEFAULT_AUTH_KEY` — falls back when no `#authKey=` in URL hash
-- `src/lib/WebVM.svelte` `handleConnect()` (line ~434): still uses the old popup pattern
-- `src/lib/WebVM.svelte` `tryAutoConnect()` (line ~396): custom auto-connect that calls `cx.networkLogin()` after a 3s delay, then races `startLogin()` with a 15s timeout. This is a workaround — it needs to be aligned with the upstream pattern.
+### Goal 2: Lightweight telnet listener for direct AI access (DONE)
 
-**What to do:**
-1. Apply the upstream PR #235 pattern to `handleConnect()` so manual clicks work cleanly with auth keys
-2. Simplify `tryAutoConnect()` to match the same pattern — set connectionState, call networkLogin(), done
-3. Verify the auth key (`tskey-auth-kqUVzBTdMV11CNTRL-...`) is still valid on the Tailscale admin dashboard
-4. Test by deploying (bump `reset` file) and checking browser console for connection state transitions
-
-**Auth key format:** Passed via URL fragment `#authKey=<key>`. Tailscale ephemeral auth keys start with `tskey-auth-`. The key is read in `network.js` from `window.location.hash`.
-
-### Goal 2: Lightweight telnet listener for direct AI access (IMPLEMENTED)
-
-**Status:** Implemented in `examples/python3/telnet_shell.py`, started from `pi_impl.py` `main()`.
+**Status:** Deployed and verified working. Telnet shell starts on boot, reachable via Tailscale.
 
 **How it works:**
-- WebVM boots → Tailscale connects → gets a 100.x.x.x address
-- `telnet_shell.py` starts on `0.0.0.0:2323` (raw TCP, no telnet negotiation)
-- Each connection spawns `/bin/sh -i` via subprocess, bridged to the socket
-- The AI runs: `plink.exe -raw -P 2323 <tailscale-ip>` to get a shell
+- WebVM boots → `pi.py` starts proxy (non-blocking) → fetches `pi_impl.py` from main → `main()` starts telnet shell
+- `telnet_shell.py` listens on `0.0.0.0:2323` (raw TCP, no telnet negotiation)
+- Each connection spawns `/bin/sh` via subprocess, bridged to the socket with threads
+- Tailscale auto-connects → gets a 100.x.x.x address
+- AI agent connects: `plink.exe -raw -P 2323 <tailscale-ip>`
+
+**Verified:** TCP connection to port 2323 over Tailscale returns a shell prompt.
 
 **Key files:**
 - `examples/python3/telnet_shell.py` — the daemon (fetched from main at boot, local fallback)
 - `examples/python3/pi_impl.py` `main()` — starts the daemon
+- `examples/python3/pi.py` `start_proxy()` — non-blocking (fire-and-forget) so telnet shell starts quickly
 
-**CheerpX notes:** subprocess works when started early in boot. The daemon uses threads for socket↔process bridging. If `/bin/sh` subprocess fails under CheerpX's cooperative scheduler, consider using the CheerpX console API instead.
+**CheerpX boot notes:**
+- `start_proxy()` MUST be non-blocking. CheerpX's cooperative scheduler makes blocking waits extremely slow — a 60-iteration sleep loop starved all other processes for many minutes.
+- `pi_impl.py` is fetched from GitHub `main` at runtime, so fixes take effect on browser reset without a full deploy.
+- `pi.py` is baked into the disk image — changes require a full rebuild via GitHub Actions deploy.
+- Watch for `import` scoping in `main()`: a local `import time` anywhere in the function causes Python to treat `time` as local throughout, breaking earlier `time.time()` calls with `UnboundLocalError`.
 
 ### Goal 3: Make the Web Adjuster proxy work
 
@@ -63,7 +53,7 @@ Also add `networkData` to the import from `$lib/network.js`.
 - `launcher.py` `FRAME_BLOCKED_HEADERS` removes `x-frame-options`
 - `_reverse_proxy()` also strips `content-security-policy` when it contains `frame-ancestors`
 
-**Boot sequence:** `pi.py` calls `start_proxy()` which launches `launcher.py` as a subprocess → waits for port 28080 → then `pi_impl.py` `main()` calls `start_web_adjuster_sidecar()` (which just logs that it reuses the existing launcher).
+**Boot sequence:** `pi.py` calls `start_proxy()` which launches `launcher.py` as a fire-and-forget subprocess (no wait) → then loads `pi_impl.py` from GitHub → `main()` calls `start_web_adjuster_sidecar()` (which logs that it reuses the existing launcher). The proxy comes up in the background while the telnet shell starts.
 
 **What to verify:**
 1. The adjuster pip package installs correctly in WebVM's Debian i386 environment
