@@ -12,7 +12,7 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 28082
 URL = sys.argv[3] if len(sys.argv) > 3 else "https://example.com/"
 
 
-def raw_get(path, timeout=45.0):
+def raw_get(path, timeout=180.0):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:

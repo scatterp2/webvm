@@ -147,6 +147,28 @@ def main():
     if still or b"hello" not in unpacked:
         failures.append("decompress_body did not unpack gzip")
 
+    # Connection reuse: the second request for the same host must reuse the
+    # pooled keep-alive connection instead of doing another TLS handshake.
+    print("[9] connection reuse")
+    launcher._POOL.clear()
+    launcher._CACHE.clear()
+    first = launcher.upstream_fetch("https://example.com/", headers={})
+    second = launcher.upstream_fetch("https://example.com/", headers={})
+    print("    first  -> status={} bytes={}".format(first[0], len(first[2])))
+    print("    second -> status={} bytes={}".format(second[0], len(second[2])))
+    pooled = launcher._POOL.get(("https", "example.com", 443), [])
+    print("    pooled connections for example.com: {}".format(len(pooled)))
+    if not pooled:
+        failures.append("no connection was pooled for reuse")
+
+    # Cache: the same URL twice must be served from the cache.
+    launcher._CACHE.clear()
+    launcher.upstream_fetch("https://example.com/", headers={})
+    hit = launcher._cache_get(("GET", "https://example.com/"))
+    print("[10] response cache -> {}".format("HIT" if hit else "MISS"))
+    if hit is None:
+        failures.append("response was not cached")
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(40)
     s.connect(("127.0.0.1", forward_port))

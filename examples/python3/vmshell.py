@@ -14,8 +14,12 @@ HOST = sys.argv[1] if len(sys.argv) > 1 else "100.122.41.24"
 PORT = 2323
 
 args = sys.argv[2:]
+TIMEOUT = 45.0
 if args and args[0] == "-p":
     PORT = int(args[1])
+    args = args[2:]
+if args and args[0] == "-t":
+    TIMEOUT = float(args[1])
     args = args[2:]
 if args and args[0] == "--file":
     # Read one command per line from a local file.  Avoids all shell
@@ -60,7 +64,7 @@ def main():
     for i, cmd in enumerate(COMMANDS):
         marker = "__VM_DONE_{}__".format(i)
         s.sendall(("{}; echo {}\n".format(cmd, marker)).encode())
-        out = read_until(s, marker)
+        out = read_until(s, marker, hard_timeout=TIMEOUT)
         # Drop everything up to the echoed command, then cut at the marker.
         if "\n" in out:
             out = out.split("\n", 1)[1]

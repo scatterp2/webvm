@@ -257,6 +257,76 @@ def _ssl_context():
     return ctx
 
 
+# --------------------------------------------------------------------------
+# Upstream connection pool and response cache
+#
+# A TLS handshake inside CheerpX is expensive (crypto is slow in WASM), and
+# a page like Kaggle pulls dozens of sub-resources.  Opening a fresh
+# connection per request means a handshake per resource, which makes the
+# page take minutes.  Reusing keep-alive connections turns that into one
+# handshake per host.
+# --------------------------------------------------------------------------
+
+_POOL = {}
+_POOL_LOCK = threading.Lock()
+_POOL_MAX_PER_HOST = 4
+
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_TTL = 120.0
+_CACHE_MAX = 64
+
+
+def _pool_get(key):
+    with _POOL_LOCK:
+        conns = _POOL.get(key)
+        if not conns:
+            return None
+        while conns:
+            conn = conns.pop()
+            if getattr(conn, "sock", None) is not None:
+                return conn
+        return None
+
+
+def _pool_put(key, conn):
+    with _POOL_LOCK:
+        conns = _POOL.setdefault(key, [])
+        if len(conns) >= _POOL_MAX_PER_HOST:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        else:
+            conns.append(conn)
+
+
+def _pool_drop(key, conn):
+    with _POOL_LOCK:
+        conns = _POOL.get(key)
+        if conns and conn in conns:
+            conns.remove(conn)
+
+
+def _cache_get(key):
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry is None:
+            return None
+        expires, value = entry
+        if expires < time.time():
+            _CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(key, value):
+    with _CACHE_LOCK:
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.pop(next(iter(_CACHE)), None)
+        _CACHE[key] = (time.time() + _CACHE_TTL, value)
+
+
 def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                    attempts=3):
     """Fetch an absolute http/https URL.  Returns (status, headers, body).
@@ -267,7 +337,6 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     instead of a 502.
     """
     import http.client
-    import time
 
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -295,30 +364,57 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
+    cache_key = (method, url)
+    if method == "GET":
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            log("UPSTREAM_TIMING url={} cache=hit total_ms=0".format(url))
+            return cached
+
+    key = (parts.scheme, host, port)
     last_error = None
     for attempt in range(1, attempts + 1):
-        if parts.scheme == "https":
-            conn = http.client.HTTPSConnection(
-                host, port, timeout=timeout, context=_ssl_context()
-            )
-        else:
-            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        started = time.time()
+        conn = None
+        reused = False
         try:
+            conn = _pool_get(key)
+            if conn is not None:
+                reused = True
+            else:
+                if parts.scheme == "https":
+                    conn = http.client.HTTPSConnection(
+                        host, port, timeout=timeout, context=_ssl_context()
+                    )
+                else:
+                    conn = http.client.HTTPConnection(host, port, timeout=timeout)
             conn.request(method, path, body=body, headers=outgoing)
             resp = conn.getresponse()
             data = resp.read(MAX_BODY)
-            return resp.status, resp.getheaders(), data
+            result = (resp.status, resp.getheaders(), data)
+            if reused or not resp.will_close:
+                _pool_put(key, conn)
+                conn = None
+            log("UPSTREAM_TIMING url={} reused={} status={} bytes={} total_ms={}".format(
+                url, reused, result[0], len(data), int((time.time() - started) * 1000)))
+            if method == "GET" and result[0] < 400:
+                has_cookie = any(name.lower() == "set-cookie"
+                                  for name, _ in result[1])
+                if not has_cookie:
+                    _cache_put(cache_key, result)
+            return result
         except (OSError, http.client.HTTPException) as exc:
             last_error = exc
+            if conn is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                _pool_drop(key, conn)
             log("UPSTREAM_RETRY attempt={}/{} url={} error={}: {}".format(
                 attempt, attempts, url, type(exc).__name__, str(exc)[:120]))
             if attempt < attempts:
                 time.sleep(min(2 * attempt, 6))
-        finally:
-            try:
-                conn.close()
-            except OSError:
-                pass
     raise last_error
 
 

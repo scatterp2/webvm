@@ -1696,7 +1696,12 @@ def main():
     print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
     # --- Auto-test endpoints ---
-    _run_endpoint_tests()
+    # Run the self-test in a daemon thread: it performs a real upstream
+    # fetch, which under CheerpX is slow, and it must not delay the proxy
+    # or the telnet shell from serving real requests.
+    import threading as _threading
+    _threading.Thread(target=_run_endpoint_tests, daemon=True,
+                      name="endpoint-selftest").start()
 
     print("Tailing /tmp/web-adjuster.log ...", flush=True)
     log_path = Path("/tmp/web-adjuster.log")
