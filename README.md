@@ -18,30 +18,36 @@
 **Status:** Deployed and verified working. Telnet shell starts on boot, reachable via Tailscale.
 
 **How it works:**
-- WebVM boots → `pi.py` starts proxy (non-blocking) → fetches `pi_impl.py` from main → `main()` starts telnet shell
+- WebVM boots → `pi.py` fetches `pi_impl.py` from main → `main()` starts the proxy (in-process threads) and the telnet shell
 - `telnet_shell.py` listens on `0.0.0.0:2323` (raw TCP, no telnet negotiation)
 - Each connection spawns `/bin/sh` via subprocess, bridged to the socket with threads
 - Tailscale auto-connects → gets a 100.x.x.x address
 - AI agent connects: `plink.exe -raw -P 2323 <tailscale-ip>`
+- The current address is printed in the WebVM terminal on boot (see Goal 3,
+  "Printing the correct Tailscale IP on boot")
 
-**Verified:** TCP connection to port 2323 over Tailscale returns a shell prompt.
+**Verified:** TCP connection to port 2323 over Tailscale returns a shell prompt, and `root@~#` commands run inside the VM.
 
 **Key files:**
 - `examples/python3/telnet_shell.py` — the daemon (fetched from main at boot, local fallback)
 - `examples/python3/pi_impl.py` `main()` — starts the daemon
-- `examples/python3/pi.py` `start_proxy()` — non-blocking (fire-and-forget) so telnet shell starts quickly
+- `examples/python3/pi.py` — boots the runtime; the proxy is started in-process by `pi_impl.py`
 
 **CheerpX boot notes:**
-- `start_proxy()` MUST be non-blocking. CheerpX's cooperative scheduler makes blocking waits extremely slow — a 60-iteration sleep loop starved all other processes for many minutes.
 - `pi_impl.py` is fetched from GitHub `main` at runtime, so fixes take effect on browser reset without a full deploy.
 - `pi.py` is baked into the disk image — changes require a full rebuild via GitHub Actions deploy.
 - Watch for `import` scoping in `main()`: a local `import time` anywhere in the function causes Python to treat `time` as local throughout, breaking earlier `time.time()` calls with `UnboundLocalError`.
+- **Never exec a helper module into `globals()`.** `telnet_shell.py` has an
+  `if __name__ == "__main__":` block that ends in `threading.Event().wait()`.
+  Because `globals()["__name__"]` is `"__main__"`, exec'ing it there ran that
+  block and blocked `main()` forever. Use a dedicated namespace with
+  `__name__` set to something else.
 
-### Goal 3: Make the proxy work  (FIX WRITTEN, needs live re-verification)
+### Goal 3: Make the proxy work  (DONE — VERIFIED)
 
 **Status:** The old design was broken in two independent ways. Both are now
-fixed in code; the live proof still has to be re-run against a freshly reset
-WebVM (see "Verification status" below).
+fixed in code **and verified against the live WebVM** — see "Verification
+status" below for the measured evidence.
 
 #### What was broken
 
@@ -202,6 +208,41 @@ hard-coded. Two independent mechanisms now print it:
    proxy or the telnet shell. This one only needs a **browser reset**,
    because `pi_impl.py` is fetched from `main` at runtime.
 
+   **Verified:** after a reset the WebVM terminal showed
+
+   ```
+   ====================================================================
+   TAILSCALE_IP 100.105.92.77
+   TELNET   plink.exe -raw -P 2323 100.105.92.77
+   PROXY    http://100.105.92.77:28082/
+   FORWARD  http://100.105.92.77:28081/
+   ====================================================================
+   ```
+
+   and that address was the one the host could actually reach — the
+   banner matched `tailscale status`.
+
+   **The in-VM UDP probe did NOT work** on this image
+   (`TAILSCALE_IP_NOT_FOUND timeout=120s`), so the browser-side banner is
+   the mechanism to rely on. The VM-side probe is kept as a fallback.
+
+#### Note — the service worker caches the site bundle
+
+After a Pages deploy the running tab keeps serving the **old** bundle from
+the service worker. The symptom is "the deployed code contains the change
+but the page does not behave differently". Clear it before testing:
+
+```js
+(async () => {
+  for (const reg of await navigator.serviceWorker.getRegistrations())
+    await reg.unregister();
+  for (const key of await caches.keys())
+    await caches.delete(key);
+})();
+```
+
+then reload.
+
 
 ### Goal 4: Load Kaggle via proxy in iframe (browser integration)
 
@@ -284,6 +325,9 @@ suspicions and partial observations, not confirmed root causes.**
 | 10 | `pi_impl.py` exec'ing `telnet_shell.py` into `globals()` runs its `__main__` block and blocks `main()` forever on `threading.Event().wait()` | Terminal showed the telnet lines and then nothing; no "Wrapper:" banner, no `ENDPOINT_TEST` | **High** — fixed by using a dedicated namespace |
 | 11 | A reset generation **older** than the one in the `reset` file does not fire a reset, so a stale `?reset=` in the URL silently does nothing | Console: `Reset signal already handled for generation 1734` while the URL carried `?reset=1715` | **High** |
 | 12 | The Pages deploy workflow only runs when the `redeploy` file changes, so `src/` changes are not published by an ordinary push | `.github/workflows/deploy.yml` `paths: - 'redeploy'` | **High** — touch `redeploy` after changing anything under `src/` |
+| 13 | The **browser's own network is intermittently unavailable**, which makes DNS fail inside the WebVM (`gaierror: [Errno -3] Temporary failure in name resolution`) | Browser console showed `WebSocket connection to 'wss://controlplane.tailscale.com/...' failed` and `Failed to fetch` for the reset file at the same time; the VM terminal showed `UPSTREAM_FAILED ... Temporary failure in name resolution` and `WEBVM_FEEDBACK_FAILED ... name resolution` | **High** — the VM's DNS is resolved by the browser, so browser network loss surfaces as VM DNS failure. The proxy now retries the upstream fetch (3 attempts) instead of returning 502 |
+| 14 | The service worker caches the SvelteKit bundle, so a freshly deployed `src/` change is **not** picked up until the service worker is unregistered and the caches are cleared | The deployed bundle contained `TAILSCALE_IP` but the running page did not; after `navigator.serviceWorker.getRegistrations()` → `unregister()` + `caches.delete()` the banner appeared | **High** — always clear the service worker after a Pages deploy |
+| 15 | A WebVM boot with `main()` blocked (see #10) left the proxy **idle**, which is why the first end-to-end proxy test passed. Once `main()` runs the self-test, the boot-time upstream fetch competes with any request being tested | The successful test ran on the VM whose `main()` was blocked; later VMs stalled on `ENDPOINT_TEST` | Medium — the self-test is still useful, but expect the first request after boot to be slow |
 
 ## Host-side tooling (kept in the repo)
 

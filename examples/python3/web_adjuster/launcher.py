@@ -257,9 +257,17 @@ def _ssl_context():
     return ctx
 
 
-def upstream_fetch(url, method="GET", headers=None, body=None, timeout=45):
-    """Fetch an absolute http/https URL.  Returns (status, headers, body)."""
+def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
+                   attempts=3):
+    """Fetch an absolute http/https URL.  Returns (status, headers, body).
+
+    The WebVM resolves DNS through the browser, and the browser's network
+    is occasionally unavailable ("Temporary failure in name resolution").
+    Retrying turns those transient failures into a successful fetch
+    instead of a 502.
+    """
     import http.client
+    import time
 
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
@@ -287,23 +295,31 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=45):
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-    if parts.scheme == "https":
-        conn = http.client.HTTPSConnection(
-            host, port, timeout=timeout, context=_ssl_context()
-        )
-    else:
-        conn = http.client.HTTPConnection(host, port, timeout=timeout)
-
-    try:
-        conn.request(method, path, body=body, headers=outgoing)
-        resp = conn.getresponse()
-        data = resp.read(MAX_BODY)
-        return resp.status, resp.getheaders(), data
-    finally:
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        if parts.scheme == "https":
+            conn = http.client.HTTPSConnection(
+                host, port, timeout=timeout, context=_ssl_context()
+            )
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
         try:
-            conn.close()
-        except OSError:
-            pass
+            conn.request(method, path, body=body, headers=outgoing)
+            resp = conn.getresponse()
+            data = resp.read(MAX_BODY)
+            return resp.status, resp.getheaders(), data
+        except (OSError, http.client.HTTPException) as exc:
+            last_error = exc
+            log("UPSTREAM_RETRY attempt={}/{} url={} error={}: {}".format(
+                attempt, attempts, url, type(exc).__name__, str(exc)[:120]))
+            if attempt < attempts:
+                time.sleep(min(2 * attempt, 6))
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+    raise last_error
 
 
 def decompress_body(body, encoding):
