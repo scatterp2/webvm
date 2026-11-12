@@ -467,6 +467,27 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     raise last_error
 
 
+# A nonce in a CSP script-src makes browsers IGNORE 'unsafe-inline', so an
+# injected inline script has to carry the same nonce as the page's own
+# scripts.  Kaggle (like most SPAs) uses one.
+_NONCE_RE = re.compile(r"""nonce\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+
+def extract_nonce(text):
+    """Find the nonce used by the page's own scripts, if any."""
+    match = _NONCE_RE.search(text)
+    return match.group(1) if match else None
+
+
+def build_injection_script(nonce=None):
+    """The proof script, carrying the page's nonce when there is one."""
+    if not nonce:
+        return INJECTION_SCRIPT
+    return INJECTION_SCRIPT.replace(
+        "<script>", '<script nonce="{}">'.format(nonce), 1
+    )
+
+
 def decompress_body(body, encoding):
     """Best-effort decompression.  Returns (body, still_compressed)."""
     if not body or not encoding:
@@ -541,12 +562,16 @@ def transform_response(status, headers, body, request_url):
         if text is not None:
             text = rewrite_html(text, request_url)
             # Inject just before </body> so the marker element exists.
+            # The script has to carry the page's CSP nonce, otherwise the
+            # browser blocks it (a nonce in script-src disables
+            # 'unsafe-inline').
+            script = build_injection_script(extract_nonce(text))
             lowered = text.lower()
             index = lowered.rfind("</body>")
             if index == -1:
-                text = text + INJECTION_SCRIPT
+                text = text + script
             else:
-                text = text[:index] + INJECTION_SCRIPT + text[index:]
+                text = text[:index] + script + text[index:]
             body = text.encode("utf-8")
 
     return status, out_headers, body

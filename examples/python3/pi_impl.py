@@ -1715,19 +1715,24 @@ def main():
     print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
     # --- Auto-test endpoints ---
-    # Run the self-test in a daemon thread, and only after a delay: it must
-    # not race the proxy's startup, and a connect to a port that is not
-    # listening yet would block on select(), which CheerpX does not
-    # implement -- that wedges the cooperative scheduler and makes the
-    # whole proxy look dead.
-    import threading as _threading
+    # Off by default.  The in-VM self-test can wedge the cooperative
+    # scheduler (a loopback connect is refused by CheerpX, and a pending
+    # connect blocks in select(), which CheerpX does not implement), and
+    # the upstream fetch it performs is slow under CheerpX.  The host-side
+    # tooling (examples/python3/proxy_once.py, proxy_test.py) verifies the
+    # proxy from outside the VM, where it cannot interfere with anything.
+    if os.environ.get("WEBVM_SELFTEST", "") in ("1", "true", "yes"):
+        import threading as _threading
 
-    def _delayed_selftest():
-        time.sleep(30)
-        _run_endpoint_tests()
+        def _delayed_selftest():
+            time.sleep(30)
+            _run_endpoint_tests()
 
-    _threading.Thread(target=_delayed_selftest, daemon=True,
-                      name="endpoint-selftest").start()
+        _threading.Thread(target=_delayed_selftest, daemon=True,
+                          name="endpoint-selftest").start()
+    else:
+        print("ENDPOINT_TEST skipped reason=set_WEBVM_SELFTEST=1_to_enable",
+              flush=True)
 
     print("Tailing /tmp/web-adjuster.log ...", flush=True)
     log_path = Path("/tmp/web-adjuster.log")

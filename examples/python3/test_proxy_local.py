@@ -169,6 +169,23 @@ def main():
     if hit is None:
         failures.append("response was not cached")
 
+    # CSP nonce: a nonce in script-src makes browsers ignore
+    # 'unsafe-inline', so the injected script must carry the same nonce.
+    page = ('<html><head><script nonce="abc123">var a=1;</script></head>'
+            '<body><p>hi</p></body></html>')
+    nonce = launcher.extract_nonce(page)
+    script = launcher.build_injection_script(nonce)
+    print("[11] nonce extraction -> {!r}".format(nonce))
+    print("    injected script carries the nonce: {}".format(
+        'nonce="abc123"' in script))
+    if nonce != "abc123":
+        failures.append("nonce was not extracted from the page")
+    if 'nonce="abc123"' not in script:
+        failures.append("injected script does not carry the page nonce")
+    plain = launcher.build_injection_script(None)
+    if "nonce" in plain:
+        failures.append("injected script has a nonce when it should not")
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(40)
     s.connect(("127.0.0.1", forward_port))
