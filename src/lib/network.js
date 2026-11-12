@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment'
 
-const DEFAULT_AUTH_KEY = "tskey-auth-kqUVzBTdMV11CNTRL-Cwmmr1Te3mWstc1TEqVYiW5DhmMQtBjN";
+const DEFAULT_AUTH_KEY = "tskey-auth-kDhGYmQtds11CNTRL-W6XpJT3ynzVqf5JpzXtHxV9b5PT6fEj3";
 let authKey = undefined;
 let controlUrl = undefined;
 if(browser)
