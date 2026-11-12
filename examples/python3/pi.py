@@ -20,7 +20,13 @@ import sys
 PI_IMPL_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/pi_impl.py"
 
 def start_proxy():
-    """Start the wrapper/adjuster proxy so port 28080 is listening."""
+    """Start the wrapper/adjuster proxy (fire-and-forget, non-blocking).
+
+    CheerpX's cooperative scheduler makes blocking waits extremely slow,
+    so we launch the proxy subprocess and return immediately.  The proxy
+    will come up in the background while pi_impl.py and the telnet shell
+    start.
+    """
     launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
     if not launcher.is_file():
         print("PROXY_LAUNCHER_MISSING path={}".format(launcher), flush=True)
@@ -29,7 +35,7 @@ def start_proxy():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     log_file = open("/tmp/web-adjuster.log", "ab", buffering=0)
-    process = subprocess.Popen(
+    subprocess.Popen(
         [sys.executable, str(launcher)],
         stdin=subprocess.DEVNULL,
         stdout=log_file,
@@ -39,19 +45,7 @@ def start_proxy():
         close_fds=True,
     )
     log_file.close()
-    for _ in range(60):
-        if process.poll() is not None:
-            print("PROXY_LAUNCHER_EXITED code={}".format(process.returncode), flush=True)
-            return
-        try:
-            import socket
-            s = socket.create_connection(("127.0.0.1", 28080), timeout=0.5)
-            s.close()
-            print("PROXY_READY port=28080 pid={}".format(process.pid), flush=True)
-            return
-        except OSError:
-            time.sleep(1)
-    print("PROXY_START_TIMEOUT pid={}".format(process.pid), flush=True)
+    print("PROXY_LAUNCHED (non-blocking)", flush=True)
 
 def load_pi_impl():
     last_error = None
