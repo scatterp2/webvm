@@ -45,6 +45,10 @@ def make_ca():
         .not_valid_after(now + datetime.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .add_extension(
             x509.KeyUsage(
                 digital_signature=True, key_encipherment=False,
                 content_commitment=False, data_encipherment=False,
@@ -77,6 +81,17 @@ def make_server(ca_key, ca_cert, suffix):
         .not_valid_after(now + datetime.timedelta(days=825))
         .add_extension(san, critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        # OpenSSL 3 refuses to build a chain without the authority key
+        # identifier, so both it and the subject key identifier are needed.
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                ca_key.public_key()),
+            critical=False,
+        )
         .add_extension(
             x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),
             critical=False,
