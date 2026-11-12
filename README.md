@@ -10,7 +10,7 @@
 | 2 — Telnet access to the VM | **DONE** | `plink.exe -raw -P 2323 <ip>` gives a root shell. |
 | 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
 | 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | `http://<ip>:28082/` shows the real Kaggle page in an iframe and the parent can read its DOM (`sameOrigin: true`). |
-| 4b — that iframe **inside the GitHub Pages WebVM page** | **IN PROGRESS** | The Service Worker proxy bridge is written and deployed. The one unconfirmed point is whether a Service Worker may fetch the VM's plain-`http` proxy — the `/webvm/httpsproxy/diag` route answers that in one command (see "Getting the iframe onto the GitHub Pages WebVM page"). If it may not, the fallback is an https origin for the proxy: the WebVM already serves one on `:28443`, and enabling **Tailscale Serve** on the tailnet gives a publicly trusted one with nothing to install. |
+| 4b — that iframe **inside the GitHub Pages WebVM page** | **ONE STEP LEFT** | The Service Worker proxy bridge is written, deployed and measured. A worker **cannot** fetch the VM's plain-`http://` proxy (mixed content rejects it in 0–1 ms), but it **can** fetch `https://`. So the proxy needs an https origin with a publicly trusted certificate: **enable Tailscale Serve on the tailnet (one click) and run `tailscale serve --bg http://127.0.0.1:28443`**. Nothing has to be installed on the laptop. |
 
 **The single most useful next command** (after a fresh browser reset, so
 the current Service Worker is loaded):
@@ -352,57 +352,64 @@ because the address changes on every boot.
 
 ### What is verified and what is not
 
+The diagnostic route (`/webvm/httpsproxy/diag?ip=…`) measures exactly what
+the worker can fetch. Its output settles the design:
+
+| Target from the worker | `cors` | `no-cors` | Meaning |
+|---|---|---|---|
+| `http://<vm>:28082/health` | fail in **1 ms** | fail in 1 ms | **mixed content** — rejected before any network activity |
+| `http://<vm>:28082/proxy/…` | fail in **0 ms** | fail in 0 ms | **mixed content**, same reason |
+| `http://example.com/` | fail in 0 ms | fail in 1 ms | **mixed content**, same reason |
+| `https://example.com/` | fail in 44 ms | **ok** (opaque, status 0) | the worker's **https** fetches work; `cors` fails only because that site sends no `Access-Control-Allow-Origin` |
+| `https://<vm>:28443/health` | fail in 488 ms | fail in 867 ms | the request **reached the VM**; it failed at TLS because the development certificate is not trusted |
+
+**Conclusions:**
+
+1. **Mixed content applies to worker-initiated fetches too.** A worker
+   cannot fetch the WebVM's plain-`http://` proxy — the request is
+   rejected in 0–1 ms, before the network is touched.
+2. **A worker can fetch `https://` fine.** The `example.com` `no-cors`
+   fetch succeeded.
+3. **The only missing piece is a certificate the browser trusts**, so that
+   the worker's `cors` fetch of the proxy succeeds (the proxy now sends
+   `Access-Control-Allow-Origin: *` and
+   `Cross-Origin-Resource-Policy: cross-origin` on **every** response, so
+   the CORS check itself is already satisfied).
+
 | Part | State |
 |---|---|
-| The bridge routes are served by the worker | **VERIFIED** — a request to `/webvm/httpsproxy?base=…` produced the worker's own `502 proxy bridge failed: …` response, so the worker really is handling the route |
-| A worker may fetch a plain `http://` URL | **NO — mixed content applies to worker-initiated fetches too.** The diagnostic (`/webvm/httpsproxy/diag?ip=…`) settles it: `http://<vm>:28082/health` was rejected in **1 ms**, i.e. before any network activity, exactly like a document-level mixed-content block |
-| A worker may fetch an `https://` URL | **YES, but only with CORS approval.** `https://example.com/` was attempted for 602 ms and then rejected, because the page is cross-origin isolated (`COEP: require-corp`) and that response carries no `Access-Control-Allow-Origin` |
-| The VM's own `https://` proxy on `:28443` | rejected the same way, because `/health` had no CORS headers — **now fixed** (see below) |
-| The bridge, end to end | **the fix is deployed; the re-verification is the next step** |
+| The bridge routes are served by the worker | **VERIFIED** — the worker answered with its own `502 proxy bridge failed: …`, so it really is handling the route |
+| The proxy's CORS/CORP headers | **VERIFIED** — `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin` are present on every response |
+| A trusted https origin for the proxy | **THE ONE REMAINING STEP** — see below |
 | The `srcdoc` injection and DOM access | **VERIFIED** in the VM's own proxy page (`sameOrigin: true`, `JS/DOM INJECTION CONFIRMED`) |
-| The `srcdoc` injection and DOM access **from the GitHub Pages page** | depends on the bridge fetch succeeding |
+| The `srcdoc` injection and DOM access **from the GitHub Pages page** | depends on the bridge fetch succeeding, i.e. on the trusted origin |
 
-#### The fix that follows from the diagnostic
+#### The one remaining step
 
-Because the page is cross-origin isolated, the worker's fetches have to be
-CORS requests against a CORS-approved server, and the responses it hands
-back have to be embeddable:
+Give the proxy an `https://` origin with a **publicly trusted**
+certificate, then the worker fetches it with `mode: "cors"`, the proxy's
+`Access-Control-Allow-Origin: *` makes the response readable, the page
+injects it with `srcdoc`, and the DOM stays reachable.
 
-- the proxy now sends `Access-Control-Allow-Origin: *` and
-  `Cross-Origin-Resource-Policy: cross-origin` on **every** response, not
-  only on proxied ones (previously `/health` and `/proxy-status` had
-  neither, so a CORS fetch of them was rejected);
-- the worker's bridge fetch uses `mode: "cors"` explicitly — the default
-  in a worker can fall back to a no-cors request, which a cross-origin
-  isolated context rejects for lack of a CORP header;
-- the responses the worker constructs carry `CORP`/`COEP` headers.
-
-**The `http://` leg is still blocked by mixed content**, so the bridge
-cannot fetch the VM's plain-http proxy. The remaining options are:
-
-1. **Let the browser fetch the VM's `https://` proxy** — the VM already
-   serves one on `:28443` with the development certificate, and the proxy
-   now sends CORS headers, so a `mode: "cors"` fetch from the worker
-   should succeed **if the browser trusts that certificate**.
-2. **Publish the proxy with a publicly trusted certificate** — enable
-   Tailscale Serve on the tailnet (one click) and
-   `tailscale serve --bg http://127.0.0.1:28443`; then the worker fetches
-   `https://<node>.tailf987e.ts.net/...`, which is a normal CORS request
-   to a trusted origin. **This is the clean route** — nothing has to be
-   installed on the laptop and the certificate is a real one.
-3. **Make the worker's fetch of the plain-http proxy possible** — not
-   possible while the page is cross-origin isolated and the target is
-   `http://`.
-
-The diagnostic route is the fastest way to check any of these:
+That is **Tailscale Serve**, and it is one click plus one command:
 
 ```
-fetch('/webvm/httpsproxy/diag?ip=' + '<tailscale-ip>').then(r => r.text()).then(console.log)
+# 1. enable Serve on the tailnet, using the link `tailscale serve` prints:
+#    https://login.tailscale.com/f/serve?node=nc9YBdxiPq11CNTRL
+# 2. publish the proxy (proxy_forward.py is already running on :28443 and
+#    re-resolves the WebVM automatically):
+tailscale serve --bg http://127.0.0.1:28443
 ```
 
-It reports, for each target, whether `cors` or `no-cors` worked, and how
-long it took (a rejection in ~1 ms means mixed content; a rejection after
-a network round trip means CORS/COEP).
+After that the worker can fetch
+`https://desktop-21m8c49.tailf987e.ts.net/proxy/<url>` — a normal CORS
+request to a trusted origin — and the whole chain works with **nothing
+installed on the laptop**.
+
+The development CA on the WebVM's own `:28443` listener is the
+alternative, but it needs the CA in the browser's trust store, and adding
+a root certificate on this machine is blocked by the protected-root
+confirmation prompt ("UI is not allowed in this operation").
 
 ### The other route: an https origin for the proxy
 
