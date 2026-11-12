@@ -1345,18 +1345,29 @@ LAUNCHER_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/
 
 WRAPPER_PORT_INPROC = 28082
 
+# Candidate ports for the forward proxy.  28081 is the documented port but
+# the stale disk-image launcher may still hold it, so 28083 is the fallback.
+FORWARD_PORT_CANDIDATES = (28081, 28083)
+
+# A plain, stable page used by the boot-time self test to prove that the
+# proxy really forwards traffic, strips framing headers and injects the
+# proof script.  example.com is used because it has no cookies, no CSP and
+# no redirects, so a failure points at the proxy rather than the target.
+PROXY_SELF_TEST_URL = "https://example.com/"
+
 
 def start_web_adjuster_sidecar():
-    """Fetch launcher.py from GitHub and run the HTTP server as a daemon
-    thread in this process on port 28082.
+    """Fetch launcher.py from GitHub and run the HTTP proxy as daemon threads
+    in this process: wrapper on 28082, forward proxy on 28081.
 
     CheerpX's cooperative scheduler starves separate subprocesses, so the
     disk-image launcher (a subprocess on port 28080) never accepts
     connections.  Running the server as a thread in the main process works
     — proven by the telnet shell on port 2323.
 
-    We use port 28082 to avoid fighting with the stale disk-image launcher
-    that holds port 28080 and is slow to die in CheerpX.
+    launcher.py is now a pure-Python proxy built on raw sockets.  It no
+    longer installs the `adjuster` pip package and no longer spawns a
+    helper process, so there is nothing for CheerpX to starve.
     """
     import threading as _threading
     from urllib.request import Request, urlopen
@@ -1389,7 +1400,16 @@ def start_web_adjuster_sidecar():
     Handler = launcher_ns["Handler"]
     BIND = launcher_ns["BIND"]
 
-    # Bind on port 28082 to avoid conflict with stale disk-image launcher on 28080
+    def _serve(server, label):
+        try:
+            server.serve_forever()
+        except Exception as exc:
+            print("{}_SERVE_ERROR error={}: {}".format(
+                label, type(exc).__name__, str(exc)[:200]), flush=True)
+
+    # Wrapper on 28082.  The disk image still ships an old launcher.py that
+    # pi.py launches as a subprocess on 28080/28081; those ports are not
+    # ours to reuse, so the in-process proxy takes fresh ports.
     try:
         server = WrapperServer((BIND, WRAPPER_PORT_INPROC), Handler)
     except OSError as exc:
@@ -1397,17 +1417,25 @@ def start_web_adjuster_sidecar():
             WRAPPER_PORT_INPROC, type(exc).__name__, exc), flush=True)
         return
 
-    def _serve():
-        try:
-            server.serve_forever()
-        except Exception as exc:
-            print("WRAPPER_SERVE_ERROR error={}: {}".format(
-                type(exc).__name__, str(exc)[:200]), flush=True)
-
-    thread = _threading.Thread(target=_serve, daemon=True, name="wrapper-http")
-    thread.start()
+    _threading.Thread(target=_serve, args=(server, "WRAPPER"),
+                      daemon=True, name="wrapper-http").start()
     print("WRAPPER_STARTED_IN_THREAD port={} (CheerpX-compatible)".format(
         WRAPPER_PORT_INPROC), flush=True)
+
+    # Forward proxy (pure Python, same process).  Try the documented port
+    # first, then fall back to a free one if the stale launcher still holds it.
+    for forward_port in FORWARD_PORT_CANDIDATES:
+        try:
+            forward = WrapperServer((BIND, forward_port), Handler, mode="forward")
+        except OSError as exc:
+            print("FORWARD_BIND_FAILED port={} error={}: {}".format(
+                forward_port, type(exc).__name__, exc), flush=True)
+            continue
+        _threading.Thread(target=_serve, args=(forward, "FORWARD"),
+                          daemon=True, name="forward-http").start()
+        print("FORWARD_PROXY_STARTED port={} (pure-python)".format(
+            forward_port), flush=True)
+        break
 
 
 def _run_endpoint_tests():
@@ -1460,18 +1488,21 @@ def _run_endpoint_tests():
             print("{} url={} NETWORK_ERROR error={}: {}".format(
                 tag, url, type(e).__name__, e), flush=True)
 
-    proxy_url = base + "/proxy/"
+    from urllib.parse import quote
+    proxy_url = base + "/proxy/" + quote(PROXY_SELF_TEST_URL, safe="")
     tag = "PROXY_TEST"
     try:
         req = Request(proxy_url, headers={"User-Agent": "webvm-selftest/1.0"})
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=60) as resp:
             status = resp.status
             headers = dict(resp.headers)
-            body = resp.read(4000).decode("utf-8", errors="replace")
+            body = resp.read(8000).decode("utf-8", errors="replace")
             has_xfo = "x-frame-options" in str(headers).lower()
-            print("{} url={} status={} body_len={} has_x_frame_options={} content_type={}".format(
-                tag, proxy_url, status, len(body), has_xfo,
-                headers.get("Content-Type", "?")), flush=True)
+            has_marker = "WEBVM_ADJUSTER_INJECTED" in body
+            print("{} url={} status={} body_len={} has_x_frame_options={} "
+                  "has_injection_marker={} content_type={}".format(
+                      tag, proxy_url, status, len(body), has_xfo, has_marker,
+                      headers.get("Content-Type", "?")), flush=True)
             print("{} RESPONSE_HEADERS: {}".format(tag, json.dumps(
                 {k: v for k, v in headers.items()
                  if k.lower() in ("content-type", "x-frame-options",
@@ -1479,6 +1510,11 @@ def _run_endpoint_tests():
                                    "set-cookie", "server")},
                 indent=None)), flush=True)
             print("{} BODY_PREVIEW: {}".format(tag, body[:800]), flush=True)
+            if status == 200 and has_marker:
+                print("PROXY_SELF_TEST_PASS", flush=True)
+            else:
+                print("PROXY_SELF_TEST_FAIL reason=missing_marker_or_bad_status",
+                      flush=True)
     except HTTPError as e:
         body = ""
         try:
@@ -1531,7 +1567,8 @@ def main():
 
     print("WEB_ADJUSTER_ONLY_MODE — Kaggle code disabled for proxy testing", flush=True)
     print("Wrapper: http://0.0.0.0:{}/".format(WRAPPER_PORT_INPROC), flush=True)
-    print("Adjuster: http://0.0.0.0:28081/", flush=True)
+    print("Forward proxy: http://0.0.0.0:{}/ (pure-python, no adjuster package)".format(
+        FORWARD_PORT_CANDIDATES[0]), flush=True)
     print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
     # --- Auto-test endpoints ---

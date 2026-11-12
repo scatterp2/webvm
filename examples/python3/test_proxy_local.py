@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Local test for the in-process WebVM proxy.
+
+Starts launcher.py on high local ports, exercises the control endpoints and
+proxied fetches, and checks that framing headers are stripped and the proof
+script is injected.
+"""
+import json
+import socket
+import sys
+import threading
+import time
+from urllib.parse import quote
+
+sys.path.insert(0, "web_adjuster")
+
+import launcher  # noqa: E402
+
+
+def raw_get(port, path, host_header=None, timeout=40.0):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(("127.0.0.1", port))
+    except OSError as exc:
+        return None, None, "connect: {}".format(exc).encode()
+    try:
+        s.sendall(
+            "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n".format(
+                path, host_header or "127.0.0.1:{}".format(port)
+            ).encode()
+        )
+        data = b""
+        while True:
+            try:
+                chunk = s.recv(16384)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            data += chunk
+        if not data:
+            return None, None, b"empty"
+        head, _, body = data.partition(b"\r\n\r\n")
+        lines = head.decode("utf-8", "replace").split("\r\n")
+        headers = {}
+        for line in lines[1:]:
+            if ":" in line:
+                k, _, v = line.partition(":")
+                headers[k.strip().lower()] = v.strip()
+        return lines[0], headers, body
+    finally:
+        s.close()
+
+
+def main():
+    wrapper_port = 38082
+    forward_port = 38081
+    servers = [
+        launcher.start_wrapper(wrapper_port, "wrapper"),
+        launcher.start_wrapper(forward_port, "forward"),
+    ]
+    time.sleep(1.0)
+
+    failures = []
+
+    status, headers, body = raw_get(wrapper_port, "/health")
+    print("[1] /health -> {} {!r}".format(status, body[:40]))
+    if status is None or "200" not in status or b"ok" not in body:
+        failures.append("/health did not answer 200 ok")
+
+    status, headers, body = raw_get(wrapper_port, "/proxy-status")
+    print("[2] /proxy-status -> {} {}".format(status, body[:120].decode("utf-8", "replace")))
+    if status is None or b"state" not in body:
+        failures.append("/proxy-status did not return JSON")
+
+    status, headers, body = raw_get(wrapper_port, "/")
+    print("[3] / -> {} bytes={} has_iframe={}".format(
+        status, len(body), b"<iframe" in body))
+    if status is None or b"<iframe" not in body:
+        failures.append("/ did not render the iframe page")
+
+    # Proxy a real site.
+    target = "https://example.com/"
+    path = "/proxy/" + quote(target, safe="")
+    status, headers, body = raw_get(wrapper_port, path)
+    text = body.decode("utf-8", "replace")
+    print("[4] GET {} -> {}".format(path, status))
+    print("    content-type   : {}".format(headers.get("content-type")))
+    print("    x-frame-options: {}".format(headers.get("x-frame-options")))
+    print("    body bytes     : {}".format(len(body)))
+    print("    title          : {}".format(
+        text.split("<title>")[1].split("</title>")[0] if "<title>" in text else "n/a"))
+    print("    marker present : {}".format("WEBVM_ADJUSTER_INJECTED" in text))
+    print("    attr present   : {}".format("data-webvm-adjuster-injected" in text))
+    if status is None or "200" not in status:
+        failures.append("proxied fetch of example.com failed")
+    if "WEBVM_ADJUSTER_INJECTED" not in text:
+        failures.append("injection marker missing from proxied body")
+    if "x-frame-options" in headers:
+        failures.append("x-frame-options was not stripped")
+
+    # Forward proxy mode: absolute-URI request line.
+    status, headers, body = raw_get(forward_port, "/")
+    print("[5] forward proxy / (relative target) -> {}".format(status))
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(40)
+    s.connect(("127.0.0.1", forward_port))
+    s.sendall(
+        "GET http://example.com/ HTTP/1.0\r\nHost: example.com\r\n"
+        "Connection: close\r\n\r\n".encode()
+    )
+    data = b""
+    while True:
+        try:
+            chunk = s.recv(16384)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    head = data.split(b"\r\n\r\n", 1)
+    print("[6] forward proxy absolute-URI -> {}".format(
+        head[0].split(b"\r\n")[0].decode("utf-8", "replace")))
+    if b"WEBVM_ADJUSTER_INJECTED" not in data:
+        failures.append("forward proxy did not inject the marker")
+
+    for server in servers:
+        server.shutdown()
+
+    print()
+    if failures:
+        print("FAILURES:")
+        for item in failures:
+            print("  - {}".format(item))
+        return 1
+    print("ALL LOCAL PROXY TESTS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

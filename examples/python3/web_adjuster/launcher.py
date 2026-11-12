@@ -1,144 +1,68 @@
 #!/usr/bin/env python3
-"""Start an isolated Web Adjuster proxy iframe smoke test.
+"""In-process HTTP proxy for WebVM / CheerpX.
 
-Ports:
-  28080: small wrapper page with an iframe
-  28081: Web Adjuster, generic proxy
+Two listeners, both served by plain sockets + threads:
 
-This is intentionally separate from the Kaggle RX/TX controller and does not
-read or modify any configuration or credential files.
+  :28080  wrapper page (HTML with an iframe) + control endpoints
+  :28081  forward proxy (absolute-URI requests)
 
-The wrapper binds immediately and answers /health before the adjuster exists.
-The adjuster is installed and started lazily, on the first page request, so a
-slow or failed package install can never stop the wrapper from listening.
+Why this is hand-rolled instead of using http.server / socketserver:
 
-The public host is taken from the request's Host header: the WebVM has no
-usable OS tools (ip, ps, hostname -I, /proc/net/*) to discover it, and the
-Tailscale address is not known until the node is online.
+  * CheerpX misbehaves with socketserver's BaseHTTPRequestHandler.  The
+    response header write failed with
+    ``OSError: [Errno 107] Transport endpoint is not connected`` and the
+    client never received a reply.  ``telnet_shell.py`` already proved that
+    raw sockets plus a plain accept loop work reliably inside WebVM, so the
+    proxy uses the same shape.
+
+  * The previous design shelled out to the ``adjuster`` pip package and ran
+    it as a subprocess on :28081.  CheerpX starves long-lived subprocesses,
+    so that port never accepted a connection, and installing the package at
+    boot was fragile.  The proxy below is pure Python and runs inside the
+    WebVM process, so there is nothing to install and nothing to starve.
+
+The proxy is generic: it forwards any absolute http/https URL.
+
+Endpoints on the wrapper port:
+    GET /health          -> "ok"
+    GET /proxy-status    -> JSON state
+    GET /                -> HTML page containing the proxy iframe
+    GET /proxy/<url>     -> fetch <url> through the proxy
+    GET /?target=<url>   -> iframe the given target (default: Kaggle)
+
+Header handling on proxied responses:
+    * ``x-frame-options`` is removed so the page can be framed
+    * ``frame-ancestors`` is removed from ``content-security-policy``
+    * ``Set-Cookie`` loses ``Domain``/``Secure`` so cookies stick to the
+      proxy origin
+    * absolute URLs in HTML bodies are rewritten to go back through the proxy
 """
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
+import re
+import socket
+import ssl
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 BIND = "0.0.0.0"
 WRAPPER_PORT = 28080
 ADJUSTER_PORT = 28081
-VENV = Path("/opt/web-adjuster-venv")
-LOG_PATH = Path("/tmp/web-adjuster.log")
 
-STATE_LOCK = threading.Lock()
-_start_lock = threading.Lock()
-_adjuster_process = None
-_adjuster_host = None
-_adjuster_state = "idle"
-_adjuster_error = ""
-_adjuster_thread = None
+# The wrapper is served on this port by pi_impl.py when it runs the server
+# as an in-process thread (CheerpX cannot keep a subprocess server alive).
+WRAPPER_PORT_INPROC = 28082
 
+DEFAULT_TARGET = "https://www.kaggle.com/"
 
-def log(message: str) -> None:
-    print("[WEB_ADJUSTER] " + message, flush=True)
+MAX_BODY = 12 * 1024 * 1024
+MAX_HEADER_LINES = 200
 
-
-def set_state(state: str, error: str = "") -> None:
-    global _adjuster_state, _adjuster_error
-    with STATE_LOCK:
-        _adjuster_state = state
-        _adjuster_error = error
-
-
-def _has_pip(python: Path) -> bool:
-    try:
-        return subprocess.run(
-            [str(python), "-m", "pip", "--version"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=60,
-        ).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def ensure_adjuster() -> Path:
-    executable = VENV / "bin" / "adjuster"
-    if executable.exists():
-        return executable
-
-    found = shutil.which("adjuster")
-    if found:
-        log("INSTALL_STEP already_on_path path={}".format(found))
-        return Path(found)
-
-    # Debian's Python ships without ensurepip, so a plain `venv` cannot
-    # bootstrap pip. Create the environment without pip; --system-site-packages
-    # lets it see packages installed for the system interpreter.
-    if not (VENV / "bin" / "python").exists():
-        log("INSTALL_STEP create_venv")
-        subprocess.run(
-            [
-                sys.executable, "-m", "venv",
-                "--without-pip", "--system-site-packages",
-                str(VENV),
-            ],
-            check=True,
-        )
-
-    venv_python = VENV / "bin" / "python"
-    attempts = []
-    if _has_pip(venv_python):
-        attempts.append([
-            str(venv_python), "-m", "pip", "install",
-            "--disable-pip-version-check", "adjuster",
-        ])
-        attempts.append([
-            str(venv_python), "-m", "pip", "install",
-            "--disable-pip-version-check", "--break-system-packages", "adjuster",
-        ])
-    system_pip = shutil.which("pip3") or shutil.which("pip")
-    if system_pip:
-        attempts.append([
-            system_pip, "install",
-            "--disable-pip-version-check", "--break-system-packages", "adjuster",
-        ])
-
-    if not attempts:
-        raise RuntimeError("No usable pip was found to install adjuster")
-
-    installed = False
-    for command in attempts:
-        log("INSTALL_STEP try " + " ".join(command))
-        try:
-            result = subprocess.run(command, check=False, timeout=600)
-        except subprocess.TimeoutExpired:
-            log("INSTALL_STEP timeout")
-            continue
-        if result.returncode == 0:
-            installed = True
-            break
-        log("INSTALL_STEP failed exit_code={}".format(result.returncode))
-
-    if not installed:
-        raise RuntimeError("pip install adjuster failed for every attempt")
-
-    if executable.exists():
-        log("INSTALL_STEP complete path={}".format(executable))
-        return executable
-    found = shutil.which("adjuster")
-    if found:
-        log("INSTALL_STEP complete path={}".format(found))
-        return Path(found)
-    raise RuntimeError("adjuster installed but no console script was created")
-
-
-# Appended to the end of every HTML BODY the adjuster serves. It proves that
-# the proxy rewrites and injects JavaScript that then executes in the browser.
+# Appended to every HTML body the proxy serves.  It proves that the proxy
+# rewrites and injects JavaScript that then executes in the browser.
 # The text is deliberately free of spaces so that it survives command-line
 # argument handling on every platform.
 INJECTION_SCRIPT = (
@@ -157,111 +81,414 @@ INJECTION_SCRIPT = (
     "</script>"
 )
 
+HOP_BY_HOP = frozenset((
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
+))
 
-def start_adjuster(host: str) -> None:
-    """Install (if needed) and start the adjuster bound to the request host."""
-    global _adjuster_process, _adjuster_host
+FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
 
+STATE_LOCK = threading.Lock()
+_state = {
+    "state": "ready",
+    "error": "",
+    "host": "",
+    "mode": "in-process",
+    "requests": 0,
+    "upstream_errors": 0,
+}
+
+
+def log(message: str) -> None:
+    print("[WEB_ADJUSTER] " + message, flush=True)
+
+
+def set_state(**kwargs) -> None:
     with STATE_LOCK:
-        existing = _adjuster_process
-        if existing is not None and existing.poll() is None:
-            if _adjuster_host == host:
-                return
-            # The public address changed: replace the running instance.
-            log("ADJUSTER_HOST_CHANGED old={} new={}".format(_adjuster_host, host))
-            try:
-                existing.terminate()
-                existing.wait(timeout=5)
-            except Exception:
-                try:
-                    existing.kill()
-                except Exception:
-                    pass
-            _adjuster_process = None
-        _adjuster_host = host
+        _state.update(kwargs)
 
-    set_state("installing")
-    try:
-        executable = ensure_adjuster()
-    except Exception as exc:
-        set_state("failed", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
-        log("ADJUSTER_INSTALL_FAILED error={}".format(_adjuster_error))
-        return
 
-    set_state("starting")
-    command = [
-        str(executable),
-        "--address=" + BIND,
-        "--port=" + str(ADJUSTER_PORT),
-        "--host-suffix=" + host,
-        "--default-site=www.kaggle.com",
-        "--wildcard-dns=False",
-        "--open-proxy",
-        "--real-proxy",
-        "--bodyAppend=" + INJECTION_SCRIPT,
-    ]
-    log("STARTING_PROXY port={} host={}".format(ADJUSTER_PORT, host))
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
+def bump(key: str) -> None:
+    with STATE_LOCK:
+        _state[key] = int(_state.get(key, 0)) + 1
+
+
+# --------------------------------------------------------------------------
+# URL helpers
+# --------------------------------------------------------------------------
+
+def proxy_path(url: str) -> str:
+    """Encode an absolute URL so it can travel as a single path segment."""
+    return "/proxy/" + quote(url, safe="")
+
+
+def target_from_path(path: str):
+    """Decode /proxy/<encoded-url> back into an absolute URL."""
+    raw = path[len("/proxy"):]
+    raw = raw.lstrip("/")
+    if not raw:
+        return None
+    return unquote(raw)
+
+
+def absolutize(url: str, base: str) -> str:
+    """Resolve a possibly relative URL against the page it was found in."""
+    if not url:
+        return url
+    if url.startswith("//"):
+        return "https:" + url
+    return urljoin(base, url)
+
+
+# --------------------------------------------------------------------------
+# HTML rewriting
+# --------------------------------------------------------------------------
+
+_ABS_URL_RE = re.compile(
+    r"""(?P<pre>[\s'"(=])(?P<url>(?:https?:)?//[^\s'"<>()]+)""", re.IGNORECASE
+)
+_CSS_URL_RE = re.compile(
+    r"""url\(\s*(?P<q>['"]?)(?P<url>(?:https?:)?//[^)'"\s]+)(?P=q)\s*\)""",
+    re.IGNORECASE,
+)
+_SRCSET_RE = re.compile(r"""(?P<pre>\bsrcset\s*=\s*)(?P<q>["'])(?P<val>[^"']*)(?P=q)""",
+                         re.IGNORECASE)
+
+
+def _rewrite_srcset(value: str, base: str) -> str:
+    parts = []
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        bits = chunk.split(None, 1)
+        bits[0] = _rewrite_url(bits[0], base)
+        parts.append(" ".join(bits))
+    return ", ".join(parts)
+
+
+def _rewrite_url(url: str, base: str) -> str:
+    """Point an absolute URL back through this proxy."""
+    absolute = absolutize(url, base)
+    parts = urlsplit(absolute)
+    if parts.scheme not in ("http", "https"):
+        return url
+    return proxy_path(absolute)
+
+
+def rewrite_html(text: str, base: str) -> str:
+    """Route every absolute URL in the document back through the proxy."""
+
+    def _abs(match):
+        return match.group("pre") + _rewrite_url(match.group("url"), base)
+
+    def _css(match):
+        return "url({q}{u}{q})".format(
+            q=match.group("q"), u=_rewrite_url(match.group("url"), base)
         )
-    except Exception as exc:
-        set_state("failed", "{}: {}".format(type(exc).__name__, str(exc)[:300]))
-        log("ADJUSTER_START_FAILED error={}".format(_adjuster_error))
-        return
-    with STATE_LOCK:
-        _adjuster_process = process
 
-    # Wait briefly for the listening socket to appear.
-    for _ in range(40):
-        if process.poll() is not None:
-            set_state(
-                "failed",
-                "adjuster exited with code {}".format(process.returncode),
-            )
-            log("ADJUSTER_EXITED code={}".format(process.returncode))
-            return
-        if proxy_reachable():
-            set_state("ready")
-            log("PROXY_READY url=http://{}:{}/".format(host, ADJUSTER_PORT))
-            return
-        time.sleep(0.5)
+    def _srcset(match):
+        return "{p}{q}{v}{q}".format(
+            p=match.group("pre"),
+            q=match.group("q"),
+            v=_rewrite_srcset(match.group("val"), base),
+        )
 
-    set_state("starting", "adjuster did not report a listening socket in time")
-    log("ADJUSTER_START_TIMEOUT")
+    text = _ABS_URL_RE.sub(_abs, text)
+    text = _CSS_URL_RE.sub(_css, text)
+    text = _SRCSET_RE.sub(_srcset, text)
+    return text
 
 
-def proxy_reachable() -> bool:
-    import socket
+def strip_frame_ancestors(csp: str) -> str:
+    """Remove only the frame-ancestors directive from a CSP header."""
+    kept = []
+    for directive in csp.split(";"):
+        if directive.strip().lower().startswith("frame-ancestors"):
+            continue
+        if directive.strip():
+            kept.append(directive.strip())
+    return "; ".join(kept)
+
+
+def relax_csp_for_injection(csp: str) -> str:
+    """Make the CSP permissive enough for the injected proof script to run.
+
+    * ``sandbox`` would block scripting entirely, so it is dropped.
+    * ``script-src`` gains ``'unsafe-inline'`` so the injected inline
+      ``<script>`` executes and can touch the DOM.
+    * every other directive is left alone.
+    """
+    directives = []
+    for directive in csp.split(";"):
+        directive = directive.strip()
+        if not directive:
+            continue
+        name = directive.split(None, 1)[0].lower()
+        if name == "sandbox":
+            continue
+        if name == "script-src" and "'unsafe-inline'" not in directive.lower():
+            directive = directive + " 'unsafe-inline'"
+        directives.append(directive)
+    return "; ".join(directives)
+
+
+def sanitize_set_cookie(value: str) -> str:
+    """Make a cookie belong to the proxy origin instead of the upstream host."""
+    pieces = []
+    for part in value.split(";"):
+        name = part.split("=", 1)[0].strip().lower()
+        if name in ("domain", "secure", "samesite", "partitioned"):
+            continue
+        pieces.append(part.strip())
+    return "; ".join(pieces)
+
+
+# --------------------------------------------------------------------------
+# Upstream fetching
+# --------------------------------------------------------------------------
+
+def _ssl_context():
+    ctx = ssl.create_default_context()
+    # The proxy terminates the client's TLS leg upstream, so the upstream
+    # certificate is not the client's business.
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def upstream_fetch(url, method="GET", headers=None, body=None, timeout=45):
+    """Fetch an absolute http/https URL.  Returns (status, headers, body)."""
+    import http.client
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("unsupported scheme: {}".format(parts.scheme))
+    host = parts.hostname
+    if not host:
+        raise ValueError("no host in {}".format(url))
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+
+    outgoing = {}
+    for name, value in (headers or {}).items():
+        if name.lower() in HOP_BY_HOP:
+            continue
+        if name.lower() in ("host", "content-length", "connection"):
+            continue
+        outgoing[name] = value
+    outgoing.setdefault("Accept-Encoding", "identity")
+    outgoing.setdefault("User-Agent",
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+    if parts.scheme == "https":
+        conn = http.client.HTTPSConnection(
+            host, port, timeout=timeout, context=_ssl_context()
+        )
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
 
     try:
-        with socket.create_connection(("127.0.0.1", ADJUSTER_PORT), timeout=1):
-            return True
-    except OSError:
+        conn.request(method, path, body=body, headers=outgoing)
+        resp = conn.getresponse()
+        data = resp.read(MAX_BODY)
+        return resp.status, resp.getheaders(), data
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def transform_response(status, headers, body, request_url):
+    """Strip framing blockers, rewrite URLs and inject the proof script."""
+    content_type = ""
+    for name, value in headers:
+        if name.lower() == "content-type":
+            content_type = value.lower()
+            break
+
+    is_html = "text/html" in content_type or (
+        not content_type and body[:200].lstrip()[:1] == b"<")
+
+    out_headers = []
+    for name, value in headers:
+        lower = name.lower()
+        if lower in HOP_BY_HOP:
+            continue
+        if lower in FRAME_BLOCKED_HEADERS:
+            continue
+        if lower == "content-length":
+            continue
+        if lower == "set-cookie":
+            value = sanitize_set_cookie(value)
+        elif lower == "content-security-policy":
+            value = relax_csp_for_injection(strip_frame_ancestors(value))
+            if not value:
+                continue
+        elif lower == "location":
+            try:
+                value = proxy_path(absolutize(value, request_url))
+            except Exception:
+                pass
+        out_headers.append((name, value))
+
+    if is_html and body:
+        try:
+            text = body.decode("utf-8", "replace")
+        except Exception:
+            text = None
+        if text is not None:
+            text = rewrite_html(text, request_url)
+            # Inject just before </body> so the marker element exists.
+            lowered = text.lower()
+            index = lowered.rfind("</body>")
+            if index == -1:
+                text = text + INJECTION_SCRIPT
+            else:
+                text = text[:index] + INJECTION_SCRIPT + text[index:]
+            body = text.encode("utf-8")
+
+    return status, out_headers, body
+
+
+# --------------------------------------------------------------------------
+# Minimal HTTP parsing / writing over raw sockets
+# --------------------------------------------------------------------------
+
+class HttpError(Exception):
+    pass
+
+
+def recv_until(sock, terminator, limit=65536):
+    data = b""
+    while terminator not in data:
+        if len(data) > limit:
+            raise HttpError("header section too large")
+        try:
+            chunk = sock.recv(4096)
+        except OSError as exc:
+            raise HttpError("recv failed: {}".format(exc))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def recv_exactly(sock, count):
+    data = b""
+    while len(data) < count:
+        try:
+            chunk = sock.recv(min(65536, count - len(data)))
+        except OSError as exc:
+            raise HttpError("recv failed: {}".format(exc))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+class Request(object):
+    def __init__(self, method, target, version, headers, body):
+        self.method = method
+        self.target = target
+        self.version = version
+        self.headers = headers
+        self.body = body
+
+    def header(self, name, default=None):
+        for key, value in self.headers:
+            if key.lower() == name.lower():
+                return value
+        return default
+
+
+def parse_request(sock):
+    raw = recv_until(sock, b"\r\n\r\n")
+    if not raw:
+        raise HttpError("empty request")
+    head, _, rest = raw.partition(b"\r\n\r\n")
+    try:
+        lines = head.decode("iso-8859-1").split("\r\n")
+    except Exception as exc:
+        raise HttpError("undecodable request: {}".format(exc))
+    if not lines or not lines[0].strip():
+        raise HttpError("no request line")
+    bits = lines[0].split()
+    if len(bits) < 2:
+        raise HttpError("bad request line: {}".format(lines[0]))
+    method = bits[0].upper()
+    target = bits[1]
+    version = bits[2] if len(bits) > 2 else "HTTP/1.0"
+
+    headers = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        if ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        headers.append((name.strip(), value.strip()))
+        if len(headers) > MAX_HEADER_LINES:
+            raise HttpError("too many headers")
+
+    body = b""
+    length_header = None
+    for name, value in headers:
+        if name.lower() == "content-length":
+            length_header = value
+    if length_header:
+        try:
+            length = int(length_header)
+        except ValueError:
+            length = 0
+        if length > 0:
+            body = recv_exactly(sock, min(length, MAX_BODY))
+    return Request(method, target, version, headers, body)
+
+
+STATUS_TEXT = {
+    200: "OK", 204: "No Content", 206: "Partial Content",
+    301: "Moved Permanently", 302: "Found", 303: "See Other",
+    304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
+    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
+    404: "Not Found", 405: "Method Not Allowed", 407: "Proxy Authentication Required",
+    408: "Request Timeout", 429: "Too Many Requests",
+    500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable",
+    504: "Gateway Timeout",
+}
+
+
+def send_response(sock, status, headers, body, close=True):
+    """Write a complete HTTP response.  Never raises on a dead client."""
+    reason = STATUS_TEXT.get(status, "OK")
+    head = ["HTTP/1.1 {} {}".format(status, reason)]
+    has_length = False
+    for name, value in headers:
+        if name.lower() == "content-length":
+            has_length = True
+        head.append("{}: {}".format(name, value))
+    if not has_length:
+        head.append("Content-Length: {}".format(len(body)))
+    head.append("Cache-Control: no-store")
+    if close:
+        head.append("Connection: close")
+    payload = ("\r\n".join(head) + "\r\n\r\n").encode("iso-8859-1")
+    payload += body or b""
+    try:
+        sock.sendall(payload)
+        return True
+    except OSError as exc:
+        log("SEND_FAILED error={}: {}".format(type(exc).__name__, exc))
         return False
 
 
-def ensure_adjuster_started(host: str) -> None:
-    """Kick off the lazy adjuster start once per host, without blocking."""
-    global _adjuster_thread
-    # A separate lock serialises starts; STATE_LOCK is not held while the
-    # install runs, so it cannot be used for that purpose.
-    with _start_lock:
-        thread = _adjuster_thread
-        if thread is not None and thread.is_alive():
-            return
-        with STATE_LOCK:
-            if _adjuster_state == "ready":
-                return
-        thread = threading.Thread(target=start_adjuster, args=(host,), daemon=True)
-        _adjuster_thread = thread
-        thread.start()
-
+# --------------------------------------------------------------------------
+# Handler
+# --------------------------------------------------------------------------
 
 PAGE_TEMPLATE = """<!doctype html>
 <html lang="en">
@@ -270,83 +497,58 @@ PAGE_TEMPLATE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Web Adjuster / Proxy iframe test</title>
 <style>
-body{font:16px system-ui,sans-serif;margin:0;background:#111827;color:#f9fafb}
-header{padding:12px 16px;background:#1f2937}
-p{margin:6px 0}
-a{color:#93c5fd}
-#status{font-size:13px;color:#d1d5db}
-iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:white}
+ body{font:16px system-ui,sans-serif;margin:0;background:#111827;color:#f9fafb}
+ header{padding:12px 16px;background:#1f2937}
+ p{margin:6px 0}
+ a{color:#93c5fd}
+ #status{font-size:13px;color:#d1d5db}
+ iframe{display:block;width:100%;height:calc(100vh - 150px);border:0;background:white}
 </style>
 </head>
 <body>
 <header>
 <strong>Web Adjuster &rarr; Proxy iframe test</strong>
-<p>Direct proxy: <a id="adjuster-link" href="#" target="_blank" rel="noopener">open Web Adjuster (port __ADJUSTER_PORT__)</a>
- | Same-origin proxy: <a id="wrapper-proxy-link" href="/proxy/" target="_blank" rel="noopener">/proxy/</a></p>
-<p id="status">Waiting for the adjuster to come up...</p>
+<p>Target: <span id="target-label"></span></p>
+<p>Proxy: <a id="proxy-link" href="#" target="_blank" rel="noopener">open forward proxy (port __ADJUSTER_PORT__)</a></p>
+<p id="status">Loading the proxied page...</p>
 </header>
-<iframe id="proxy-frame" title="Kaggle through Web Adjuster (same-origin proxy)"></iframe>
+<iframe id="proxy-frame" title="Proxy through Web Adjuster" src="__IFRAME_SRC__"></iframe>
 <script>
 (function() {
   var status = document.getElementById('status');
   var frame = document.getElementById('proxy-frame');
-  var host = window.location.hostname;
-  var directUrl = 'http://' + host + ':' + __ADJUSTER_PORT__ + '/';
-  var proxyUrl = '/proxy/';
-  document.getElementById('adjuster-link').href = directUrl;
-  document.getElementById('wrapper-proxy-link').href = proxyUrl;
+  var link = document.getElementById('proxy-link');
+  document.getElementById('target-label').textContent = __TARGET_JSON__;
+  link.href = 'http://' + window.location.hostname + ':' + __ADJUSTER_PORT__ + '/';
 
   var loaded = false;
   frame.addEventListener('load', function() {
     loaded = true;
     status.textContent = 'Iframe load event fired at ' + new Date().toISOString()
-      + ' - checking for injected marker...';
-    window.setTimeout(checkInjection, 500);
+      + ' - this alone does not prove the page rendered correctly.';
+    checkInjection();
   });
   frame.addEventListener('error', function() {
     status.textContent = 'Iframe error event fired at ' + new Date().toISOString();
   });
 
-  function poll() {
-    fetch('/proxy-status?t=' + Date.now(), {cache: 'no-store'})
-      .then(function(r) { return r.json(); })
-      .then(function(s) {
-        if (s.state === 'ready') {
-          if (!loaded) { frame.src = proxyUrl; }
-          status.textContent = 'Proxy ready - loading Kaggle through same-origin /proxy/ endpoint...';
-          return;
-        }
-        status.textContent = 'Adjuster state: ' + s.state
-          + (s.error ? ' (' + s.error + ')' : '') + ' - retrying...';
-        window.setTimeout(poll, 1500);
-      })
-      .catch(function(e) {
-        status.textContent = 'Status poll failed: ' + e;
-        window.setTimeout(poll, 1500);
-      });
-  }
-
   function checkInjection() {
     try {
       var doc = frame.contentDocument;
-      if (!doc) {
-        status.textContent += ' (contentDocument is null - cross-origin or about:blank)';
-        return;
-      }
+      if (!doc) { return; }
       var el = doc.getElementById('webvm-adjuster-injection-proof');
       var attr = doc.documentElement.getAttribute('data-webvm-adjuster-injected');
       if (el || attr === 'true') {
-        status.textContent = 'JS/DOM INJECTION CONFIRMED: marker=' + (!!el)
-          + ', attr=' + attr + ', text=' + (el ? el.textContent : 'n/a');
-      } else {
-        status.textContent += ' (no injection marker found yet - page may still be loading)';
+        status.textContent = 'JS/DOM INJECTION CONFIRMED: marker element present = '
+          + (!!el) + ', documentElement attribute = ' + attr
+          + ', marker text = ' + (el ? el.textContent : 'n/a');
       }
     } catch (e) {
-      status.textContent = 'Injection check error: ' + e;
+      status.textContent = 'Injection check blocked by same-origin policy: ' + e;
     }
   }
 
-  poll();
+  window.setTimeout(checkInjection, 3000);
 })();
 </script>
 </body>
@@ -354,175 +556,213 @@ iframe{display:block;width:100%;height:calc(100vh - 140px);border:0;background:w
 """
 
 
-def render_page() -> str:
-    return PAGE_TEMPLATE.replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
+def render_page(target):
+    return (PAGE_TEMPLATE
+            .replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
+            .replace("__IFRAME_SRC__", proxy_path(target))
+            .replace("__TARGET_JSON__", json.dumps(target)))
 
 
-FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
+class Handler(object):
+    """Serves one request.  Kept compatible with the old socketserver API
+    so that pi_impl.py can keep using ``launcher_ns["Handler"]``."""
 
+    def __init__(self, request, client_address, server):
+        # ``request`` is the client socket (socketserver-compatible naming).
+        self.request = request
+        self.client_address = client_address
+        self.server = server
+        self.mode = getattr(server, "mode", "wrapper")
+        self.parsed = None
 
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+    # -- helpers ---------------------------------------------------------
+    def _send(self, status, content_type, body, extra=None):
+        headers = [("Content-Type", content_type)]
+        if extra:
+            headers.extend(extra)
+        send_response(self.request, status, headers, body)
 
-    def _send(self, code: int, content_type: str, body: bytes) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self._send(status, "application/json; charset=utf-8", body)
 
-    def _reverse_proxy(self, downstream_path: str) -> None:
-        from urllib.request import Request, urlopen
-        from urllib.error import HTTPError, URLError
-
-        target = "http://127.0.0.1:{}/{}".format(
-            ADJUSTER_PORT, downstream_path.lstrip("/"))
+    def _proxy_url(self, url, method="GET", body=None, extra_headers=None):
+        """Fetch a URL through the proxy and return the transformed response."""
+        bump("requests")
+        headers = {}
+        if self.parsed is not None:
+            for name, value in self.parsed.headers:
+                headers[name] = value
+        if extra_headers:
+            headers.update(extra_headers)
         try:
-            req = Request(target)
-            for name in ("Accept", "Accept-Language", "Accept-Encoding",
-                         "Cookie", "Referer", "User-Agent"):
-                val = self.headers.get(name)
-                if val:
-                    req.add_header(name, val)
-            with urlopen(req, timeout=30) as resp:
-                body = resp.read(4 * 1024 * 1024)
-                self.send_response(resp.status)
-                for key, val in resp.getheaders():
-                    lower = key.lower()
-                    if lower in FRAME_BLOCKED_HEADERS:
-                        continue
-                    if lower == "content-security-policy" and "frame-ancestors" in val.lower():
-                        continue
-                    if lower in ("content-length", "transfer-encoding",
-                                 "connection", "keep-alive"):
-                        continue
-                    self.send_header(key, val)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-        except HTTPError as exc:
-            body = "Proxy upstream returned {}\n".format(exc.code).encode()
-            self._send(exc.code, "text/plain; charset=utf-8", body)
-        except (URLError, OSError) as exc:
-            msg = "Proxy fetch failed: {}\n".format(exc).encode()
-            self._send(502, "text/plain; charset=utf-8", msg)
+            status, upstream_headers, upstream_body = upstream_fetch(
+                url, method=method, headers=headers, body=body
+            )
+        except Exception as exc:
+            bump("upstream_errors")
+            log("UPSTREAM_FAILED url={} error={}: {}".format(
+                url, type(exc).__name__, str(exc)[:200]))
+            self._send(502, "text/plain; charset=utf-8",
+                       ("Proxy fetch failed: {}\n".format(exc)).encode("utf-8"))
+            return
 
-    def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        status, out_headers, out_body = transform_response(
+            status, upstream_headers, upstream_body, url
+        )
+        log("PROXIED status={} url={} bytes={}".format(status, url, len(out_body)))
+        send_response(self.request, status, out_headers, out_body)
+
+    # -- dispatch --------------------------------------------------------
+    def handle(self):
+        try:
+            request = parse_request(self.request)
+        except HttpError as exc:
+            log("BAD_REQUEST error={}".format(exc))
+            return
+        except OSError as exc:
+            log("READ_FAILED error={}: {}".format(type(exc).__name__, exc))
+            return
+        self.parsed = request
+
+        try:
+            self.dispatch(request)
+        except Exception as exc:
+            log("HANDLER_ERROR error={}: {}".format(type(exc).__name__, str(exc)[:300]))
+
+    def dispatch(self, request):
+        target = request.target
+        mode = self.mode
+
+        # Forward-proxy mode: the request line carries an absolute URI.
+        if mode == "forward" and target.startswith("http://") \
+                or mode == "forward" and target.startswith("https://"):
+            self._proxy_url(target, method=request.method, body=request.body or None)
+            return
+
+        path = target.split("?", 1)[0]
+        query = target.split("?", 1)[1] if "?" in target else ""
+        params = {}
+        for chunk in query.split("&"):
+            if not chunk:
+                continue
+            key, _, value = chunk.partition("=")
+            params[unquote(key)] = unquote(value)
+
         if path == "/health":
             self._send(200, "text/plain; charset=utf-8", b"ok\n")
             return
         if path == "/proxy-status":
             with STATE_LOCK:
-                payload = {
-                    "state": _adjuster_state,
-                    "error": _adjuster_error,
-                    "host": _adjuster_host,
-                    "proxy_port": ADJUSTER_PORT,
-                    "reachable": proxy_reachable(),
-                }
-            body = json.dumps(payload).encode("utf-8")
-            self._send(200, "application/json; charset=utf-8", body)
+                payload = dict(_state)
+            payload["wrapper_port"] = WRAPPER_PORT_INPROC
+            payload["forward_port"] = ADJUSTER_PORT
+            self._send_json(200, payload)
             return
-        if path.startswith("/proxy/") or path == "/proxy":
-            downstream = path[6:] or "/"
-            host = self.headers.get("Host", "")
-            host = host.split(":")[0] or "localhost"
-            ensure_adjuster_started(host)
-            self._reverse_proxy(downstream)
+        if path.startswith("/proxy/"):
+            url = target_from_path(path)
+            if not url:
+                self._send(400, "text/plain; charset=utf-8",
+                           b"Missing target URL\n")
+                return
+            self._proxy_url(url, method=request.method, body=request.body or None)
             return
         if path in ("/", "/index.html"):
-            host = self.headers.get("Host", "")
-            host = host.split(":")[0] or "localhost"
-            ensure_adjuster_started(host)
-            body = render_page().encode("utf-8")
+            target_url = params.get("target") or DEFAULT_TARGET
+            body = render_page(target_url).encode("utf-8")
             self._send(200, "text/html; charset=utf-8", body)
             return
         self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
 
-    def log_message(self, fmt, *args):
-        log("WRAPPER_HTTP " + (fmt % args))
 
+# --------------------------------------------------------------------------
+# Server
+# --------------------------------------------------------------------------
 
-class WrapperServer(ThreadingHTTPServer):
-    daemon_threads = True
-    _cheerpx_serving = True
+class WrapperServer(object):
+    """Raw-socket HTTP server.
+
+    ``http.server``/``socketserver`` are deliberately avoided: under CheerpX
+    the header write failed with ``OSError: [Errno 107] Transport endpoint
+    is not connected`` and the client never got a reply.
+    """
+
+    def __init__(self, address, handler_class, mode="wrapper"):
+        self.address = address
+        self.handler_class = handler_class
+        self.mode = mode
+        self._running = True
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind(address)
+        self.socket.listen(16)
 
     def serve_forever(self, poll_interval=0.5):
-        """CheerpX-compatible serve loop using blocking accept().
+        while self._running:
+            try:
+                client, addr = self.socket.accept()
+            except OSError:
+                if not self._running:
+                    break
+                continue
+            try:
+                client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            threading.Thread(
+                target=self._handle_client,
+                args=(client, addr),
+                daemon=True,
+                name="proxy-client-{}".format(addr[0]),
+            ).start()
 
-        CheerpX does not support select()/poll()/epoll() on sockets, so
-        the default selectors-based serve_forever() never dispatches
-        connections.  A blocking accept() loop works (proven by the
-        telnet shell on port 2323).
-        """
+    def _handle_client(self, client, addr):
         try:
-            while self._cheerpx_serving:
-                try:
-                    request, client_address = self.get_request()
-                except OSError:
-                    if not self._cheerpx_serving:
-                        break
-                    continue
-                if self.verify_request(request, client_address):
-                    try:
-                        self.process_request(request, client_address)
-                    except Exception:
-                        self.handle_error(request, client_address)
-                        self.shutdown_request(request)
-                else:
-                    self.shutdown_request(request)
-        except Exception:
-            pass
+            handler = self.handler_class(client, addr, self)
+            handler.handle()
+        except Exception as exc:
+            log("CONNECTION_ERROR error={}: {}".format(
+                type(exc).__name__, str(exc)[:200]))
+        finally:
+            try:
+                client.close()
+            except OSError:
+                pass
 
     def shutdown(self):
-        self._cheerpx_serving = False
+        self._running = False
         try:
             self.socket.close()
         except OSError:
             pass
 
-    def handle_error(self, request, client_address):
-        import sys as _sys
+    def server_close(self):
+        self.shutdown()
 
-        exc_type = _sys.exc_info()[0]
-        if exc_type in (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            return
-        ThreadingHTTPServer.handle_error(self, request, client_address)
+
+def start_wrapper(port=WRAPPER_PORT_INPROC, mode="wrapper"):
+    server = WrapperServer((BIND, port), Handler, mode=mode)
+    thread = threading.Thread(target=server.serve_forever,
+                              name="proxy-wrapper", daemon=True)
+    thread.start()
+    log("WRAPPER_LISTENING bind={} port={} mode={}".format(BIND, port, mode))
+    return server
 
 
 def main() -> None:
-    log("BOOT bind={} wrapper_port={} adjuster_port={}".format(BIND, WRAPPER_PORT, ADJUSTER_PORT))
-
-    server = WrapperServer((BIND, WRAPPER_PORT), Handler)
-    server.daemon_threads = True
-    log("WRAPPER_READY url=http://{}:{}/".format(BIND, WRAPPER_PORT))
-    log("IFRAME_TEST_READY")
-
-    def _shutdown(signum, frame):
-        log("SHUTDOWN signal {}".format(signum))
-        server.shutdown()
-
-    import signal
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-
+    log("BOOT bind={} wrapper_port={} forward_port={}".format(
+        BIND, WRAPPER_PORT, ADJUSTER_PORT))
+    servers = []
     try:
-        server.serve_forever()
-    finally:
-        try:
-            server.server_close()
-        except OSError:
-            pass
-        with STATE_LOCK:
-            process = _adjuster_process
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except Exception:
-                pass
+        servers.append(start_wrapper(WRAPPER_PORT, "wrapper"))
+        servers.append(start_wrapper(ADJUSTER_PORT, "forward"))
+    except OSError as exc:
+        log("BIND_FAILED error={}: {}".format(type(exc).__name__, exc))
+        raise
+    log("PROXY_READY wrapper=http://{}:{}/ forward=http://{}:{}/".format(
+        BIND, WRAPPER_PORT, BIND, ADJUSTER_PORT))
+    while True:
+        time.sleep(3600)
 
 
 if __name__ == "__main__":

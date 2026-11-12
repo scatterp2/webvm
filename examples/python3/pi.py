@@ -20,32 +20,24 @@ import sys
 PI_IMPL_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/pi_impl.py"
 
 def start_proxy():
-    """Start the wrapper/adjuster proxy (fire-and-forget, non-blocking).
+    """Start the HTTP proxy.
 
-    CheerpX's cooperative scheduler makes blocking waits extremely slow,
-    so we launch the proxy subprocess and return immediately.  The proxy
-    will come up in the background while pi_impl.py and the telnet shell
-    start.
+    The proxy now runs **inside** the pi_impl.py process, as daemon threads
+    on ports 28082 (wrapper + iframe page) and 28081/28083 (forward proxy).
+
+    It used to be started here as a separate `launcher.py` subprocess.  That
+    approach was abandoned because:
+
+      * `http.server`/`socketserver` misbehave under CheerpX — the response
+        header write failed with `OSError: [Errno 107] Transport endpoint is
+        not connected` and the client never received a reply.
+      * The `adjuster` pip package had to be installed at boot and then run
+        as its own long-lived process, which CheerpX starves.
+
+    launcher.py is now a pure-Python proxy built on raw sockets and runs
+    in-process, so there is nothing to spawn here.
     """
-    launcher = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
-    if not launcher.is_file():
-        print("PROXY_LAUNCHER_MISSING path={}".format(launcher), flush=True)
-        return
-    print("PROXY_STARTING launcher={}".format(launcher), flush=True)
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    log_file = open("/tmp/web-adjuster.log", "ab", buffering=0)
-    subprocess.Popen(
-        [sys.executable, str(launcher)],
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        env=env,
-        start_new_session=True,
-        close_fds=True,
-    )
-    log_file.close()
-    print("PROXY_LAUNCHED (non-blocking)", flush=True)
+    print("PROXY_STARTING mode=in-process (handled by pi_impl.main)", flush=True)
 
 def load_pi_impl():
     last_error = None
@@ -91,12 +83,6 @@ def load_pi_impl():
 
 
 if __name__ == "__main__":
-    for port in (28080, 28081):
-        try:
-            subprocess.run(["fuser", "-k", "{}/tcp".format(port)],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
     start_proxy()
     load_pi_impl()
     main()
