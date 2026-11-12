@@ -6,7 +6,7 @@
 	import '$lib/global.css';
 	import '@xterm/xterm/css/xterm.css'
 	import '@fortawesome/fontawesome-free/css/all.min.css'
-	import { networkInterface, startLogin, attachDataDevice } from '$lib/network.js'
+	import { networkInterface, networkData, startLogin, attachDataDevice } from '$lib/network.js'
 	import { cpuActivity, diskActivity, cpuPercentage, diskLatency } from '$lib/activities.js'
 	import { introMessage, errorMessage, unexpectedErrorMessage } from '$lib/messages.js'
 	import { displayConfig, handleToolImpl } from '$lib/anthropic.js'
@@ -391,48 +391,36 @@
 	});
 
 	// Auto-connect using the auth key supplied through networkInterface by the page URL hash.
+	// Aligned with upstream leaningtech/webvm PR #235: when an auth key is set,
+	// skip the login popup and call networkLogin() directly.
 	let autoConnectAttempted = false;
 
 	async function tryAutoConnect() {
-	if(autoConnectAttempted || !cx) return;
+		if(autoConnectAttempted || !cx) return;
+		autoConnectAttempted = true;
+		if(!networkInterface.authKey) return;
 
-	autoConnectAttempted = true;
-
-	if(!networkInterface.authKey) {
-		return;
+		// Let the CheerpX runtime loop (cx.run) start before triggering
+		// Tailscale, so the cooperative scheduler can process the login.
+		await new Promise(resolve => setTimeout(resolve, 2000));
+		networkData.connectionState.set("LOGINSTARTING");
+		cx.networkLogin();
 	}
 
-	// Let the CheerpX runtime loop (cx.run) start before triggering
-	// Tailscale, so the cooperative scheduler can process the login.
-	await new Promise(resolve => setTimeout(resolve, 3000));
-	cx.networkLogin();
-
-	// If CheerpX still generates a login URL (some builds do even
-	// with authKey), consume it so the auth flow completes.
-	try {
-		const url = await Promise.race([
-			startLogin(),
-			new Promise((_, r) => setTimeout(() => r('direct'), 15000))
-		]);
-		// Visit the URL in a tiny popup; if blocked, auth may
-		// still complete via the authKey alone.
-		try {
-			const w = window.open(url, "ts_auth", "width=1,height=1");
-			if(w) setTimeout(() => { try { w.close(); } catch(e){} }, 30000);
-		} catch(e) {}
-	} catch(e) {
-		// 'direct' timeout = authKey connected without a URL
-	}
-	}
-	
 	// Watch for cx to become available and trigger auto-connect
 	$: if(cx && !autoConnectAttempted) {
-	tryAutoConnect();
+		tryAutoConnect();
 	}
 
 
 	async function handleConnect()
 	{
+		if(networkInterface.authKey)
+		{
+			networkData.connectionState.set("LOGINSTARTING");
+			cx.networkLogin();
+			return;
+		}
 		const w = window.open("login.html", "_blank");
 		cx.networkLogin();
 		try

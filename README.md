@@ -1,47 +1,125 @@
 # AI Agent Handoff / Operating Notes
 
-> Keep this section current when changing the reset mechanism or Qwen experiment. These notes are intended to let an AI agent continue the work without asking the user to repeat repository context.
+> Keep this section current. These notes let an AI agent continue the work without asking the user to repeat repository context.
 
-## Current objective: browser-mediated Kaggle control through the reachable VM
+## Active Goals (in priority order)
 
-The previous RX/TX/Jupyter-proxy-token approach is **blocked and must not be treated as a working transport**.
+### Goal 1: Fix Tailscale auto-connect (CRITICAL)
 
-### What was tried and what was not achieved
+**Problem:** The WebVM needs to auto-connect to Tailscale using an auth key without user interaction. The current implementation uses timing hacks (3-second delay, 15-second Promise.race) that are fragile.
 
-- The Kaggle API dataset/kernel RX/TX loop can transport files and command results through submitted notebook executions, but it does not expose a persistent, direct connection to Kaggle.
-- We could not access/read the running Kaggle files or process state through that RX/TX mechanism in the way required to obtain the live tokenized Jupyter proxy route.
-- Because the proxy route/token was not successfully obtained through RX/TX, the intended request to the tokenized Kaggle Jupyter proxy was **not established as a working end-to-end path**. Do not describe it as proven or assume the token is available in an RX/TX artifact.
-- Repeatedly waiting for `peer_ip_not_ready`, trying the bare proxy hostname, or repeating the same token-discovery/RX/TX attempt does not resolve this blocker. Do not resume that line of work without new evidence that the route can actually be obtained.
-- A successful dataset upload, kernel submission, `RUNNING` status, or ordinary file round-trip proves only that stage—not that WebVM can reach Kaggle's proxy or that a marker was observed at the receiver.
+**Upstream fix (leaningtech/webvm PR #235, commit 16c9fad):** In `handleConnect()`, add an early-return branch when `authKey` is set — skip the popup entirely:
+```js
+if(networkInterface.authKey) {
+  networkData.connectionState.set("LOGINSTARTING");
+  cx.networkLogin();
+  return;
+}
+```
+Also add `networkData` to the import from `$lib/network.js`.
 
-### New direction
+**Our codebase state:**
+- `src/lib/network.js` line 4: hardcoded `DEFAULT_AUTH_KEY` — falls back when no `#authKey=` in URL hash
+- `src/lib/WebVM.svelte` `handleConnect()` (line ~434): still uses the old popup pattern
+- `src/lib/WebVM.svelte` `tryAutoConnect()` (line ~396): custom auto-connect that calls `cx.networkLogin()` after a 3s delay, then races `startLogin()` with a 15s timeout. This is a workaround — it needs to be aligned with the upstream pattern.
 
-Investigate a browser-mediated design instead of trying to extract the Kaggle proxy token from the notebook:
+**What to do:**
+1. Apply the upstream PR #235 pattern to `handleConnect()` so manual clicks work cleanly with auth keys
+2. Simplify `tryAutoConnect()` to match the same pattern — set connectionState, call networkLogin(), done
+3. Verify the auth key (`tskey-auth-kqUVzBTdMV11CNTRL-...`) is still valid on the Tailscale admin dashboard
+4. Test by deploying (bump `reset` file) and checking browser console for connection state transitions
 
-1. Treat the reachable VM address `100.92.188.123` as a candidate location for a proxy/control service; verify reachability and which ports/protocols are actually available before assuming anything.
-2. Let a real browser render Kaggle and run its JavaScript, rather than attempting to launch another browser inside WebVM.
-3. Investigate either a proxied Kaggle page in an iframe (subject to framing policy, redirects, and authentication limitations) or a separately opened Kaggle window controlled through an explicit browser-side bridge.
-4. Use a request/response channel between the browser-side controller and the VM so a command can wait for its matching result.
-5. Keep the existing Kaggle API RX/TX loop available as a known file-transport mechanism, but do not mistake it for the browser bridge or a persistent connection.
+**Auth key format:** Passed via URL fragment `#authKey=<key>`. Tailscale ephemeral auth keys start with `tskey-auth-`. The key is read in `network.js` from `window.location.hash`.
 
-A reverse proxy only mediates requests routed through it; it cannot automatically inspect or control an already-open cross-origin Kaggle tab. A proxy also does not automatically preserve Kaggle authentication when its origin changes. Any iframe, popup, cookie, header, or browser-control behaviour must be tested and recorded rather than assumed.
+### Goal 2: Add lightweight telnet listener for direct AI access
 
-### Evidence requirements
+**Problem:** Currently the only way to interact with the running WebVM is by pasting text into the terminal via the browser. An AI agent (Claude) needs to connect directly to run commands.
 
-Report separately: (a) VM address/port reachability from the intended browser, (b) proxy-to-Kaggle fetch and response headers, (c) whether the page renders, (d) whether authentication works, and (e) whether a browser command receives a matching response through the VM. Do not claim success for a later stage based only on an earlier one.
+**Solution:** Add a telnet server inside WebVM that listens on a known port. The AI connects from the host machine using `plink.exe` (PuTTY) or any raw TCP client. This is lightweight — no SSH overhead, just a raw shell over TCP.
 
-Relevant files:
-- `reset` — plain-text reset generation; changing it triggers the deployed WebVM reset poller.
-- `src/app.html` — polls `reset` and dispatches the browser reset event.
-- `src/lib/WebVM.svelte` — WebVM browser-host integration point.
-- `src/lib/network.js` — existing browser networking integration.
-- `examples/python3/pi.py` — automatically starts the runtime implementation.
-- `examples/python3/pi_impl.py` — runtime orchestration and WebVM-side sender.
-- `examples/python3/kaggle_io_loop/controller.py` — Kaggle API submission, status/output retrieval and JSONL logs.
-- `examples/python3/kaggle_io_loop/agent.py` — notebook-side receiver/diagnostics and response generation.
-- `examples/python3/kaggle_io_loop/README.md` — RX/TX protocol and test instructions.
+**Architecture:**
+- WebVM boots → Tailscale connects → gets a 100.x.x.x address
+- A simple telnet daemon starts on port 23 (or 2323) bound to 0.0.0.0
+- The AI runs: `plink.exe -raw -P 2323 <tailscale-ip>` to get a shell
+- Commands and output flow over raw TCP
 
-Do not launch a Tailscale bridge for this objective, do not wait on `peer_ip_not_ready`, and do not edit configuration/credential files as part of this investigation. The Qwen weight-space interpretation experiment remains separate and is not the active task.
+**Existing code:** `examples/python3/kaggle_io_loop/terminal_service.py` already implements a telnet-style server on port 2323, but it routes commands through the heavy Kaggle RX/TX loop. It needs to be simplified to just exec commands locally.
+
+**What to do:**
+1. Create a lightweight telnet daemon that spawns `/bin/bash` for each connection
+2. Bind to `0.0.0.0:2323` so it's reachable via the Tailscale address
+3. Start it from `pi.py` or `pi_impl.py` at boot
+4. Test with `plink.exe -raw -P 2323 <tailscale-ip>` from the host
+
+### Goal 3: Make the Web Adjuster proxy work
+
+**Problem:** The proxy infrastructure exists but needs to be verified end-to-end.
+
+**Architecture (already built):**
+- `examples/python3/web_adjuster/launcher.py` — two-port setup:
+  - Port 28080: wrapper HTTP server with an HTML page containing an iframe
+  - Port 28081: Web Adjuster (pip package `adjuster`) — generic HTTP proxy
+- The wrapper reverse-proxies `/proxy/*` requests to the adjuster on :28081
+- The adjuster is configured with `--default-site=www.kaggle.com --open-proxy --real-proxy`
+- `--bodyAppend=<script>` injects a proof marker (`WEBVM_ADJUSTER_INJECTED`)
+
+**What strips iframe-blocking headers:**
+- `launcher.py` `FRAME_BLOCKED_HEADERS` removes `x-frame-options`
+- `_reverse_proxy()` also strips `content-security-policy` when it contains `frame-ancestors`
+
+**Boot sequence:** `pi.py` calls `start_proxy()` which launches `launcher.py` as a subprocess → waits for port 28080 → then `pi_impl.py` `main()` calls `start_web_adjuster_sidecar()` (which just logs that it reuses the existing launcher).
+
+**What to verify:**
+1. The adjuster pip package installs correctly in WebVM's Debian i386 environment
+2. Port 28081 comes up and proxies requests to kaggle.com
+3. X-Frame-Options and CSP frame-ancestors headers are stripped from responses
+4. The injection script appears in proxied HTML bodies
+
+### Goal 4: Load Kaggle via proxy in iframe (browser integration)
+
+**Problem:** Once the proxy works (Goal 3), load Kaggle through it in an iframe on the WebVM page so an AI agent can interact with Kaggle through the proxy.
+
+**Design:**
+- The wrapper page on :28080 already has an iframe pointing to `/proxy/`
+- The iframe loads `www.kaggle.com` through the adjuster proxy
+- Same-origin policy is satisfied because both the parent page and iframe serve from :28080
+- The injected script proves JavaScript execution works inside the proxied page
+
+**Challenges:**
+- Kaggle authentication: cookies won't carry through the proxy origin change. May need to manually set cookies or use Kaggle's API token auth.
+- Kaggle's SPA may make additional requests that need to route through the proxy
+- Some resources may use absolute URLs that bypass the proxy
+
+**How to test:**
+1. Get the WebVM Tailscale IP (e.g., `100.x.x.x`)
+2. Open `http://<tailscale-ip>:28080/` in the built-in browser
+3. Check that the iframe loads Kaggle content
+4. Check browser console for the injection proof marker
+5. Check that iframe interactions work (clicking, navigation)
+
+**What NOT to do:**
+- Don't try to extract the Kaggle Jupyter proxy token through RX/TX — that approach is blocked (see history below)
+- Don't assume Kaggle authentication works through the proxy — test it explicitly
+
+## Previous approaches (blocked — do not revisit)
+
+The Kaggle API dataset/kernel RX/TX loop can transport files and command results through submitted notebook executions, but it does not expose a persistent, direct connection to Kaggle. The tokenized Jupyter proxy route was not successfully obtained through RX/TX. Do not resume that line of work without new evidence.
+
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `reset` | Plain-text reset generation; changing it triggers the deployed WebVM reset poller |
+| `src/app.html` | Polls `reset` and dispatches the browser reset event |
+| `src/lib/WebVM.svelte` | WebVM browser-host integration, Tailscale auto-connect, handleConnect |
+| `src/lib/network.js` | Tailscale auth key, connection state, netmap callbacks |
+| `examples/python3/pi.py` | Boot launcher — starts proxy, loads pi_impl, runs main() |
+| `examples/python3/pi_impl.py` | Runtime orchestration, endpoint self-tests, Kaggle submission |
+| `examples/python3/web_adjuster/launcher.py` | Proxy wrapper (:28080) + adjuster (:28081) |
+| `examples/python3/kaggle_io_loop/terminal_service.py` | Existing telnet server (routes through RX/TX — needs simplification) |
+| `examples/python3/kaggle_io_loop/controller.py` | Kaggle API submission, status/output retrieval |
+| `examples/python3/kaggle_io_loop/agent.py` | Notebook-side receiver/diagnostics |
+| `redeploy` | Append a line to trigger GitHub Pages rebuild |
 
 ## How the WebVM reset is triggered and verified
 
