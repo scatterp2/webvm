@@ -900,6 +900,15 @@ def send_response(sock, status, headers, body, close=True, client=None):
             sock.sendall(chunk)
             sent += len(chunk)
         log("SEND_OK status={} bytes={}".format(status, len(payload)))
+        # Let the client read the response before the socket goes away.
+        # Closing straight after a large write truncates it: the browser
+        # then reports "Failed to fetch" even though the server logged
+        # SEND_OK.
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        time.sleep(0.4)
         return True
     except OSError as exc:
         log("SEND_FAILED status={} bytes={} client={} error={}: {}".format(
@@ -1300,7 +1309,6 @@ class WrapperServer(object):
                 client.close()
             except OSError:
                 pass
-
     def shutdown(self):
         self._running = False
         try:
