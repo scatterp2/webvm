@@ -62,3 +62,4 @@ retry pages deploy
 bridge over the popup url fragment
 restore coi headers
 bridge hands the document over via a navigation to the page origin
+pass the opener origin to the bridge popup

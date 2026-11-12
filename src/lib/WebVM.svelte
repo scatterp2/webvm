@@ -109,8 +109,9 @@
 		// same-origin with this page, so the DOM stays reachable.
 		try {
 			const popup = window.open(
-				proxyHttpBase + "/?bridge=1&target="
-					+ encodeURIComponent(proxyTarget),
+				proxyHttpBase + "/?bridge=1&origin="
+					+ encodeURIComponent(window.location.origin)
+					+ "&target=" + encodeURIComponent(proxyTarget),
 				"webvm-proxy-bridge", "width=900,height=700");
 			if(!popup) {
 				proxyStatus = "The browser blocked the popup - allow popups "

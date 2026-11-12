@@ -1103,6 +1103,12 @@ PAGE_TEMPLATE = """<!doctype html>
         // window.opener and also blocks reading popup.location.
         var referrer = document.referrer || '';
         var origin = referrer ? referrer.split('/')[0] : '';
+        // The opener passes its origin explicitly; the referrer is not
+        // always available (a referrer policy can withhold it).
+        var params = new URLSearchParams(window.location.search);
+        if (params.get('origin')) {
+          origin = params.get('origin');
+        }
         if (!origin) {
           document.getElementById('status').textContent =
             'Bridge mode: cannot work out the opener origin.';
