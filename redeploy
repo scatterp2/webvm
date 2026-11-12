@@ -54,3 +54,4 @@ service worker proxy bridge
 sw diagnostic and versioned worker
 cors and corp headers for the cross-origin isolated page
 proxy panel tries all origins
+final proxy panel
