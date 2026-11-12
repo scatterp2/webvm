@@ -6,7 +6,7 @@
 	import '$lib/global.css';
 	import '@xterm/xterm/css/xterm.css'
 	import '@fortawesome/fontawesome-free/css/all.min.css'
-	import { networkInterface, networkData, currentIpStore, startLogin, attachDataDevice } from '$lib/network.js'
+	import { networkInterface, networkData, currentIpStore, currentDnsNameStore, startLogin, attachDataDevice } from '$lib/network.js'
 	import { cpuActivity, diskActivity, cpuPercentage, diskLatency } from '$lib/activities.js'
 	import { introMessage, errorMessage, unexpectedErrorMessage } from '$lib/messages.js'
 	import { displayConfig, handleToolImpl } from '$lib/anthropic.js'
@@ -27,6 +27,74 @@
 	var processCount = 0;
 	var curVT = 0;
 	var sideBarPinned = false;
+
+	// --- Proxied page panel ---------------------------------------------
+	// The panel shows a page fetched through the WebVM's own HTTP proxy.
+	//
+	// The proxy publishes itself over HTTPS (port 28443) as well as HTTP,
+	// because this page is served over https and Chrome blocks an http://
+	// frame here as mixed content.  The node's DNS name comes from the
+	// netmap, because the address changes on every boot.
+	//
+	// The page is fetched with fetch() and injected into the frame with
+	// srcdoc.  The proxy sends CORS headers, so the fetch is readable, and
+	// a srcdoc frame inherits THIS page's origin, which keeps full DOM
+	// access to the proxied content.  A direct frame src would be
+	// cross-origin and the DOM would be unreachable.
+	var proxyPanelOpen = false;
+	var proxyTarget = "https://www.kaggle.com/";
+	var proxyStatus = "";
+	var proxyFrameEl = null;
+	const PROXY_TLS_PORT = 28443;
+	$: proxyOrigin = $currentDnsNameStore
+		? ("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT)
+		: "";
+	$: proxyTargetLabel = proxyTarget;
+
+	async function loadProxyFrame()
+	{
+		if(!proxyOrigin) {
+			proxyStatus = "Waiting for the WebVM's Tailscale address...";
+			return;
+		}
+		const url = proxyOrigin + "/proxy/" + encodeURIComponent(proxyTarget);
+		proxyStatus = "Fetching " + proxyTarget + " through the proxy...";
+		try {
+			const res = await fetch(url, {cache: "no-store"});
+			const html = await res.text();
+			if(proxyFrameEl) {
+				proxyFrameEl.srcdoc = html;
+				proxyStatus = "Loaded " + res.status + " (" + html.length
+					+ " bytes) - srcdoc frame keeps DOM access.";
+			}
+		} catch (e) {
+			// Fall back to a direct frame: it still renders, but the DOM is
+			// then cross-origin and unreachable from this page.
+			proxyStatus = "Cross-origin fetch failed (" + e
+				+ ") - falling back to a direct frame.";
+			if(proxyFrameEl) {
+				proxyFrameEl.removeAttribute("srcdoc");
+				proxyFrameEl.src = url;
+			}
+		}
+	}
+
+	function toggleProxyPanel()
+	{
+		proxyPanelOpen = !proxyPanelOpen;
+		if(proxyPanelOpen) {
+			setTimeout(() => loadProxyFrame(), 0);
+		}
+	}
+
+	function setProxyTarget(url)
+	{
+		proxyTarget = url;
+		if(proxyPanelOpen) {
+			loadProxyFrame();
+		}
+	}
+
 	function writeData(buf, vt)
 	{
 		if(vt != 1)
@@ -486,7 +554,33 @@
 				<canvas class="w-full h-full cursor-none" id="display"></canvas>
 			</div>
 		{/if}
-		<div class="absolute top-0 bottom-0 {sideBarPinned ? 'left-[23.5rem]' : 'left-14'} right-0 p-1 scrollbar" id="console">
+		<div class="absolute top-0 bottom-0 {sideBarPinned ? 'left-[23.5rem]' : 'left-14'} {proxyPanelOpen ? 'right-1/2' : 'right-0'} p-1 scrollbar" id="console">
 		</div>
+		{#if proxyPanelOpen}
+			<div class="absolute top-0 bottom-0 right-0 w-1/2 flex flex-col bg-gray-900 border-l border-gray-700">
+				<div class="flex items-center gap-2 px-2 py-1 bg-gray-800 text-xs text-gray-200">
+					<strong>Proxy</strong>
+					<span class="truncate opacity-70">{proxyTargetLabel}</span>
+					<span class="flex-1"></span>
+					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={() => setProxyTarget("https://www.kaggle.com/")}>Kaggle</button>
+					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={() => setProxyTarget("https://example.com/")}>Example</button>
+					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={() => setProxyTarget("https://www.google.com/")}>Google</button>
+					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={toggleProxyPanel}>Close</button>
+				</div>
+				<div class="px-2 py-1 bg-gray-900 text-xs text-gray-400 border-b border-gray-800">{proxyStatus}</div>
+				<iframe
+					bind:this={proxyFrameEl}
+					title="Proxied page through the WebVM proxy"
+					class="flex-1 w-full bg-white"></iframe>
+			</div>
+		{/if}
+		{#if !proxyPanelOpen}
+			<button
+				class="absolute bottom-2 right-2 z-20 px-3 py-1.5 rounded bg-gray-800 border border-gray-600 text-xs text-gray-100 hover:bg-gray-700"
+				on:click={toggleProxyPanel}
+				title="Show the page proxied through the WebVM">
+				Proxy &#9638;
+			</button>
+		{/if}
 	</div>
 </main>

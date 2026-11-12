@@ -1552,6 +1552,79 @@ def start_web_adjuster_sidecar():
             forward_port), flush=True)
         break
 
+    _start_tls_wrapper(launcher_ns)
+
+
+TLS_PORT = 28443
+TLS_BASE_URL = ("https://raw.githubusercontent.com/scatterp2/webvm/main/"
+                "examples/python3/web_adjuster/tls/")
+TLS_FILES = ("dev-proxy-ca.crt", "dev-proxy-server.crt", "dev-proxy-server.key")
+
+
+def _start_tls_wrapper(launcher_ns):
+    """Publish the proxy over HTTPS so it can be embedded in an https page.
+
+    Chrome blocks an http:// iframe inside an https:// page as mixed
+    content, and the WebVM page is https://.  The proxy therefore also
+    listens with TLS, using a development certificate for the tailnet's
+    MagicDNS names.  The browser has to trust the CA
+    (web_adjuster/tls/dev-proxy-ca.crt).
+    """
+    import threading as _threading
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+
+    target_dir = Path("/tmp/webvm-proxy-tls")
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print("TLS_DIR_FAILED error={}: {}".format(type(exc).__name__, exc),
+              flush=True)
+        return
+
+    local = Path(__file__).resolve().parent / "web_adjuster" / "tls"
+    for name in TLS_FILES:
+        destination = target_dir / name
+        try:
+            req = Request(
+                TLS_BASE_URL + name + "?t=" + str(int(time.time() * 1000)),
+                headers={"Cache-Control": "no-cache",
+                         "User-Agent": "webvm-tls/1.0"},
+            )
+            with urlopen(req, timeout=20) as resp:
+                data = resp.read()
+            destination.write_bytes(data)
+            print("TLS_FILE_FETCHED name={} bytes={}".format(name, len(data)),
+                  flush=True)
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            # Fall back to the copy that ships next to this file.
+            fallback = local / name
+            if fallback.is_file():
+                try:
+                    data = fallback.read_bytes()
+                    destination.write_bytes(data)
+                    print("TLS_FILE_FALLBACK name={} bytes={}".format(
+                        name, len(data)), flush=True)
+                    continue
+                except OSError:
+                    pass
+            print("TLS_FILE_FAILED name={} error={}: {}".format(
+                name, type(exc).__name__, exc), flush=True)
+            return
+
+    start_tls = launcher_ns.get("start_tls_wrapper")
+    if start_tls is None:
+        print("TLS_START_UNSUPPORTED launcher_has_no_start_tls_wrapper",
+              flush=True)
+        return
+    try:
+        start_tls(TLS_PORT, target_dir / "dev-proxy-server.crt",
+                  target_dir / "dev-proxy-server.key")
+        print("TLS_PROXY_STARTED port={}".format(TLS_PORT), flush=True)
+    except Exception as exc:
+        print("TLS_START_FAILED error={}: {}".format(
+            type(exc).__name__, str(exc)[:200]), flush=True)
+
 
 def _run_endpoint_tests():
     """Hit the wrapper endpoints and print results.

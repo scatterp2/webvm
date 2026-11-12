@@ -25,6 +25,11 @@ const kaggleTcpLink = writable(null);
 // `networkData.currentIp` property is not reactive, so the terminal banner
 // in WebVM.svelte needs a store to react to.
 const currentIpStore = writable(null);
+// Reactive copy of this node's MagicDNS name, e.g. "js-2.tailf987e.ts.net".
+// Tailscale Serve publishes services under this name with a real
+// certificate, so it is what a browser must use to reach the WebVM's
+// proxy over HTTPS (an http:// iframe on an https page is mixed content).
+const currentDnsNameStore = writable(null);
 let attachedDataDevice = null;
 let currentKaggleTcpLink = null;
 
@@ -136,6 +141,10 @@ function netmapUpdateCb(map)
 {
 	networkData.currentIp = map.self.addresses[0];
 	currentIpStore.set(networkData.currentIp);
+	// The netmap carries the node's MagicDNS name, e.g.
+	// "js-2.tailf987e.ts.net".  Strip the trailing dot.
+	const dnsName = (map.self.dnsName || map.self.DNSName || map.self.name || "");
+	currentDnsNameStore.set(String(dnsName).replace(/\.$/, "") || null);
 	const peers = Array.isArray(map.peers) ? map.peers : [];
 
 	const exitNodePeer = peers.find((peer) => peer.exitNode);
@@ -287,10 +296,10 @@ export function updateButtonData(state, handleConnect) {
 
 export const networkInterface = { authKey: authKey, controlUrl: controlUrl, loginUrlCb: loginUrlCb, stateUpdateCb: stateUpdateCb, netmapUpdateCb: netmapUpdateCb };
 
-export const networkData = { currentIp: null, currentIpStore: currentIpStore, connectionState: connectionState, exitNode: exitNode, kaggleTcpLink: kaggleTcpLink, loginUrl: null, dashboardUrl: dashboardUrl }
+export const networkData = { currentIp: null, currentIpStore: currentIpStore, currentDnsNameStore: currentDnsNameStore, connectionState: connectionState, exitNode: exitNode, kaggleTcpLink: kaggleTcpLink, loginUrl: null, dashboardUrl: dashboardUrl }
 
-// Named export as well, so components can auto-subscribe with $currentIpStore
+// Named exports as well, so components can auto-subscribe with $currentIpStore
 // instead of relying on the compiler resolving $networkData.currentIpStore.
-export { currentIpStore };
+export { currentIpStore, currentDnsNameStore };
 
 resetLoginPromise();

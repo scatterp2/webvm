@@ -1,3 +1,3 @@
-time curl -s -o /dev/null -w 'HTTPS example.com code=%{http_code} total=%{time_total} connect=%{time_connect} starttransfer=%{time_starttransfer}\n' --max-time 120 https://example.com/
-time curl -s -o /dev/null -w 'HTTP example.com code=%{http_code} total=%{time_total}\n' --max-time 120 http://example.com/
-time curl -s -o /dev/null -w 'HTTPS again code=%{http_code} total=%{time_total}\n' --max-time 120 https://example.com/
+for p in /proc/[0-9]*; do tr '\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -i -e tail -e serve
+ls /usr/bin/tailscale* /usr/sbin/tailscale* /sbin/tailscale* /bin/tailscale* 2>&1
+ls /opt 2>&1

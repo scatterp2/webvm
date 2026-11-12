@@ -117,9 +117,18 @@ def bump(key: str) -> None:
 # URL helpers
 # --------------------------------------------------------------------------
 
-def proxy_path(url: str) -> str:
-    """Encode an absolute URL so it can travel as a single path segment."""
-    return "/proxy/" + quote(url, safe="")
+def proxy_path(url: str, proxy_origin=None) -> str:
+    """Encode an absolute URL so it can travel as a single path segment.
+
+    ``proxy_origin`` makes the result an absolute URL.  That is required
+    when the proxied HTML is injected into an iframe with ``srcdoc``: a
+    relative ``/proxy/...`` URL would then resolve against the *host
+    page's* origin instead of the proxy's.
+    """
+    path = "/proxy/" + quote(url, safe="")
+    if proxy_origin:
+        return proxy_origin.rstrip("/") + path
+    return path
 
 
 def target_from_path(path: str):
@@ -155,43 +164,45 @@ _SRCSET_RE = re.compile(r"""(?P<pre>\bsrcset\s*=\s*)(?P<q>["'])(?P<val>[^"']*)(?
                          re.IGNORECASE)
 
 
-def _rewrite_srcset(value: str, base: str) -> str:
+def _rewrite_srcset(value: str, base: str, proxy_origin=None) -> str:
     parts = []
     for chunk in value.split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
         bits = chunk.split(None, 1)
-        bits[0] = _rewrite_url(bits[0], base)
+        bits[0] = _rewrite_url(bits[0], base, proxy_origin)
         parts.append(" ".join(bits))
     return ", ".join(parts)
 
 
-def _rewrite_url(url: str, base: str) -> str:
+def _rewrite_url(url: str, base: str, proxy_origin=None) -> str:
     """Point an absolute URL back through this proxy."""
     absolute = absolutize(url, base)
     parts = urlsplit(absolute)
     if parts.scheme not in ("http", "https"):
         return url
-    return proxy_path(absolute)
+    return proxy_path(absolute, proxy_origin)
 
 
-def rewrite_html(text: str, base: str) -> str:
+def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
     """Route every absolute URL in the document back through the proxy."""
 
     def _abs(match):
-        return match.group("pre") + _rewrite_url(match.group("url"), base)
+        return match.group("pre") + _rewrite_url(
+            match.group("url"), base, proxy_origin)
 
     def _css(match):
         return "url({q}{u}{q})".format(
-            q=match.group("q"), u=_rewrite_url(match.group("url"), base)
+            q=match.group("q"),
+            u=_rewrite_url(match.group("url"), base, proxy_origin),
         )
 
     def _srcset(match):
         return "{p}{q}{v}{q}".format(
             p=match.group("pre"),
             q=match.group("q"),
-            v=_rewrite_srcset(match.group("val"), base),
+            v=_rewrite_srcset(match.group("val"), base, proxy_origin),
         )
 
     text = _ABS_URL_RE.sub(_abs, text)
@@ -511,7 +522,7 @@ def decompress_body(body, encoding):
     return body, enc not in ("identity", "")
 
 
-def transform_response(status, headers, body, request_url):
+def transform_response(status, headers, body, request_url, proxy_origin=None):
     """Strip framing blockers, rewrite URLs and inject the proof script."""
     content_type = ""
     content_encoding = ""
@@ -549,10 +560,19 @@ def transform_response(status, headers, body, request_url):
                 continue
         elif lower == "location":
             try:
-                value = proxy_path(absolutize(value, request_url))
+                value = proxy_path(absolutize(value, request_url), proxy_origin)
             except Exception:
                 pass
         out_headers.append((name, value))
+
+    # CORS: the WebVM page (a different origin) fetches the proxied HTML
+    # and renders it into an iframe with srcdoc, which keeps the frame in
+    # the page's own origin and therefore keeps DOM access.  CORS headers
+    # are what make that fetch readable.
+    out_headers.append(("Access-Control-Allow-Origin", "*"))
+    out_headers.append(("Access-Control-Allow-Credentials", "false"))
+    out_headers.append(("Access-Control-Allow-Headers", "*"))
+    out_headers.append(("Access-Control-Expose-Headers", "*"))
 
     if is_html and body:
         try:
@@ -560,7 +580,7 @@ def transform_response(status, headers, body, request_url):
         except Exception:
             text = None
         if text is not None:
-            text = rewrite_html(text, request_url)
+            text = rewrite_html(text, request_url, proxy_origin)
             # Inject just before </body> so the marker element exists.
             # The script has to carry the page's CSP nonce, otherwise the
             # browser blocks it (a nonce in script-src disables
@@ -809,10 +829,10 @@ PAGE_TEMPLATE = """<!doctype html>
 """
 
 
-def render_page(target):
+def render_page(target, proxy_origin=None):
     return (PAGE_TEMPLATE
             .replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
-            .replace("__IFRAME_SRC__", proxy_path(target))
+            .replace("__IFRAME_SRC__", proxy_path(target, proxy_origin))
             .replace("__TARGET_JSON__", json.dumps(target)))
 
 
@@ -834,6 +854,21 @@ class Handler(object):
             return "{}:{}".format(*self.client_address)
         except Exception:
             return "?"
+
+    def proxy_origin(self):
+        """The public origin of this proxy, taken from the Host header.
+
+        Rewritten URLs have to be absolute when the proxied HTML is put
+        into a frame with srcdoc, otherwise they would resolve against the
+        host page's origin instead of the proxy's.
+        """
+        host = ""
+        if self.parsed is not None:
+            host = self.parsed.header("Host") or ""
+        if not host:
+            return None
+        scheme = "https" if getattr(self.server, "is_tls", False) else "http"
+        return "{}://{}".format(scheme, host)
 
     def _send(self, status, content_type, body, extra=None):
         headers = [("Content-Type", content_type)]
@@ -868,7 +903,7 @@ class Handler(object):
             return
 
         status, out_headers, out_body = transform_response(
-            status, upstream_headers, upstream_body, url
+            status, upstream_headers, upstream_body, url, self.proxy_origin()
         )
         log("PROXIED status={} url={} bytes={}".format(status, url, len(out_body)))
         send_response(self.request, status, out_headers, out_body,
@@ -922,6 +957,15 @@ class Handler(object):
             payload["forward_port"] = ADJUSTER_PORT
             self._send_json(200, payload)
             return
+        if request.method == "OPTIONS":
+            # CORS preflight for the WebVM page's cross-origin fetch.
+            self._send(204, "text/plain; charset=utf-8", b"", extra=[
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS"),
+                ("Access-Control-Allow-Headers", "*"),
+                ("Access-Control-Max-Age", "600"),
+            ])
+            return
         if path.startswith("/proxy/"):
             url = target_from_path(path)
             if not url:
@@ -932,7 +976,7 @@ class Handler(object):
             return
         if path in ("/", "/index.html"):
             target_url = params.get("target") or DEFAULT_TARGET
-            body = render_page(target_url).encode("utf-8")
+            body = render_page(target_url, self.proxy_origin()).encode("utf-8")
             self._send(200, "text/html; charset=utf-8", body)
             return
         self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
@@ -948,12 +992,18 @@ class WrapperServer(object):
     ``http.server``/``socketserver`` are deliberately avoided: under CheerpX
     the header write failed with ``OSError: [Errno 107] Transport endpoint
     is not connected`` and the client never got a reply.
+
+    When ``ssl_context`` is given the accepted connections are wrapped in
+    TLS, so the proxy can be reached over https:// (needed because Chrome
+    blocks an http:// iframe on an https:// page as mixed content).
     """
 
-    def __init__(self, address, handler_class, mode="wrapper"):
+    def __init__(self, address, handler_class, mode="wrapper", ssl_context=None):
         self.address = address
         self.handler_class = handler_class
         self.mode = mode
+        self.ssl_context = ssl_context
+        self.is_tls = ssl_context is not None
         self._running = True
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -981,6 +1031,10 @@ class WrapperServer(object):
 
     def _handle_client(self, client, addr):
         try:
+            if self.ssl_context is not None:
+                # The handshake happens in this thread so that one slow
+                # client cannot block the accept loop.
+                client = self.ssl_context.wrap_socket(client, server_side=True)
             handler = self.handler_class(client, addr, self)
             handler.handle()
         except Exception as exc:
@@ -1009,6 +1063,20 @@ def start_wrapper(port=WRAPPER_PORT_INPROC, mode="wrapper"):
                               name="proxy-wrapper", daemon=True)
     thread.start()
     log("WRAPPER_LISTENING bind={} port={} mode={}".format(BIND, port, mode))
+    return server
+
+
+def start_tls_wrapper(port, cert_path, key_path, mode="wrapper"):
+    """Start the wrapper with TLS, so it can be reached over https://."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    server = WrapperServer((BIND, port), Handler, mode=mode,
+                           ssl_context=context)
+    thread = threading.Thread(target=server.serve_forever,
+                              name="proxy-wrapper-tls", daemon=True)
+    thread.start()
+    log("TLS_WRAPPER_LISTENING bind={} port={} cert={}".format(
+        BIND, port, cert_path))
     return server
 
 
