@@ -10,23 +10,42 @@
 | 2 — Telnet access to the VM | **DONE** | `plink.exe -raw -P 2323 <ip>` gives a root shell. |
 | 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
 | 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | `http://<ip>:28082/` shows the real Kaggle page in an iframe and the parent can read its DOM (`sameOrigin: true`). |
-| 4b — that iframe **inside the GitHub Pages WebVM page** | **ONE STEP LEFT** | The Service Worker proxy bridge is written, deployed and measured. A worker **cannot** fetch the VM's plain-`http://` proxy (mixed content rejects it in 0–1 ms), but it **can** fetch `https://`. So the proxy needs an https origin with a publicly trusted certificate: **enable Tailscale Serve on the tailnet (one click) and run `python examples/python3/publish_proxy.py --tag tag:webvm`**. The certificate is the tailnet's own — nothing is installed on the laptop. |
+| 4b — that iframe **inside the GitHub Pages WebVM page** | **BUILT, LAST MILE UNVERIFIED** | The "Proxy" button is on the page and the whole chain is implemented: the page opens a **bridge popup** on the proxy's own http origin, the popup asks the proxy for a **self-contained** document (every sub-resource inlined server side as a `data:` URI), and hands it back in the popup's **URL fragment**; the page injects it with `srcdoc`, which keeps the frame same-origin with the page and therefore keeps DOM access. The last change (the popup no longer loads the page itself, so its two requests stop starving each other) is pushed but the end-to-end run has not been re-checked. |
 
-**The single most useful next command** (after a fresh browser reset, so
-the current Service Worker is loaded):
+### The one thing to try next
 
-```js
-fetch('/webvm/httpsproxy/diag?ip=' + '<tailscale-ip>').then(r => r.text()).then(console.log)
+```powershell
+cd examples/python3
+python discover.py          # find the live WebVM address
 ```
 
-It reports exactly what the worker can fetch, which decides between the
-Service Worker route and the Tailscale Serve route.
+Then, in the browser, open the WebVM page with a **fresh reset** (the
+`reset` number in the URL must be at least the one in the `reset` file on
+`main`) and press the **Proxy** button in the bottom right corner. A
+popup opens, and after a while the proxied page appears in the panel on
+the right.
 
-**Bump `?v=` when you change the service worker.** `src/app.html` loads
-`serviceWorker.js?v=3`; the browser caches a worker for a long time and
-`unregister()` does not release control until the page reloads, so a
-changed worker will otherwise keep serving the old code. See "Service
-Worker update gotcha" below.
+If the panel stays white, the WebVM terminal will show why: the proxy
+logs `INLINE_DONE url=… resources=… bytes=…` when it built the
+self-contained document.
+
+### Things that will bite you next
+
+- **Bump `?v=` when you change `serviceWorker.js`.** `src/app.html` loads
+  `serviceWorker.js?v=7`. The browser caches a worker for a long time and
+  `unregister()` does not release control until the page reloads, so a
+  changed worker keeps serving the old code until you unregister **and**
+  reload. See "Service Worker update gotcha" below.
+- **The WebVM does not boot without cross-origin isolation.** The service
+  worker sets `COEP: require-corp` + `COOP: same-origin`. With them
+  removed the guest hangs at start-up and never registers on the tailnet.
+  They are required, and `COOP` is exactly what nulls a popup's
+  `window.opener` — which is why the bridge uses the popup's URL fragment
+  instead of `postMessage`.
+- **The Pages deploy can fail spuriously.** The build job succeeds and
+  only `actions/deploy-pages@v4` fails; re-running the workflow (touch
+  `redeploy` and push) fixed it. The job logs need auth to read.
+- **Two TLS handshakes at once inside the VM wedge it.** See finding 20.
 
 ## Active Goals (in priority order)
 
@@ -320,151 +339,76 @@ The request is not even sent — the network log shows **no request at all**.
 So **CORS headers cannot fix this**: CORS is evaluated after a request
 succeeds, mixed content is evaluated before it is made. The site's Service
 Worker does not bypass it either — a page-level `fetch('http://...')` failed
-with the same mixed-content error.
+with the same mixed-content error, and so did the worker's own fetch
+(rejected in **0–1 ms**, i.e. before the network was touched).
 
-What CORS *does* fix is the **read**, and that is what makes the
-`srcdoc` approach work: the proxy sends `Access-Control-Allow-Origin: *`,
-the page reads the proxied HTML, and injects it with `srcdoc`. A `srcdoc`
-frame inherits the host page's origin, so **DOM access survives the
-cross-origin hop**.
+What CORS *does* fix is the **read**, and that is what makes the `srcdoc`
+approach work: the proxy sends `Access-Control-Allow-Origin: *` on every
+response, the page reads the proxied HTML, and injects it with `srcdoc`. A
+`srcdoc` frame inherits the host page's origin, so **DOM access survives
+the cross-origin hop**.
 
-### The design that is implemented: a Service Worker proxy bridge
+### The design that is implemented: the bridge popup
 
-The site already registers a Service Worker (`serviceWorker.js`) that
-intercepts **every** request on its origin. That is the natural place to
-put a proxy, because the worker runs in its own context and is not the
-document:
+Three facts force this shape:
 
-| Route (all on the WebVM's own origin) | What it does |
-|---|---|
-| `GET /webvm/httpsproxy?base=<origin>&target=<url>` | Fetches `<origin>/proxy/<url>` through the WebVM's proxy and returns the document |
-| `GET /webvm/httpsproxy/raw?base=<origin>&path=<path>` | Fetches one proxied resource (used for the document's own sub-resources) |
-| `GET /webvm/httpsproxy/diag?ip=<address>` | Diagnostic: reports what the worker itself can fetch, which tells a mixed-content block apart from an unreachable host |
+1. The page is https and the proxy is http → the page cannot fetch the
+   proxy (mixed content), and neither can the Service Worker.
+2. The page needs **cross-origin isolation** (without it the guest hangs
+   at start-up and never registers on the tailnet — verified), and
+   `COOP: same-origin` **nulls a popup's `window.opener`**, so a popup
+   cannot `postMessage` back.
+3. The opener **can** read `popup.location.href` across origins.
 
-The document that comes back has its proxy URLs rewritten from
-`http://<vm>:28082/proxy/...` to the bridge's own same-origin form, so the
-sub-resources of the injected document are fetched same-origin too and
-never trip mixed content.
+So the chain is:
 
-The WebVM page's Proxy button then does:
-
-```js
-const res  = await fetch("/webvm/httpsproxy?base=" + encodeURIComponent(proxyHttpBase)
-                          + "&target=" + encodeURIComponent(proxyTarget));
-proxyFrameEl.srcdoc = await res.text();
+```
+WebVM page (https)
+  └─ opens popup  http://<vm>:28082/?bridge=1&target=…
+        └─ GET /proxy-inline/<target>          (same-origin http, no mixed content)
+              └─ the proxy fetches the target and its sub-resources
+                 SERVER SIDE, where the mixed-content rule does not apply,
+                 and inlines each one as a data: URI
+        └─ hands the self-contained document back in its URL fragment,
+           in paced chunks:  #doc=<part>-<total>:<encoded chunk>
+  └─ the opener polls popup.location.href, assembles the chunks
+  └─ iframe.srcdoc = document      -> the frame inherits the page's origin
 ```
 
-`proxyHttpBase` is `http://<tailscale-ip>:28082`, taken from the netmap
-because the address changes on every boot.
+**Everything is on the WebVM and in the deployed site. Nothing has to be
+installed on the laptop, and no tailnet setting is needed.**
+
+| Piece | Where | State |
+|---|---|---|
+| `/proxy-inline/<url>` — builds the self-contained document | `examples/python3/web_adjuster/launcher.py` | **VERIFIED** — `200`, 148000 bytes, 3 sub-resources inlined as `data:` URIs, **0** `http://` references left |
+| `/?bridge=1&target=…` — the popup mode | same file | **VERIFIED** — the served page contains the bridge code and the flag is `true` |
+| The opener: open the popup, poll `popup.location.href`, `srcdoc` it | `src/lib/WebVM.svelte` | **BUILT, not yet re-verified end to end** |
+| `popup.location.href` readable across origins | the browser | **VERIFIED** — it is one of the few cross-origin-readable properties |
+| `srcdoc` frames inherit the parent origin | the browser | **VERIFIED** in the VM's own proxy page (`sameOrigin: true`) |
 
 ### What is verified and what is not
 
-The diagnostic route (`/webvm/httpsproxy/diag?ip=…`) measures exactly what
-the worker can fetch. Its output settles the design:
-
-| Target from the worker | `cors` | `no-cors` | Meaning |
-|---|---|---|---|
-| `http://<vm>:28082/health` | fail in **1 ms** | fail in 1 ms | **mixed content** — rejected before any network activity |
-| `http://<vm>:28082/proxy/…` | fail in **0 ms** | fail in 0 ms | **mixed content**, same reason |
-| `http://example.com/` | fail in 0 ms | fail in 1 ms | **mixed content**, same reason |
-| `https://example.com/` | fail in 44 ms | **ok** (opaque, status 0) | the worker's **https** fetches work; `cors` fails only because that site sends no `Access-Control-Allow-Origin` |
-| `https://<vm>:28443/health` | fail in 488 ms | fail in 867 ms | the request **reached the VM**; it failed at TLS because the development certificate is not trusted |
-
-**Conclusions:**
-
-1. **Mixed content applies to worker-initiated fetches too.** A worker
-   cannot fetch the WebVM's plain-`http://` proxy — the request is
-   rejected in 0–1 ms, before the network is touched.
-2. **A worker can fetch `https://` fine.** The `example.com` `no-cors`
-   fetch succeeded.
-3. **The only missing piece is a certificate the browser trusts**, so that
-   the worker's `cors` fetch of the proxy succeeds (the proxy now sends
-   `Access-Control-Allow-Origin: *` and
-   `Cross-Origin-Resource-Policy: cross-origin` on **every** response, so
-   the CORS check itself is already satisfied).
-
 | Part | State |
 |---|---|
-| The bridge routes are served by the worker | **VERIFIED** — the worker answered with its own `502 proxy bridge failed: …`, so it really is handling the route |
-| The proxy's CORS/CORP headers | **VERIFIED** — `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin` are present on every response |
-| A trusted https origin for the proxy | **THE ONE REMAINING STEP** — see below |
-| The `srcdoc` injection and DOM access | **VERIFIED** in the VM's own proxy page (`sameOrigin: true`, `JS/DOM INJECTION CONFIRMED`) |
-| The `srcdoc` injection and DOM access **from the GitHub Pages page** | depends on the bridge fetch succeeding, i.e. on the trusted origin |
+| The proxy's CORS/CORP headers | **VERIFIED** — `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin` on every response |
+| The bridge routes are served by the worker | **VERIFIED** — the worker answered with its own `502 proxy bridge failed: …` |
+| `/proxy-inline/` | **VERIFIED** — 148 KB self-contained document, no external references |
+| The popup hands the document over | **NOT RE-VERIFIED** — the last run left the popup's fragment empty because the popup was *also* loading the target in its own iframe, and the two requests starved each other in the proxy's serialised upstream queue. The popup no longer renders the page in bridge mode, and it logs each step (`[bridge] …`) to the console. |
+| The panel on the WebVM page | **BUILT** — a "Proxy" button in the bottom-right corner opens the panel with target buttons (Kaggle / Example / Google) |
 
-#### The one remaining step
+### The alternative: an https origin for the proxy
 
-Give the proxy an `https://` origin with a **publicly trusted**
-certificate. The proxy then serves it, the browser fetches it with CORS,
-the page injects it with `srcdoc`, and the DOM stays reachable.
+If the bridge popup turns out to be too fiddly, the proxy can be published
+over https with a publicly trusted certificate instead. That is the
+"real server" case, where **https → http upstream is normal** — nginx,
+Caddy and `tailscale serve` all do it, because the *server* makes the
+outbound request and servers are not bound by the browser's mixed-content
+rules.
 
-**Where the certificate has to live — and why**
-
-A `https` front talking to a plain `http` upstream is completely normal:
-nginx, Caddy and `tailscale serve` all do it, because the **server** makes
-the outbound request and servers are not subject to the browser's
-mixed-content rules.
-
-The important distinction here is **who plays the server role**:
-
-- `https://scatterp2.github.io/webvm/httpsproxy/` is **not a server** —
-  GitHub Pages serves static files. The only thing that can act as the
-  server for that route is the site's **Service Worker, which runs in the
-  browser**. Its outbound request to the WebVM is therefore made by the
-  browser from a secure context, and the browser's mixed-content rules
-  apply to it. That is why the Service Worker route cannot use the VM's
-  plain-`http://` proxy.
-- A **real** https front (Tailscale Serve) *is* a server. It terminates
-  https with a real certificate and forwards to `http://<vm>:28082`
-  server-side, over the tailnet. The browser only ever sees https. This
-  is the ordinary "https front, http upstream" arrangement and it has no
-  mixed-content problem at all.
-
-So the certificate belongs on the **browser → proxy** hop, and it is
-needed for the browser to trust it — nothing else.
-
-**Recipe (the tagged auth key makes the target stable)**
-
-1. **Enable Serve on the tailnet** — one click at the link
-   `tailscale serve` prints:
-   `https://login.tailscale.com/f/serve?node=nc9YBdxiPq11CNTRL`
-2. **Create a Tailscale auth key that carries the tag `tag:webvm`** (in
-   the admin console, *Settings → Keys → Generate auth key*, then add the
-   tag `tag:webvm`). A tagged node is always named `tag-webvm`, so the
-   node name no longer changes when the WebVM reboots.
-3. **Put that key in the WebVM URL**:
-   `https://scatterp2.github.io/webvm/?reset=1745#authKey=tskey-auth-…`
-4. **Publish the proxy** (once; the target name is stable):
-   ```powershell
-   cd examples/python3
-   python publish_proxy.py --tag tag:webvm
-   ```
-   which runs `tailscale serve --bg http://tag-webvm.tailf987e.ts.net:28082`
-   and prints the resulting `https://…/proxy/<url>` URL.
-5. The WebVM page picks that origin up automatically (it is in the
-   candidate list), or force it with `#proxyOrigin=<url>` in the page
-   hash.
-
-Without a tagged key the same command still works, but the target has to
-be the live address, so it has to be re-run after each reboot:
-`python publish_proxy.py`.
-
-**Nothing is installed on the laptop**: no certificate, no trust-store
-change, no `127.0.0.1` forwarder. `tailscaled` on the host is already
-running; this only adds a serve configuration to it.
-
-#### The alternative: a certificate on the WebVM itself
-
-The WebVM already serves https on `:28443` with a development certificate
-for the tailnet's MagicDNS names (`*.tailf987e.ts.net`), fetched from
-`main` at boot. The chain verifies — `VERIFIED CHAIN OK -> 200 ok`.
-
-Using it would need the development CA in the browser's trust store, which
-is **not** possible here: adding a root certificate needs a confirmation
-dialog and this session cannot show one (`certutil` hangs,
-`Import-Certificate` reports *"UI is not allowed in this operation"*,
-and `CertAddEncodedCertificateToStore` returns `ERROR_CANCELLED`). The
-certificate files stay on the WebVM; only the trust anchor would have to
-be installed locally, and that is deliberately not done.
+| Route | Needs | Notes |
+|---|---|---|
+| **Tailscale Serve** on the tailnet | Serve enabled on the tailnet (one click) and `python examples/python3/publish_proxy.py --tag tag:webvm` | A publicly trusted certificate, so **no CA has to be trusted at all**. The target is the WebVM's **node name**, which is stable when the node is registered with a tagged auth key (`tag:webvm` → `tag-webvm.tailf987e.ts.net`); without a tag the command has to be re-run after every reboot. |
+| The WebVM's own TLS listener on `:28443` | the development CA trusted by the browser | The cert and key live on the **WebVM** (fetched from `main` at boot, never from the laptop) and the chain verifies: `VERIFIED CHAIN OK -> 200 ok`. But adding a root certificate needs a confirmation dialog and this session cannot show one (`certutil` hangs, `Import-Certificate` reports *"UI is not allowed in this operation"*, `CertAddEncodedCertificateToStore` returns `ERROR_CANCELLED`), so this is deliberately not done. |
 
 #### Why `tailscale cert` cannot be run on the WebVM
 
@@ -484,23 +428,8 @@ holding the node key:
   appears in the browser console), so the node key lives in the browser's
   WebAssembly memory and is not reachable from the guest.
 
-So the node key is only available in the browser, and the certificate has
-to be issued through the tailnet's own Serve/HTTPS facility instead.
-
-### The other route: an https origin for the proxy
-
-If the worker cannot fetch plain http, the proxy needs an **https** origin
-whose certificate the browser trusts. Two implementations exist:
-
-| Route | Needs | Notes |
-|---|---|---|
-| The WebVM's own TLS listener on `:28443` | the development CA trusted by the browser | The cert and key live on the **WebVM** (fetched from `main` at boot, never from the laptop). The chain verifies: `VERIFIED CHAIN OK -> 200 ok`. `examples/python3/install_dev_ca.py` adds the CA without the UI prompt that `certutil`/`Import-Certificate` want — although on this machine even the Win32 API call is blocked by the protected-root prompt ("UI is not allowed in this operation"). |
-| **Tailscale Serve** on the tailnet | Serve enabled on the tailnet (one click) and `tailscale serve --bg http://127.0.0.1:28443` | A publicly trusted certificate, so **no CA has to be trusted at all** and nothing has to be installed on the laptop. The tailnet currently reports `Serve is not enabled on your tailnet`; enabling it is a single visit to the link `tailscale serve` prints. |
-
-`examples/python3/proxy_forward.py` publishes the proxy on
-`127.0.0.1:28443` and re-resolves the live WebVM automatically, so a
-`tailscale serve` target stays valid even though the WebVM's address
-changes on every boot.
+So the node key is only available in the browser, and a certificate has to
+be issued through the tailnet's own Serve/HTTPS facility instead.
 
 ### Service Worker update gotcha (cost a lot of time)
 
@@ -517,7 +446,7 @@ To pick up a new worker:
 3. **Reload the page**
 4. Check `navigator.serviceWorker.controller.scriptURL`
 
-`src/app.html` now loads `serviceWorker.js?v=3` so a deployed change gets a
+`src/app.html` loads `serviceWorker.js?v=7`, so a deployed change gets a
 new worker identity instead of being served from the stale cache. **Bump
 the `?v=` number whenever `serviceWorker.js` changes.**
 
@@ -526,7 +455,12 @@ does not happen at all, so after a deploy either unregister + reload, or
 register the new worker explicitly from the console:
 
 ```js
-const reg = await navigator.serviceWorker.register('/webvm/serviceWorker.js?v=4', {scope: '/webvm/'});
+const reg = await navigator.serviceWorker.register('/webvm/serviceWorker.js?v=8', {scope: '/webvm/'});
+await reg.update();
+```
+
+and then reload the page so the new worker becomes the controller.
+
 await reg.update();
 ```
 
@@ -600,6 +534,9 @@ suspicions and partial observations, not confirmed root causes.**
 | 18 | Adding a root certificate to the Windows trust store needs a **UI confirmation**, which a non-interactive session cannot answer | `certutil -user -addstore` hung on a dialog; `Import-Certificate` failed with `UI is not allowed in this operation`; `CertAddEncodedCertificateToStore` hung on the same protected-root prompt | **High** — `install_dev_ca.py` calls the Win32 API, but the protected-root prompt still applies; the Tailscale Serve route avoids the problem entirely |
 | 19 | The browser shares this machine's network namespace (`http://127.0.0.1:<port>` opened from the browser reached a server started here) | A local HTTP server on `127.0.0.1:18099` returned `HOSTLOCAL_OK` in the browser | **High** — useful for testing, but it is a machine dependency, so it is not used in the design |
 | 20 | **Two concurrent TLS handshakes inside the WebVM wedge the whole VM.** A TLS handshake blocks CheerpX's cooperative scheduler, so interleaved handshakes starve each other and the accept loop never runs — the ports stop answering and the VM looks dead | The terminal showed two `UPSTREAM_PHASE url_connect … ok` lines and no `tls_done`; the host could reach the same URL in 0.2 s; the ports then stopped answering entirely | **High** — the upstream fetches are now serialised through a semaphore of 1. A limit of 4 was not enough, 1 is. The local suite fires 12 simultaneous requests and all are answered |
+| 21 | **The WebVM does not boot without cross-origin isolation.** With `COEP`/`COOP` removed the guest hangs at start-up and never registers on the tailnet | The terminal stopped at the welcome banner with no prompt, and no node appeared in `tailscale status`; adding `?coi=1` to the page URL (which restored the headers) brought it straight back | **High** — the headers are required, and `COOP: same-origin` is what nulls a popup's `window.opener`, so the bridge popup hands the document over in its URL fragment instead |
+| 22 | The Pages deploy can fail **after** a successful build. Only the `actions/deploy-pages@v4` step failed | Run `a5d6a98`: the build job (Docker image, `vite build`, artifact upload) was green, the deploy job was not. The job logs need auth to read, so the cause is unknown; re-running the workflow fixed it | Medium — treat a failed Pages deploy as retryable, and touch `redeploy` to re-run it |
+| 23 | The bridge popup and the page were starving each other: the popup loaded the target in its own iframe **and** fetched the self-contained document, and both go through the proxy whose upstream fetches are serialised | `/proxy-inline/` took 40 s instead of 18 s while the popup's iframe was loading the same page; the popup's fragment stayed empty | **High** — in bridge mode the popup no longer renders the page, and it logs `[bridge] …` to the console |
 
 ## Host-side tooling (kept in the repo)
 
@@ -639,9 +576,9 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 |------|---------|
 | `reset` | Plain-text reset generation; changing it triggers the deployed WebVM reset poller |
 | `src/app.html` | Polls `reset` and dispatches the browser reset event; loads `serviceWorker.js?v=2` (bump the `?v=` when the worker changes) |
-| `src/lib/WebVM.svelte` | WebVM browser-host integration, Tailscale auto-connect, the Tailscale-IP banner, the Proxy panel |
+| `src/lib/WebVM.svelte` | WebVM browser-host integration, Tailscale auto-connect, the Tailscale-IP banner, the Proxy panel and the bridge popup |
 | `src/lib/network.js` | Tailscale auth key, connection state, netmap callbacks, `currentIpStore` / `currentDnsNameStore` |
-| `serviceWorker.js` | The site's Service Worker: adds the COI headers **and** hosts the `/webvm/httpsproxy` proxy bridge |
+| `serviceWorker.js` | The site's Service Worker: adds the COI headers **and** hosts the `/webvm/httpsproxy` routes and the `/webvm/httpsproxy/diag` diagnostic |
 | `examples/python3/pi.py` | Boot launcher — starts proxy, loads pi_impl, runs main() |
 | `examples/python3/pi_impl.py` | Runtime orchestration, endpoint self-tests, Kaggle submission |
 | `examples/python3/web_adjuster/launcher.py` | The proxy itself: raw-socket HTTP server, wrapper `:28082` + forward proxy `:28081`/`:28083`, header stripping, URL rewriting, script injection |
@@ -655,6 +592,8 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 | `examples/python3/publish_proxy.py` | Publishes the proxy over https with `tailscale serve`, targeting the WebVM's node **name** (stable with a tagged auth key) |
 | `examples/python3/make_proxy_certs.py` | Generates the throwaway development CA and the wildcard certificate for the tailnet's MagicDNS names |
 | `examples/python3/install_dev_ca.py` | Adds that CA to the current user's trust store (blocked on this machine by the protected-root prompt) |
+| `examples/python3/check_sw.py` | Checks that the deployed `serviceWorker.js` really contains the expected changes |
+| `examples/python3/inspect_proxy.py` | Reports a proxied response's CSP, the nonces in it and the nonce on the injected script |
 | `examples/python3/check_tls.py` | Verifies the WebVM's HTTPS proxy and its certificate chain |
 | `examples/python3/web_adjuster/tls/` | The development CA and server certificate. **The private key is committed on purpose** so the WebVM can fetch it at boot; it only ever protects a throwaway local CA |
 | `redeploy` | Append a line to trigger GitHub Pages rebuild |
