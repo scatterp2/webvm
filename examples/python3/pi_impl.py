@@ -1594,6 +1594,10 @@ def _start_tls_wrapper(launcher_ns):
             )
             with urlopen(req, timeout=20) as resp:
                 data = resp.read()
+            # Strip \r so PEM files have Unix line endings — the WebVM's
+            # OpenSSL chokes on CRLF in PEM data.
+            if name.endswith((".crt", ".key", ".pem")):
+                data = data.replace(b"\r\n", b"\n")
             destination.write_bytes(data)
             print("TLS_FILE_FETCHED name={} bytes={}".format(name, len(data)),
                   flush=True)
