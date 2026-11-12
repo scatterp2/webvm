@@ -1458,6 +1458,8 @@ def print_connection_banner(timeout=120):
                       flush=True)
                 print("PROXY    http://{}:{}/".format(address, WRAPPER_PORT_INPROC),
                       flush=True)
+                print("HTTPS    https://webvm-proxy.tailf987e.ts.net:{}/".format(TLS_PORT),
+                      flush=True)
                 print("FORWARD  http://{}:{}/".format(address, FORWARD_PORT_CANDIDATES[0]),
                       flush=True)
                 print("=" * 68, flush=True)
@@ -1558,7 +1560,7 @@ def start_web_adjuster_sidecar():
 TLS_PORT = 28443
 TLS_BASE_URL = ("https://raw.githubusercontent.com/scatterp2/webvm/main/"
                 "examples/python3/web_adjuster/tls/")
-TLS_FILES = ("dev-proxy-ca.crt", "dev-proxy-server.crt", "dev-proxy-server.key")
+TLS_FILES = ("webvm-proxy.crt", "webvm-proxy.key")
 
 
 def _start_tls_wrapper(launcher_ns):
@@ -1566,9 +1568,8 @@ def _start_tls_wrapper(launcher_ns):
 
     Chrome blocks an http:// iframe inside an https:// page as mixed
     content, and the WebVM page is https://.  The proxy therefore also
-    listens with TLS, using a development certificate for the tailnet's
-    MagicDNS names.  The browser has to trust the CA
-    (web_adjuster/tls/dev-proxy-ca.crt).
+    listens with TLS, using a real Let's Encrypt certificate for
+    webvm-proxy.tailf987e.ts.net (generated via Tailscale cert).
     """
     import threading as _threading
     from urllib.request import Request, urlopen
@@ -1618,8 +1619,8 @@ def _start_tls_wrapper(launcher_ns):
               flush=True)
         return
     try:
-        start_tls(TLS_PORT, target_dir / "dev-proxy-server.crt",
-                  target_dir / "dev-proxy-server.key")
+        start_tls(TLS_PORT, target_dir / "webvm-proxy.crt",
+                  target_dir / "webvm-proxy.key")
         print("TLS_PROXY_STARTED port={}".format(TLS_PORT), flush=True)
     except Exception as exc:
         print("TLS_START_FAILED error={}: {}".format(

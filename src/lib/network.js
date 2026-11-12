@@ -294,7 +294,7 @@ export function updateButtonData(state, handleConnect) {
 	}
 }
 
-export const networkInterface = { authKey: authKey, controlUrl: controlUrl, loginUrlCb: loginUrlCb, stateUpdateCb: stateUpdateCb, netmapUpdateCb: netmapUpdateCb };
+export const networkInterface = { authKey: authKey, controlUrl: controlUrl, hostname: "webvm-proxy", loginUrlCb: loginUrlCb, stateUpdateCb: stateUpdateCb, netmapUpdateCb: netmapUpdateCb };
 
 export const networkData = { currentIp: null, currentIpStore: currentIpStore, currentDnsNameStore: currentDnsNameStore, connectionState: connectionState, exitNode: exitNode, kaggleTcpLink: kaggleTcpLink, loginUrl: null, dashboardUrl: dashboardUrl }
 
