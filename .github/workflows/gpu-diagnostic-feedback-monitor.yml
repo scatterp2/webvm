@@ -1,6 +1,6 @@
 name: GPU diagnostic feedback monitor
-# Separate GPU telemetry from the shared WebVM / IO-loop feedback stream.
-
+# Monitor direct GPU telemetry and WebVM snapshots that explicitly report why
+# GPU telemetry is absent. Print only diagnostic evidence, never whole paste bodies.
 on:
   push:
     branches:
@@ -24,17 +24,36 @@ jobs:
           import time
           from datetime import datetime, timezone
 
-          TAG = "WVMGPU_DIAG_20261107_6D91C42F"
-          # A WebVM wrapper can mention GPU settings, so require Kaggle-origin
-          # telemetry plus an actual diagnostic marker before accepting a match.
+          TAGS = (
+              ("GPU", "WVMGPU_DIAG_20261107_6D91C42F"),
+              ("WEBVM", "WVMQWENWS_6D91C42F"),
+          )
           GPU_MARKERS = (
               "GPU_PREFLIGHT_BEGIN",
               "GPU_PREFLIGHT_PASSED",
               "GPU_PREFLIGHT_CLASSIFICATION",
               "TORCH_DIAGNOSTIC",
               "KAGGLE_DIAGNOSTIC_FILE",
+              "GPU_DIAGNOSTIC_DEFERRED",
+              "KAGGLE_DIAGNOSTICS_BEGIN",
           )
-          SEARCH_URL = "https://pste.us/recent?search=" + TAG + "&sort=date&order=desc&limit=51"
+          SAFE_EVIDENCE = re.compile(
+              r"GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|TORCH_DIAGNOSTIC|"
+              r"KAGGLE_DIAGNOSTIC_FILE|nvidia-smi|/dev/nvidia|"
+              r"cuda\.is_available|torch\.version\.cuda|CUDA availability|CUDA build|"
+              r"GPU_DIAGNOSTIC_DEFERRED|KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|"
+              r"Traceback|RuntimeError|ImportError|ModuleNotFoundError|FileNotFoundError|"
+              r"OSError|ProbeTimeout|Could not resolve|Name or service not known|"
+              r"DNS.*(?:fail|error|timeout)|(?:fail|error|timeout).*DNS|"
+              r"(?:network|publish|upload).*(?:fail|error|timeout)|"
+              r"(?:fail|error|timeout).*(?:network|publish|upload)",
+              re.IGNORECASE,
+          )
+          SENSITIVE = re.compile(
+              r"\b(?:token|password|secret|credential|authorization|api[_-]?key)\b",
+              re.IGNORECASE,
+          )
+          SEARCH_BASE = "https://pste.us/recent?search="
           RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
@@ -53,54 +72,74 @@ jobs:
               )
               return result.stdout
 
-          print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
-          print(f"[{stamp()}] Polling pste.us recent-pastes page for up to {WINDOW_SECONDS}s; accepting direct or relayed Kaggle diagnostics", flush=True)
+          print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_STARTED tags=GPU,WEBVM", flush=True)
+          print(f"[{stamp()}] Polling pste.us for up to {WINDOW_SECONDS}s; raw paste bodies are never echoed wholesale", flush=True)
 
           while time.monotonic() - START < WINDOW_SECONDS:
+              listed = {"GPU": 0, "WEBVM": 0}
               matches = 0
               ignored = 0
-              try:
-                  page = fetch_text(SEARCH_URL, max_time=5)
-                  # Query the tag-specific search endpoint so older GPU snapshots are not
-                  # missed merely because newer unrelated pastes pushed them off page 1.
-                  ids = list(dict.fromkeys(re.findall(
-                      r"""<a\b[^>]*\bhref=["']/([A-Za-z0-9_-]{8,})["'][^>]*>""", page, re.IGNORECASE
-                  )))
+              for label, tag in TAGS:
+                  search_url = SEARCH_BASE + tag + "&sort=date&order=desc&limit=51"
+                  try:
+                      page = fetch_text(search_url, max_time=5)
+                      ids = list(dict.fromkeys(re.findall(
+                          r"""<a\b[^>]*\bhref=["']/([A-Za-z0-9_-]{8,})["'][^>]*>""",
+                          page, re.IGNORECASE
+                      )))
+                      listed[label] = len(ids)
+                  except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                      print(f"[{stamp()}] SEARCH_FETCH_FAILED tag={label} error={type(exc).__name__}", flush=True)
+                      continue
+
                   for pid in ids[:51]:
-                      if pid in SEEN:
+                      key = (tag, pid)
+                      if key in SEEN:
                           continue
                       try:
                           body = fetch_text(RAW_BASE + pid, max_time=4)
                       except (subprocess.SubprocessError, OSError) as exc:
-                          print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
+                          print(f"[{stamp()}] RAW_FETCH_FAILED tag={label} id={pid} error={type(exc).__name__}", flush=True)
                           continue
-                      if TAG not in body:
-                          SEEN.add(pid)
+
+                      if tag not in body:
+                          SEEN.add(key)
                           continue
-                      has_gpu_diagnostic = any(marker in body for marker in GPU_MARKERS)
+                      has_diagnostic = any(marker in body for marker in GPU_MARKERS)
                       source_kaggle = "source=KAGGLE" in body
-                      # Kaggle may be unable to resolve pste.us. In that case pi.py
-                      # can relay the authoritative Kaggle notebook log in a WebVM
-                      # snapshot. Require the collection boundary to reject wrapper-
-                      # only messages that merely mention GPU configuration.
                       source_collected_logs = (
                           "source=WEBVM" in body
-                          and "KAGGLE_DIAGNOSTICS_BEGIN" in body
+                          and (
+                              "KAGGLE_DIAGNOSTICS_BEGIN" in body
+                              or "GPU_DIAGNOSTIC_DEFERRED" in body
+                          )
                       )
-                      if not has_gpu_diagnostic or not (source_kaggle or source_collected_logs):
-                          SEEN.add(pid)
+                      if not has_diagnostic or not (source_kaggle or source_collected_logs):
+                          SEEN.add(key)
                           ignored += 1
-                          print(f"[{stamp()}] NON_GPU_FEEDBACK_IGNORED id={pid}", flush=True)
                           continue
-                      SEEN.add(pid)
-                      source_kind = "KAGGLE" if source_kaggle else "WEBVM_COLLECTED_KAGGLE_LOGS"
-                      print(f"\n===== GPU_FEEDBACK_MATCH id={pid} source={source_kind} =====", flush=True)
-                      print(body[-18000:], flush=True)
+
+                      SEEN.add(key)
+                      source_kind = "KAGGLE" if source_kaggle else "WEBVM_RELAY"
+                      print(f"\n===== GPU_FEEDBACK_MATCH id={pid} tag={label} source={source_kind} =====", flush=True)
+                      evidence_count = 0
+                      for raw_line in body.splitlines():
+                          line = raw_line.strip()
+                          if not line or len(line) > 2000 or SENSITIVE.search(line):
+                              continue
+                          if SAFE_EVIDENCE.search(line):
+                              print("GPU_EVIDENCE " + line[:700], flush=True)
+                              evidence_count += 1
+                      if evidence_count == 0:
+                          print("GPU_FEEDBACK_MATCH_NO_SAFE_DIAGNOSTIC_LINES", flush=True)
                       print("===== END_GPU_FEEDBACK_MATCH =====\n", flush=True)
                       matches += 1
-                  print(f"[{stamp()}] POLL_OK listed={len(ids)} new_gpu_matches={matches} ignored_non_gpu={ignored} seen={len(SEEN)}", flush=True)
-              except (subprocess.SubprocessError, OSError, ValueError) as exc:
-                  print(f"[{stamp()}] SEARCH_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
+
+              print(
+                  f"[{stamp()}] POLL_OK listed_gpu={listed['GPU']} listed_webvm={listed['WEBVM']} "
+                  f"new_gpu_matches={matches} ignored_non_gpu={ignored} seen={len(SEEN)}",
+                  flush=True,
+              )
               time.sleep(15)
 
           print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_FINISHED seen={len(SEEN)}", flush=True)
