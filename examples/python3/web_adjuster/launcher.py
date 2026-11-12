@@ -979,30 +979,48 @@ PAGE_TEMPLATE = """<!doctype html>
     window.setTimeout(poll, 2000);
   })();
 
-  // Bridge mode: this page was opened as a popup by the WebVM page.  Fetch
-  // the self-contained document (its sub-resources are already inlined, so
-  // it has no http:// references left) and hand it to the opener, which
-  // injects it with srcdoc.  That keeps the frame same-origin with the
-  // https page, which is what preserves DOM access.
+  // Bridge mode: this page was opened as a popup by the WebVM page.
+  //
+  // The WebVM page is https and cannot fetch the proxy's http:// address
+  // (mixed content), and a popup cannot postMessage back to its opener
+  // because the page sets Cross-Origin-Opener-Policy: same-origin, which
+  // nulls window.opener.  But the opener CAN read popup.location.href
+  // cross-origin, so the document is handed over in the popup's fragment.
+  //
+  // The document is self-contained (every sub-resource is inlined as a
+  // data: URI by the proxy), so the opener can inject it with srcdoc and
+  // the frame inherits the opener's origin — which keeps DOM access.
   if (__BRIDGE_FLAG__) {
     document.getElementById('status').textContent =
       'Bridge mode: fetching the self-contained document...';
     fetch('/proxy-inline/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
       .then(function (r) { return r.text(); })
       .then(function (html) {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({type: 'webvm-proxy-html', html: html}, '*');
-          window.close();
-        } else {
-          document.getElementById('status').textContent =
-            'No opener to hand the document to.';
+        document.getElementById('status').textContent =
+          'Bridge mode: handing the document to the opener (' + html.length
+          + ' bytes)...';
+        // Hand it over in the fragment.  The opener polls
+        // popup.location.href and extracts the chunks.  The chunks are
+        // paced so the opener cannot miss one.
+        var chunkSize = 40000;
+        var total = Math.max(1, Math.ceil(html.length / chunkSize));
+        var i = 0;
+        function nextChunk() {
+          if (i >= total) {
+            location.hash = 'doc=done';
+            document.getElementById('status').textContent =
+              'Bridge mode: document handed over (' + html.length + ' bytes).';
+            return;
+          }
+          location.hash = 'doc=' + i + '-' + total + ':'
+            + encodeURIComponent(html.substr(i * chunkSize, chunkSize));
+          i++;
+          setTimeout(nextChunk, 600);
         }
+        nextChunk();
       })
       .catch(function (e) {
         document.getElementById('status').textContent = 'Bridge failed: ' + e;
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({type: 'webvm-proxy-error', error: String(e)}, '*');
-        }
       });
   }
 })();

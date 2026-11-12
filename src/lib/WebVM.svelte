@@ -88,6 +88,10 @@
 		return {https: https, http: http};
 	}
 
+	var proxyBridgePopup = null;
+	var proxyBridgeChunks = {};
+	var proxyBridgeTotal = 0;
+
 	async function loadProxyFrame()
 	{
 		if(!proxyHttpBase) {
@@ -99,9 +103,10 @@
 		// it itself.  A popup opened on the proxy's own http origin can:
 		// it asks the proxy for a self-contained document (every
 		// sub-resource is inlined server side, where the mixed-content
-		// rule does not apply) and posts it back here.  Injecting it with
-		// srcdoc keeps the frame same-origin with this page, so the DOM
-		// of the proxied page stays reachable.
+		// rule does not apply) and hands it back in its URL fragment.
+		// The opener can read popup.location.href across origins, and
+		// injecting the document with srcdoc keeps the frame
+		// same-origin with this page, so the DOM stays reachable.
 		try {
 			const popup = window.open(
 				proxyHttpBase + "/?bridge=1&target="
@@ -112,11 +117,72 @@
 					+ "for this site and try again.";
 				return;
 			}
+			proxyBridgePopup = popup;
+			proxyBridgeChunks = {};
+			proxyBridgeTotal = 0;
 			proxyStatus = "Waiting for the bridge popup to return the "
 				+ proxyTarget + " document...";
+			pollBridgePopup();
 		} catch (e) {
 			proxyStatus = "Could not open the bridge popup (" + e + ").";
 		}
+	}
+
+	function pollBridgePopup()
+	{
+		const popup = proxyBridgePopup;
+		if(!popup || popup.closed) {
+			return;
+		}
+		let href = "";
+		try {
+			href = popup.location.href;
+		} catch (e) {
+			// A cross-origin popup can still be read for location.href.
+			return;
+		}
+		const marker = "doc=";
+		const index = href.indexOf(marker);
+		if(index !== -1) {
+			const payload = href.substring(index + marker.length);
+			if(payload === "done") {
+				finishBridge();
+				return;
+			}
+			const sep = payload.indexOf(":");
+			const head = payload.substring(0, sep);
+			const dash = head.indexOf("-");
+			const part = parseInt(head.substring(0, dash), 10);
+			const total = parseInt(head.substring(dash + 1), 10);
+			proxyBridgeTotal = total;
+			proxyBridgeChunks[part] = decodeURIComponent(payload.substring(sep + 1));
+			const have = Object.keys(proxyBridgeChunks).length;
+			proxyStatus = "Bridge: received " + have + "/" + total + " chunks...";
+		}
+		setTimeout(pollBridgePopup, 200);
+	}
+
+	function finishBridge()
+	{
+		let html = "";
+		for(let i = 0; i < proxyBridgeTotal; i++) {
+			html += (proxyBridgeChunks[i] || "");
+		}
+		proxyBridgeTotal = 0;
+		proxyBridgeChunks = {};
+		if(!html) {
+			proxyStatus = "The bridge popup returned an empty document.";
+			return;
+		}
+		if(proxyFrameEl) {
+			proxyFrameEl.srcdoc = html;
+			proxyStatus = "Loaded " + html.length
+				+ " bytes through the bridge - srcdoc frame keeps DOM access.";
+		}
+		if(proxyBridgePopup && !proxyBridgePopup.closed) {
+			try { proxyBridgePopup.close(); } catch (e) { }
+		}
+		proxyBridgePopup = null;
 	}
 
 	function handleProxyMessage(event)
