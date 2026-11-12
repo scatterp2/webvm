@@ -2,6 +2,19 @@
 
 > Keep this section current. These notes let an AI agent continue the work without asking the user to repeat repository context.
 
+## Where things stand
+
+| Goal | State | Evidence |
+|---|---|---|
+| 1 — Tailscale auto-connect | **DONE** | The node gets a 100.x address on every boot and the address is printed in the WebVM terminal. |
+| 2 — Telnet access to the VM | **DONE** | `plink.exe -raw -P 2323 <ip>` gives a root shell. |
+| 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
+| 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | The iframe shows the real Kaggle page and the parent can read its DOM. |
+| 4b — that iframe inside the GitHub Pages WebVM page | **BLOCKED ON ONE CLICK** | Chrome blocks an `http://` frame on an `https://` page, so the proxy needs an `https://` origin the browser trusts. Enabling **Tailscale Serve** on the tailnet gives one (see Goal 4). |
+
+The only outstanding step is enabling Tailscale Serve on the tailnet — one
+click at the link `tailscale serve` prints.
+
 ## Active Goals (in priority order)
 
 ### Goal 1: Fix Tailscale auto-connect (DONE)
@@ -148,14 +161,21 @@ This is the reason the proxy exists, not just a smoke test:
 | Wrapper answers `/health` inside WebVM on `:28082` | **PASS** — `HTTP/1.1 200 OK` + `ok` |
 | Forward proxy `:28081` inside WebVM | **PASS** — absolute-URI request `GET http://example.com/` → `HTTP/1.1 200 OK`, marker injected |
 | Real site fetched through the proxy **inside WebVM** | **PASS** — `https://example.com/` → `200`, `content-type: text/html; charset=utf-8`, title `Example Domain`, 1106 bytes, `x-frame-options` absent, marker injected |
-| Kaggle fetched through the proxy inside WebVM | **PASS (fetch)** — `https://www.kaggle.com/` → `200`, 21206 bytes, `x-frame-options` absent, marker injected, absolute URLs rewritten to `/proxy/<encoded>` (e.g. `<base href="/proxy/https%3A%2F%2Fwww.google.com%2Frecaptcha%2F...">`). Kaggle answered with its **reCAPTCHA "Checking your browser"** interstitial, not the app |
+| Kaggle fetched through the proxy inside WebVM | **PASS** — `https://www.kaggle.com/` → `200`, 21206 bytes, `x-frame-options` absent, marker injected, absolute URLs rewritten to `/proxy/<encoded>` (e.g. `<base href="/proxy/https%3A%2F%2Fwww.google.com%2Frecaptcha%2F...">`). From a bare `urllib` request Kaggle answers with its **reCAPTCHA "Checking your browser"** interstitial; from the **browser** it answers with the **real Kaggle page** |
 | `PROXIED status=200` lines in the WebVM terminal | **PASS** — confirms the request went through the in-process proxy |
 | `x-frame-options` stripped | **PASS** — header absent from the proxied response |
 | Script injection | **PASS** — `WEBVM_ADJUSTER_INJECTED` and `data-webvm-adjuster-injected` both present in the proxied body |
+| Script injection on a **CSP-nonce** page | **PASS** — a nonce in `script-src` makes browsers ignore `'unsafe-inline'`, so the injected `<script>` now carries the page's own nonce. Without that, Kaggle's page loaded but the marker never appeared |
 | `Errno 107` traceback | **GONE** — no `socketserver` is used any more |
-| `PROXY_SELF_TEST_PASS` in the WebVM terminal | **NOT YET OBSERVED** — the self-test never ran because of the telnet `exec` bug below; fixed, needs a fresh reset to confirm |
-| Kaggle **app** (not the reCAPTCHA interstitial) loaded and usable in the iframe | **NOT YET VERIFIED** — Goal 4 |
-| JS/DOM injection confirmed inside the iframe | **NOT YET VERIFIED** — the iframe's document was still `readyState: "loading"` after 85 s for the heavy Kaggle page; the check is now robust and polls, but needs a re-run |
+| Upstream read bounded in time | **PASS** — CheerpX has no `select()`, so Python socket timeouts never fire; a watchdog thread closes the socket instead. The upstream fetch completes in ~2.4 s instead of hanging forever |
+| Connection reuse | **PASS** — keep-alive connections are pooled per host (a TLS handshake per request is far too slow under CheerpX) |
+| Response cache | **PASS** — 120 s cache for GET responses without `Set-Cookie` |
+| Compressed bodies | **PASS** — the upstream request forces `Accept-Encoding: identity`; the browser's `gzip, deflate, br` would otherwise make the rewriting corrupt the body |
+| HTTPS listener on `:28443` | **PASS** — `TLS_WRAPPER_LISTENING port=28443`, and the chain verifies against the development CA (`VERIFIED CHAIN OK -> 200 ok`) |
+| Kaggle **app** loaded and usable in the iframe | **PASS** — `title: "Kaggle: The World's AI Proving Ground"` |
+| JS/DOM injection confirmed inside the iframe | **PASS** — `JS/DOM INJECTION CONFIRMED: marker element present = true, documentElement attribute = true` |
+| DOM access from the parent page | **PASS** — `sameOrigin: true`; the parent reads `frame.contentDocument` |
+| In-VM boot self-test | **OFF by default** (`WEBVM_SELFTEST=1` enables it) — see below |
 
 #### Additional bug found while verifying — `main()` was blocked
 
@@ -246,59 +266,84 @@ then reload.
 
 ### Goal 4: Load Kaggle via proxy in iframe (browser integration)
 
-**Status:** Not started. Depends on the Goal 3 re-verification above.
+**Status:** The proxy iframe works and keeps DOM access. Verified in the
+browser against the live WebVM:
 
-**Design — the iframe host page must be the WebVM's own wrapper page.**
+```
+title      : "Kaggle: The World's AI Proving Ground"
+status     : "JS/DOM INJECTION CONFIRMED: marker element present = true,
+              documentElement attribute = true, marker text = WEBVM_ADJUSTER_INJECTED"
+sameOrigin : true        <- the parent can read and drive the frame's DOM
+markerFound: true        <- the injected script executed inside the frame
+```
 
-The proxy serves the wrapper page at `http://<tailscale-ip>:28082/`, and
-that page contains the iframe whose `src` is
-`/proxy/<url-encoded target>` (default target `https://www.kaggle.com/`,
-overridable with `/?target=<url>`).
+**How it is reached:** open the WebVM's own proxy page,
+`http://<tailscale-ip>:28082/`, which renders the target in an iframe. The
+parent page and the iframe are the **same origin**, which is what keeps DOM
+access working, and `http://` on an `http://` page is not mixed content.
+`?target=<url>` selects a different target (default
+`https://www.kaggle.com/`).
 
-This has to be the **WebVM's own page**, not the GitHub Pages page:
+**Why the iframe cannot simply live on the GitHub Pages WebVM page:**
+that page is served over `https://`, and Chrome hard-blocks an `http://`
+frame there:
 
-- **DOM access requires same-origin.** The parent must be able to read
-  `frame.contentDocument` to drive the proxied site. If the iframe lived on
-  `https://scatterp2.github.io/webvm/` the iframe origin would be
-  `http://<tailscale-ip>:28082` — cross-origin — and the parent could not
-  touch the DOM at all. Serving both from `:28082` keeps them same-origin.
-- **It also avoids mixed content.** An `http://` iframe inside the HTTPS
-  GitHub Pages page is blocked by Chrome as active mixed content, so the
-  iframe would not even load there.
+```
+Mixed Content: The page at 'https://scatterp2.github.io/webvm/' was loaded
+over HTTPS, but requested an insecure frame 'http://100.x.x.x:28082/'.
+This request has been blocked; the content must be served over HTTPS.
+```
 
-So: open `http://<tailscale-ip>:28082/` directly in the browser. The
-WebVM page keeps hosting the VM and the terminal; the wrapper page hosts
-the iframe.
+The request is not even sent, so **CORS headers cannot fix this** — CORS
+is checked after the request succeeds, while mixed content is checked
+before it is made. What CORS *does* fix is the read: the proxy now sends
+`Access-Control-Allow-Origin: *`, and the WebVM page fetches the proxied
+HTML and injects it with `srcdoc`. A `srcdoc` frame inherits the host
+page's origin, so DOM access survives the cross-origin hop.
 
-**Open problems:**
-- **Kaggle answers with a reCAPTCHA interstitial.** Fetching
-  `https://www.kaggle.com/` through the proxy returned Google's
-  "Checking your browser - reCAPTCHA" page (21206 bytes), not the Kaggle
-  app. The proxy itself is fine — this is Kaggle/Google bot detection.
-  Note the proxy forwards the *browser's* headers, so a request made from
-  the real browser (the iframe) has a far more convincing fingerprint than
-  the `urllib` request used for the automated test, which sent almost no
-  browser headers. Getting past the challenge needs testing, not assuming.
-  **Do not report Goal 4 as done until the actual Kaggle app renders
-  inside the iframe.**
+So the WebVM page needs an **https origin for the proxy whose certificate
+the browser trusts**. Two routes, both implemented:
+
+| Route | Needs | Notes |
+|---|---|---|
+| The WebVM's own TLS listener on `:28443` | the development CA trusted by the browser | The cert and key live on the WebVM (fetched from `main` at boot). `examples/python3/install_dev_ca.py` adds the CA without the UI prompt that `certutil`/`Import-Certificate` want (a non-interactive session cannot answer it). |
+| **Tailscale Serve** on the tailnet | Serve enabled on the tailnet (one click) and `tailscale serve --bg http://127.0.0.1:28443` | A publicly trusted certificate, so **no CA has to be trusted at all**. The tailnet currently reports `Serve is not enabled on your tailnet`; enabling it is a single visit to the link `tailscale serve` prints. |
+
+The WebVM page tries the candidates in order and uses the first that
+answers, and a specific one can be forced with `#proxyOrigin=<url>` in the
+page hash:
+
+```
+https://scatterp2.github.io/webvm/?reset=1736
+  #authKey=tskey-auth-...
+  #proxyOrigin=https://desktop-21m8c49.tailf987e.ts.net
+```
+
+`examples/python3/proxy_forward.py` publishes the proxy on
+`127.0.0.1:28443` and re-resolves the live WebVM automatically, so a
+`tailscale serve` target stays valid even though the WebVM's address
+changes on every boot.
+
+**How to test:**
+1. Get the WebVM Tailscale IP from the terminal banner (or `discover.py`).
+2. Open `http://<tailscale-ip>:28082/` in the browser.
+3. Check the page status text for `JS/DOM INJECTION CONFIRMED`.
+4. Check the WebVM terminal for `PROXIED status=200` lines.
+
+**Challenges:**
+- **Kaggle's bot check.** A bare `urllib` request through the proxy gets
+  Google's "Checking your browser - reCAPTCHA" interstitial. From the
+  **browser**, with the browser's own headers forwarded, the real Kaggle
+  page loads — that is what the verification above shows.
 - Kaggle authentication: cookies are rewritten to the proxy origin, so
   logging in through the proxied page should work, but it must be tested
   explicitly — never assumed.
 - Kaggle's SPA makes many additional requests; all absolute URLs are
   rewritten to route back through the proxy, but relative and API calls
   still need checking.
-- Kaggle is a heavy SPA — the proxy handles one request per thread and
-  CheerpX is slow, so a full page load may take minutes.
-- If the wrapper page is opened over `http://` in an `https://` context
-  (for example a bookmark bar in an HTTPS-only browser profile), Chrome may
-  still complain. Opening it as a top-level page is fine.
-
-**How to test:**
-1. Get the WebVM Tailscale IP (`tailscale status`, or `discover.py`).
-2. Open `http://<tailscale-ip>:28082/` in the built-in browser.
-3. Check that the iframe loads the target page.
-4. Check the page status text for `JS/DOM INJECTION CONFIRMED`.
-5. Check the browser console and the WebVM terminal for `PROXIED` lines.
+- Loading a heavy SPA in the same page as the WebVM makes the page
+  unresponsive (the CheerpX runtime and the SPA compete for the same
+  renderer). Start with a light target.
 
 **What NOT to do:**
 - Don't try to extract the Kaggle Jupyter proxy token through RX/TX — that
@@ -325,9 +370,13 @@ suspicions and partial observations, not confirmed root causes.**
 | 10 | `pi_impl.py` exec'ing `telnet_shell.py` into `globals()` runs its `__main__` block and blocks `main()` forever on `threading.Event().wait()` | Terminal showed the telnet lines and then nothing; no "Wrapper:" banner, no `ENDPOINT_TEST` | **High** — fixed by using a dedicated namespace |
 | 11 | A reset generation **older** than the one in the `reset` file does not fire a reset, so a stale `?reset=` in the URL silently does nothing | Console: `Reset signal already handled for generation 1734` while the URL carried `?reset=1715` | **High** |
 | 12 | The Pages deploy workflow only runs when the `redeploy` file changes, so `src/` changes are not published by an ordinary push | `.github/workflows/deploy.yml` `paths: - 'redeploy'` | **High** — touch `redeploy` after changing anything under `src/` |
-| 13 | The **browser's own network is intermittently unavailable**, which makes DNS fail inside the WebVM (`gaierror: [Errno -3] Temporary failure in name resolution`) | Browser console showed `WebSocket connection to 'wss://controlplane.tailscale.com/...' failed` and `Failed to fetch` for the reset file at the same time; the VM terminal showed `UPSTREAM_FAILED ... Temporary failure in name resolution` and `WEBVM_FEEDBACK_FAILED ... name resolution` | **High** — the VM's DNS is resolved by the browser, so browser network loss surfaces as VM DNS failure. The proxy now retries the upstream fetch (3 attempts) instead of returning 502 |
-| 14 | The service worker caches the SvelteKit bundle, so a freshly deployed `src/` change is **not** picked up until the service worker is unregistered and the caches are cleared | The deployed bundle contained `TAILSCALE_IP` but the running page did not; after `navigator.serviceWorker.getRegistrations()` → `unregister()` + `caches.delete()` the banner appeared | **High** — always clear the service worker after a Pages deploy |
-| 15 | A WebVM boot with `main()` blocked (see #10) left the proxy **idle**, which is why the first end-to-end proxy test passed. Once `main()` runs the self-test, the boot-time upstream fetch competes with any request being tested | The successful test ran on the VM whose `main()` was blocked; later VMs stalled on `ENDPOINT_TEST` | Medium — the self-test is still useful, but expect the first request after boot to be slow |
+| 13 | The **browser's own network** was unavailable for a while, which made DNS fail inside the WebVM (`gaierror: [Errno -3] Temporary failure in name resolution`) with the browser console showing failed control-plane WebSockets and failed fetches at the same time | The user confirmed the machine had no internet at that moment | **High** — it was the missing internet, not the VM. The proxy now retries the upstream fetch (3 attempts) instead of returning 502 |
+| 14 | The service worker caches the SvelteKit bundle, so a freshly deployed `src/` change is **not** picked up until the service worker is unregistered and the caches are cleared | The deployed bundle contained `TAILSCALE_IP` but the running page did not; after unregistering the service worker and deleting the caches the banner appeared | **High** — always clear the service worker after a Pages deploy |
+| 15 | A WebVM boot with `main()` blocked (see #10) left the proxy **idle**, which is why the first end-to-end proxy test passed. Once `main()` ran the self-test, the boot-time upstream fetch competed with the request being tested | The successful test ran on the VM whose `main()` was blocked | Medium — the self-test is now off by default |
+| 16 | **CORS cannot make an `http://` frame load on an `https://` page.** Mixed content is checked before the request is made; CORS is checked after it succeeds | Chrome logged `Mixed Content: ... This request has been blocked` and **no request was captured** in the network log. The Service Worker that the site already registers does not bypass it either — the page's `fetch('http://...')` failed with the same mixed-content error | **High** — CORS is still needed for the *read*, which is what makes the `srcdoc` approach work |
+| 17 | **Tailscale Serve is not enabled on this tailnet**, and the WebVM's node cannot enable it (no `tailscaled` in the guest — Tailscale runs in the browser's CheerpX runtime) | `tailscale serve --bg ...` printed `Serve is not enabled on your tailnet` and a one-click enable link; the guest has no `tailscale`/`tailscaled` binary and no node HTTPS listener on 443 | **High** — one click in the admin console enables the publicly-trusted HTTPS route |
+| 18 | Adding a root certificate to the Windows trust store needs a **UI confirmation**, which a non-interactive session cannot answer | `certutil -user -addstore` hung on a dialog; `Import-Certificate` failed with `UI is not allowed in this operation`; `CertAddEncodedCertificateToStore` hung on the same protected-root prompt | **High** — `install_dev_ca.py` calls the Win32 API, but the protected-root prompt still applies; the Tailscale Serve route avoids the problem entirely |
+| 19 | The browser shares this machine's network namespace (`http://127.0.0.1:<port>` opened from the browser reached a server started here) | A local HTTP server on `127.0.0.1:18099` returned `HOSTLOCAL_OK` in the browser | **High** — useful for testing, but it is a machine dependency, so it is not used in the design |
 
 ## Host-side tooling (kept in the repo)
 
@@ -337,10 +386,16 @@ browser terminal:
 | Script | Purpose |
 |---|---|
 | `examples/python3/discover.py` | Reads `tailscale status`, finds the live WebVM node and probes its ports |
-| `examples/python3/vmshell.py` | Runs shell commands **inside** the WebVM over the telnet shell (port 2323); each command is delimited by a unique marker |
+| `examples/python3/vmshell.py` | Runs shell commands **inside** the WebVM over the telnet shell (port 2323); each command is delimited by a unique marker. `--file <path>` reads the commands from a file so shell quoting cannot bite |
 | `examples/python3/probe.py` | Raw HTTP/TCP probes against a given host and port list |
 | `examples/python3/proxy_test.py` | End-to-end proxy test: `/health`, iframe page, `/proxy-status` polling, then a real site fetched **through** the proxy, reporting headers and the injection marker |
-| `examples/python3/test_proxy_local.py` | The same proxy exercised locally on the host (no WebVM needed) |
+| `examples/python3/proxy_once.py` | One proxied fetch, reporting status, headers, marker and title |
+| `examples/python3/fetch_raw.py` | Dumps the raw HTTP response from a host/port/path |
+| `examples/python3/check_tls.py` | Verifies the WebVM's HTTPS proxy and its certificate chain |
+| `examples/python3/test_proxy_local.py` | The same proxy exercised locally on the host (no WebVM needed) — the fastest regression check |
+| `examples/python3/proxy_forward.py` | Publishes the proxy on `127.0.0.1:28443`, re-resolving the live WebVM automatically |
+| `examples/python3/make_proxy_certs.py` | Regenerates the development CA and the wildcard certificate |
+| `examples/python3/install_dev_ca.py` | Adds the development CA to the current user's trust store |
 
 Typical loop:
 
@@ -372,7 +427,43 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 | `examples/python3/kaggle_io_loop/agent.py` | Notebook-side receiver/diagnostics |
 | `examples/python3/test_proxy_local.py` | Local (host-side) end-to-end proxy test — no WebVM required |
 | `examples/python3/discover.py`, `proxy_test.py`, `probe.py`, `vmshell.py` | Host-side tools: find the live VM IP, test the proxy, probe ports, run commands inside the VM |
+| `examples/python3/proxy_forward.py` | Host-side forwarder `127.0.0.1:28443` → the live WebVM's proxy, re-resolving the WebVM automatically |
+| `examples/python3/make_proxy_certs.py` | Generates the throwaway development CA and the wildcard certificate for the tailnet's MagicDNS names |
+| `examples/python3/install_dev_ca.py` | Adds that CA to the current user's trust store without the UI prompt `certutil`/`Import-Certificate` require |
+| `examples/python3/check_tls.py` | Verifies the WebVM's HTTPS proxy and its certificate chain |
+| `examples/python3/web_adjuster/tls/` | The development CA and server certificate. **The private key is committed on purpose** so the WebVM can fetch it at boot; it only ever protects a throwaway local CA |
 | `redeploy` | Append a line to trigger GitHub Pages rebuild |
+
+## CheerpX gotchas (these cost the most time — do not rediscover them)
+
+1. **`select()`/`poll()`/`epoll()` do not work on sockets.** Python
+   implements socket timeouts with `select()`, so **a socket timeout never
+   fires** — it does not raise, it wedges. A blocking read that was given a
+   30 s timeout hung for the whole 60 s the browser waited, and the
+   handler never logged anything. Use blocking sockets plus a watchdog
+   thread that closes the socket when the deadline passes.
+2. **`create_connection(..., timeout=1)` can wedge the whole VM.** The
+   pending connect waits in `select()`, and because the scheduler is
+   cooperative the proxy's accept loop stops running: connections are
+   accepted by the kernel but no request is ever processed, so the proxy
+   looks dead. Never use a socket timeout inside the WebVM.
+3. **Loopback is not wired up.** Connecting to `127.0.0.1:<port>` inside
+   the VM is refused even when something is listening there. The in-VM
+   self-test therefore cannot use loopback.
+4. **`ifconfig` exists but prints nothing**, and `/proc/net/` and
+   `/sys/class/net/` are empty. The only way to learn the node's address
+   from inside the VM is the UDP-route trick to `100.100.100.100`.
+5. **There is no `tailscaled` in the guest.** Tailscale runs in the
+   browser's CheerpX runtime, so `tailscale serve` and `tailscale cert`
+   are not available inside the VM, and the node has no HTTPS listener of
+   its own.
+6. **Exec a helper module into its own namespace.** `globals()["__name__"]`
+   is `"__main__"`, so exec'ing a module into `globals()` runs its
+   `if __name__ == "__main__":` block — which for `telnet_shell.py` ends
+   in `threading.Event().wait()` and blocks `main()` forever.
+7. **A long-lived subprocess server gets starved**, but short-lived
+   subprocesses (`/bin/sh`, `fuser`) work fine. That is why the proxy runs
+   as a thread inside `pi_impl.py` rather than as a separate process.
 
 ## How the WebVM reset is triggered and verified
 
