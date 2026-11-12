@@ -11,28 +11,16 @@ async function handleFetch(request) {
 	}
 	// We add headers to the original response its headers, in order to enable cross-origin-isolation. And make it independent of the server config.
 	const newHeaders = new Headers(r.headers);
-	// Cross-origin isolation (COEP + COOP) is optional here.
+	// Cross-origin isolation (COEP + COOP).
 	//
-	// COOP: same-origin puts the page in its own browsing context group,
-	// which means a popup it opens has a null window.opener and cannot
-	// post a message back.  That breaks the proxy bridge, which relies on
-	// the bridge popup handing the proxied document to this page.
+	// The WebVM does not boot without it: without cross-origin isolation
+	// the guest hangs at start-up and never registers on the tailnet.
 	//
-	// CheerpX does not need cross-origin isolation (it has a non-isolated
-	// fallback), so the headers are off by default and can be switched
-	// back on per page load with ?coi=1 in the page URL.
-	const wantsCoi = request && request.url && request.url.indexOf("coi=1") !== -1;
-	if (wantsCoi) {
-		newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
-		newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
-	} else {
-		// Delete them rather than merely not adding them: the original
-		// response may still carry them (a cached response from before,
-		// or a server that sets them), and copying them through would
-		// keep the page cross-origin isolated.
-		newHeaders.delete("Cross-Origin-Embedder-Policy");
-		newHeaders.delete("Cross-Origin-Opener-Policy");
-	}
+	// COOP: same-origin also nulls a popup's window.opener, which is why
+	// the proxy bridge hands the document over in the popup's URL fragment
+	// instead of posting a message.
+	newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+	newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
 	newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
 	/**
 	 * This workaround is necessary due to a limitation of CheerpOS, which relies on the response URL being set to the resolved URL.

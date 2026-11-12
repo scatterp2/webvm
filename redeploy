@@ -60,3 +60,4 @@ optional coi headers so the proxy bridge popup can talk back
 delete coi headers when disabled
 retry pages deploy
 bridge over the popup url fragment
+restore coi headers
