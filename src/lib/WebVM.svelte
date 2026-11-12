@@ -89,6 +89,7 @@
 	}
 
 	var proxyBridgePopup = null;
+	var proxyBridgeAttempts = 0;
 	var proxyBridgeChunks = {};
 	var proxyBridgeTotal = 0;
 
@@ -131,13 +132,17 @@
 
 	function pollBridgePopup()
 	{
-		const popup = proxyBridgePopup;
 		// The bridge popup hands the document over by navigating to this
 		// origin with the document in the query string; the site's service
 		// worker stashes it and answers here.  A navigation to our own
 		// origin is the only channel that survives COOP: same-origin,
 		// which nulls window.opener and also blocks reading
 		// popup.location.
+		//
+		// The poll must not depend on the popup's state: the popup
+		// navigates away when it hands over, and anything that stops the
+		// poll early loses the document.
+		proxyBridgeAttempts += 1;
 		fetch("/webvm/proxy-inbox", {cache: "no-store"})
 			.then((res) => res.text())
 			.then((html) => {
@@ -145,13 +150,17 @@
 					finishBridge(html);
 					return;
 				}
-				if (popup && !popup.closed) {
+				if (proxyBridgeAttempts < 300) {
 					setTimeout(pollBridgePopup, 700);
+				} else {
+					proxyStatus = "The bridge popup did not return a document.";
 				}
 			})
-			.catch(() => {
-				if (popup && !popup.closed) {
+			.catch((e) => {
+				if (proxyBridgeAttempts < 300) {
 					setTimeout(pollBridgePopup, 1500);
+				} else {
+					proxyStatus = "The bridge poll failed (" + e + ").";
 				}
 			});
 	}
@@ -166,10 +175,15 @@
 			proxyFrameEl.srcdoc = html;
 			proxyStatus = "Loaded " + html.length
 				+ " bytes through the bridge - srcdoc frame keeps DOM access.";
+		} else {
+			proxyStatus = "Received " + html.length
+				+ " bytes but the panel frame is not ready.";
 		}
-		if(proxyBridgePopup && !proxyBridgePopup.closed) {
-			try { proxyBridgePopup.close(); } catch (e) { }
-		}
+		try {
+			if (proxyBridgePopup && !proxyBridgePopup.closed) {
+				proxyBridgePopup.close();
+			}
+		} catch (e) { }
 		proxyBridgePopup = null;
 	}
 
