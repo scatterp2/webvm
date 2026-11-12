@@ -207,37 +207,39 @@ hard-coded. Two independent mechanisms now print it:
 
 **Status:** Not started. Depends on the Goal 3 re-verification above.
 
-**Design:**
-- The wrapper page on `:28082` renders an iframe whose `src` is
-  `/proxy/<url-encoded target>`; the default target is
-  `https://www.kaggle.com/`. A different target can be chosen with
-  `/?target=<url>`.
-- The iframe and the parent page share the wrapper origin, so the parent
-  can inspect and manipulate the iframe DOM — this is the DOM access that
-  the proxy exists to provide.
-- The injected script proves JavaScript executes inside the proxied page.
+**Design — the iframe host page must be the WebVM's own wrapper page.**
 
-**Open problem — mixed content.** The user asked for the iframe to live on
-the **WebVM page** (`https://scatterp2.github.io/webvm/`), which is HTTPS.
-An `http://` iframe on an HTTPS page is blocked as mixed content by
-Chrome. Options, none verified yet:
-1. Serve the proxy over HTTPS through Tailscale Serve
-   (`tailscale serve --bg 28082` inside the VM gives
-   `https://<node>.<tailnet>.ts.net/...` with a real certificate).
-2. Keep the iframe host page on `http://<tailscale-ip>:28082/` (works
-   immediately, but is not the WebVM page).
-3. Terminate TLS in the proxy itself with a self-signed certificate (the
-   browser will warn).
+The proxy serves the wrapper page at `http://<tailscale-ip>:28082/`, and
+that page contains the iframe whose `src` is
+`/proxy/<url-encoded target>` (default target `https://www.kaggle.com/`,
+overridable with `/?target=<url>`).
 
-**Challenges:**
+This has to be the **WebVM's own page**, not the GitHub Pages page:
+
+- **DOM access requires same-origin.** The parent must be able to read
+  `frame.contentDocument` to drive the proxied site. If the iframe lived on
+  `https://scatterp2.github.io/webvm/` the iframe origin would be
+  `http://<tailscale-ip>:28082` — cross-origin — and the parent could not
+  touch the DOM at all. Serving both from `:28082` keeps them same-origin.
+- **It also avoids mixed content.** An `http://` iframe inside the HTTPS
+  GitHub Pages page is blocked by Chrome as active mixed content, so the
+  iframe would not even load there.
+
+So: open `http://<tailscale-ip>:28082/` directly in the browser. The
+WebVM page keeps hosting the VM and the terminal; the wrapper page hosts
+the iframe.
+
+**Open problems:**
 - **Kaggle answers with a reCAPTCHA interstitial.** Fetching
   `https://www.kaggle.com/` through the proxy returned Google's
   "Checking your browser - reCAPTCHA" page (21206 bytes), not the Kaggle
   app. The proxy itself is fine — this is Kaggle/Google bot detection.
-  Getting past it needs a realistic browser fingerprint, and the proxied
-  response still has to look like a normal navigation (cookies, referer,
-  sec-ch-ua headers). **Do not report Goal 4 as done until the actual
-  Kaggle app renders inside the iframe.**
+  Note the proxy forwards the *browser's* headers, so a request made from
+  the real browser (the iframe) has a far more convincing fingerprint than
+  the `urllib` request used for the automated test, which sent almost no
+  browser headers. Getting past the challenge needs testing, not assuming.
+  **Do not report Goal 4 as done until the actual Kaggle app renders
+  inside the iframe.**
 - Kaggle authentication: cookies are rewritten to the proxy origin, so
   logging in through the proxied page should work, but it must be tested
   explicitly — never assumed.
@@ -246,6 +248,9 @@ Chrome. Options, none verified yet:
   still need checking.
 - Kaggle is a heavy SPA — the proxy handles one request per thread and
   CheerpX is slow, so a full page load may take minutes.
+- If the wrapper page is opened over `http://` in an `https://` context
+  (for example a bookmark bar in an HTTPS-only browser profile), Chrome may
+  still complain. Opening it as a top-level page is fine.
 
 **How to test:**
 1. Get the WebVM Tailscale IP (`tailscale status`, or `discover.py`).

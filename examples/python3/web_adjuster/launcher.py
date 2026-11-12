@@ -279,7 +279,10 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=45):
         if name.lower() in ("host", "content-length", "connection"):
             continue
         outgoing[name] = value
-    outgoing.setdefault("Accept-Encoding", "identity")
+    # Always ask for an uncompressed body.  The proxy has to rewrite the HTML
+    # and inject a script, which is impossible on a gzip/brotli stream — and
+    # the browser sends "Accept-Encoding: gzip, deflate, br" by default.
+    outgoing["Accept-Encoding"] = "identity"
     outgoing.setdefault("User-Agent",
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -303,13 +306,43 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=45):
             pass
 
 
+def decompress_body(body, encoding):
+    """Best-effort decompression.  Returns (body, still_compressed)."""
+    if not body or not encoding:
+        return body, False
+    enc = encoding.strip().lower()
+    try:
+        if enc == "gzip" or enc == "x-gzip":
+            import gzip
+            return gzip.decompress(body), False
+        if enc == "deflate":
+            import zlib
+            try:
+                return zlib.decompress(body), False
+            except zlib.error:
+                return zlib.decompress(body, -zlib.MAX_WBITS), False
+    except Exception:
+        # Leave the body alone; the caller keeps the Content-Encoding header
+        # so the browser can still decode it.
+        return body, True
+    # brotli / unknown: keep it compressed and pass the header through.
+    return body, enc not in ("identity", "")
+
+
 def transform_response(status, headers, body, request_url):
     """Strip framing blockers, rewrite URLs and inject the proof script."""
     content_type = ""
+    content_encoding = ""
     for name, value in headers:
         if name.lower() == "content-type":
             content_type = value.lower()
-            break
+        elif name.lower() == "content-encoding":
+            content_encoding = value
+    if content_encoding:
+        body, still_compressed = decompress_body(body, content_encoding)
+        if still_compressed:
+            # Cannot rewrite a compressed body; hand it through untouched.
+            return status, list(headers), body
 
     is_html = "text/html" in content_type or (
         not content_type and body[:200].lstrip()[:1] == b"<")
@@ -322,6 +355,9 @@ def transform_response(status, headers, body, request_url):
         if lower in FRAME_BLOCKED_HEADERS:
             continue
         if lower == "content-length":
+            continue
+        if lower == "content-encoding":
+            # The body was decompressed above, so the header must go too.
             continue
         if lower == "set-cookie":
             value = sanitize_set_cookie(value)

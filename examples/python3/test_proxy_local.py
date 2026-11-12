@@ -104,6 +104,49 @@ def main():
     status, headers, body = raw_get(forward_port, "/")
     print("[5] forward proxy / (relative target) -> {}".format(status))
 
+    # The browser sends "Accept-Encoding: gzip, deflate, br". The proxy must
+    # not hand back a compressed body, otherwise the HTML rewriting and the
+    # script injection would corrupt it.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(40)
+    s.connect(("127.0.0.1", wrapper_port))
+    s.sendall(
+        ("GET /proxy/{} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\n"
+         "Accept-Encoding: gzip, deflate, br\r\n"
+         "Connection: close\r\n\r\n").format(
+            quote("https://example.com/", safe=""), wrapper_port).encode()
+    )
+    data = b""
+    while True:
+        try:
+            chunk = s.recv(16384)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    print("[7] gzip Accept-Encoding -> {}".format(
+        head.split(b"\r\n")[0].decode("utf-8", "replace")))
+    print("    content-encoding header present: {}".format(
+        b"content-encoding" in head.lower()))
+    print("    body is readable text            : {}".format(
+        b"Example Domain" in body))
+    print("    marker injected                  : {}".format(
+        b"WEBVM_ADJUSTER_INJECTED" in body))
+    if b"WEBVM_ADJUSTER_INJECTED" not in body:
+        failures.append("gzip response was not rewritten/injected")
+
+    # Unit check for the decompression safety net.
+    import gzip
+    packed = gzip.compress(b"<html><body>hello</body></html>")
+    unpacked, still = launcher.decompress_body(packed, "gzip")
+    print("[8] decompress_body(gzip) -> {!r} still_compressed={}".format(
+        unpacked, still))
+    if still or b"hello" not in unpacked:
+        failures.append("decompress_body did not unpack gzip")
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(40)
     s.connect(("127.0.0.1", forward_port))
