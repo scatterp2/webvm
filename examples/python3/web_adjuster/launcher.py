@@ -848,8 +848,12 @@ def parse_request(sock):
     return Request(method, target, version, headers, body)
 
 
-STATUS_TEXT = {
-    200: "OK", 204: "No Content", 206: "Partial Content",
+# Responses are written in chunks of this size.  A single large write to a
+# CheerpX socket can be truncated: the server logs SEND_OK but the browser
+# sees a broken body and reports "Failed to fetch".
+SEND_CHUNK = 16384
+
+STATUS_TEXT = {    200: "OK", 204: "No Content", 206: "Partial Content",
     301: "Moved Permanently", 302: "Found", 303: "See Other",
     304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
     400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
@@ -886,7 +890,15 @@ def send_response(sock, status, headers, body, close=True, client=None):
     log("SEND_START status={} bytes={} client={}".format(
         status, len(payload), client))
     try:
-        sock.sendall(payload)
+        # Send in chunks.  A single large write to a CheerpX socket can be
+        # truncated, and the browser then reports "Failed to fetch" even
+        # though the server logged SEND_OK.  The self-contained document is
+        # a few hundred kilobytes, so this matters.
+        sent = 0
+        while sent < len(payload):
+            chunk = payload[sent:sent + SEND_CHUNK]
+            sock.sendall(chunk)
+            sent += len(chunk)
         log("SEND_OK status={} bytes={}".format(status, len(payload)))
         return True
     except OSError as exc:

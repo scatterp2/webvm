@@ -507,10 +507,11 @@ and then reload the page so the new worker becomes the controller.
 - Don't assume Kaggle authentication works through the proxy — test it
   explicitly.
 
-## Findings and suspicions (not yet proven)
+## Findings and suspicions
 
-Recorded so the next agent does not re-derive them. **These are
-suspicions and partial observations, not confirmed root causes.**
+Recorded so the next agent does not re-derive them. Most of these are
+**proven** (the "Confidence" column says how); the couple that are not are
+marked as such.
 
 | # | Suspicion | Evidence | Confidence |
 |---|---|---|---|
