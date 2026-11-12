@@ -1,6 +1,0 @@
-python3 -c "print('HELLO_FROM_VM')"
-python3 -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.connect(('100.100.100.100',41641)); print('UDP_ROUTE_IP=' + s.getsockname()[0])"
-python3 -c "import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.connect(('8.8.8.8',53)); print('DEFAULT_ROUTE_IP=' + s.getsockname()[0])"
-python3 -c "import socket; print('HOSTNAME=' + socket.gethostname())"
-cat /proc/net/tailscale
-cat /proc/net/route
