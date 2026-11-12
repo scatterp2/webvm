@@ -70,6 +70,19 @@ function rewriteProxyUrls(html, base) {
 	return html.split(base + "/proxy/").join(replacement);
 }
 
+// The page is cross-origin isolated (COEP: require-corp), so every fetch
+// the worker makes has to be CORS approved, and every response it hands
+// back has to be embeddable.
+const BRIDGE_RESPONSE_HEADERS = {
+	"Access-Control-Allow-Origin": "*",
+	"Cross-Origin-Resource-Policy": "cross-origin",
+	"Cross-Origin-Embedder-Policy": "require-corp",
+	"Cross-Origin-Opener-Policy": "same-origin",
+};
+
+// mode: "cors" is explicit on purpose: the default in a worker can fall
+// back to a no-cors request, which a cross-origin isolated context
+// rejects because the response carries no CORP header.
 async function handleProxyBridge(url) {
 	const params = bridgeParams(url);
 	if (!params.base) {
@@ -79,22 +92,27 @@ async function handleProxyBridge(url) {
 		? params.base + params.path
 		: params.base + "/proxy/" + encodeURIComponent(params.target);
 	try {
-		const upstream = await fetch(target, { cache: "no-store" });
+		const upstream = await fetch(target, {
+			cache: "no-store",
+			mode: "cors",
+			credentials: "omit",
+		});
 		const text = await upstream.text();
 		if (params.path) {
 			return new Response(text, {
 				status: upstream.status,
-				headers: {
-					"Content-Type": upstream.headers.get("Content-Type") || "application/octet-stream",
-				},
+				headers: Object.assign({ "Content-Type": upstream.headers.get("Content-Type") || "application/octet-stream" }, BRIDGE_RESPONSE_HEADERS),
 			});
 		}
 		return new Response(rewriteProxyUrls(text, params.base), {
 			status: upstream.status,
-			headers: { "Content-Type": "text/html; charset=utf-8" },
+			headers: Object.assign({ "Content-Type": "text/html; charset=utf-8" }, BRIDGE_RESPONSE_HEADERS),
 		});
 	} catch (err) {
-		return new Response("proxy bridge failed: " + err, { status: 502 });
+		return new Response("proxy bridge failed: " + err, {
+			status: 502,
+			headers: BRIDGE_RESPONSE_HEADERS,
+		});
 	}
 }
 
@@ -106,34 +124,44 @@ async function handleDiag(url) {
 	const targets = [
 		"http://" + ip + ":28082/health",
 		"https://" + ip + ":28443/health",
+		"http://" + ip + ":28082/proxy/" + encodeURIComponent("https://example.com/"),
 		"https://example.com/",
 		"http://example.com/",
 	];
 	const results = [];
 	for (const target of targets) {
 		const started = Date.now();
-		try {
-			const upstream = await fetch(target, { cache: "no-store" });
-			const body = await upstream.text();
-			results.push({
-				target: target,
-				ok: true,
-				status: upstream.status,
-				ms: Date.now() - started,
-				body: body.slice(0, 120),
-			});
-		} catch (err) {
-			results.push({
-				target: target,
-				ok: false,
-				ms: Date.now() - started,
-				name: err && err.name,
-				error: String(err),
-			});
+		for (const mode of ["cors", "no-cors"]) {
+			try {
+				const upstream = await fetch(target, {
+					cache: "no-store",
+					mode: mode,
+					credentials: "omit",
+				});
+				const body = await upstream.text();
+				results.push({
+					target: target,
+					mode: mode,
+					ok: true,
+					status: upstream.status,
+					ms: Date.now() - started,
+					body: body.slice(0, 120),
+				});
+				break;
+			} catch (err) {
+				results.push({
+					target: target,
+					mode: mode,
+					ok: false,
+					ms: Date.now() - started,
+					name: err && err.name,
+					error: String(err),
+				});
+			}
 		}
 	}
 	return new Response(JSON.stringify(results, null, 2), {
-		headers: { "Content-Type": "application/json" },
+		headers: Object.assign({ "Content-Type": "application/json" }, BRIDGE_RESPONSE_HEADERS),
 	});
 }
 

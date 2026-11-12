@@ -573,6 +573,9 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
     out_headers.append(("Access-Control-Allow-Credentials", "false"))
     out_headers.append(("Access-Control-Allow-Headers", "*"))
     out_headers.append(("Access-Control-Expose-Headers", "*"))
+    # The WebVM page is cross-origin isolated, so responses have to be
+    # embeddable by a COEP: require-corp document.
+    out_headers.append(("Cross-Origin-Resource-Policy", "cross-origin"))
 
     if is_html and body:
         try:
@@ -871,7 +874,16 @@ class Handler(object):
         return "{}://{}".format(scheme, host)
 
     def _send(self, status, content_type, body, extra=None):
-        headers = [("Content-Type", content_type)]
+        headers = [
+            ("Content-Type", content_type),
+            # The WebVM page is cross-origin isolated (COEP: require-corp),
+            # so every response the service worker fetches has to be
+            # CORS-approved and carry a permissive CORP header.
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Headers", "*"),
+            ("Access-Control-Expose-Headers", "*"),
+            ("Cross-Origin-Resource-Policy", "cross-origin"),
+        ]
         if extra:
             headers.extend(extra)
         send_response(self.request, status, headers, body,

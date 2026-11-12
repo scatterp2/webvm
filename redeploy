@@ -52,3 +52,4 @@ print tailscale ip on boot
 proxy panel with cors and srcdoc
 service worker proxy bridge
 sw diagnostic and versioned worker
+cors and corp headers for the cross-origin isolated page
