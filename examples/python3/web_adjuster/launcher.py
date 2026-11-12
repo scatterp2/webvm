@@ -973,11 +973,16 @@ PAGE_TEMPLATE = """<!doctype html>
   }
 
   // The proxied page can take a long time to parse under CheerpX, so keep
-  // polling until the marker shows up.
-  (function poll() {
-    if (!confirmed) { checkInjection(); }
-    window.setTimeout(poll, 2000);
-  })();
+  // polling until the marker shows up.  In bridge mode the popup does not
+  // display the page at all -- it only fetches the document to hand it
+  // over, and a second load would compete with that fetch for the
+  // proxy's serialised upstream queue.
+  if (!__BRIDGE_FLAG__) {
+    (function poll() {
+      if (!confirmed) { checkInjection(); }
+      window.setTimeout(poll, 2000);
+    })();
+  }
 
   // Bridge mode: this page was opened as a popup by the WebVM page.
   //
@@ -993,9 +998,14 @@ PAGE_TEMPLATE = """<!doctype html>
   if (__BRIDGE_FLAG__) {
     document.getElementById('status').textContent =
       'Bridge mode: fetching the self-contained document...';
+    console.log('[bridge] fetching the self-contained document');
     fetch('/proxy-inline/' + encodeURIComponent(__TARGET_JSON__), {cache: 'no-store'})
-      .then(function (r) { return r.text(); })
+      .then(function (r) {
+        console.log('[bridge] inline fetch status', r.status);
+        return r.text();
+      })
       .then(function (html) {
+        console.log('[bridge] document bytes', html.length);
         document.getElementById('status').textContent =
           'Bridge mode: handing the document to the opener (' + html.length
           + ' bytes)...';
@@ -1008,6 +1018,7 @@ PAGE_TEMPLATE = """<!doctype html>
         function nextChunk() {
           if (i >= total) {
             location.hash = 'doc=done';
+            console.log('[bridge] document handed over');
             document.getElementById('status').textContent =
               'Bridge mode: document handed over (' + html.length + ' bytes).';
             return;
@@ -1020,6 +1031,7 @@ PAGE_TEMPLATE = """<!doctype html>
         nextChunk();
       })
       .catch(function (e) {
+        console.log('[bridge] failed', e);
         document.getElementById('status').textContent = 'Bridge failed: ' + e;
       });
   }
@@ -1033,7 +1045,8 @@ PAGE_TEMPLATE = """<!doctype html>
 def render_page(target, proxy_origin=None, bridge=False):
     return (PAGE_TEMPLATE
             .replace("__ADJUSTER_PORT__", str(ADJUSTER_PORT))
-            .replace("__IFRAME_SRC__", proxy_path(target, proxy_origin))
+            .replace("__IFRAME_SRC__", "about:blank" if bridge
+                     else proxy_path(target, proxy_origin))
             .replace("__TARGET_JSON__", json.dumps(target))
             .replace("__BRIDGE_FLAG__", "true" if bridge else "false"))
 
