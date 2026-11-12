@@ -1,12 +1,13 @@
 import { writable } from 'svelte/store';
 import { browser } from '$app/environment'
 
+const DEFAULT_AUTH_KEY = "tskey-auth-kqUVzBTdMV11CNTRL-Cwmmr1Te3mWstc1TEqVYiW5DhmMQtBjN";
 let authKey = undefined;
 let controlUrl = undefined;
 if(browser)
 {
 	let params = new URLSearchParams("?"+window.location.hash.substr(1));
-	authKey = params.get("authKey") || undefined;
+	authKey = params.get("authKey") || DEFAULT_AUTH_KEY;
 	controlUrl = params.get("controlUrl") || undefined;
 }
 let dashboardUrl = controlUrl ? null : "https://login.tailscale.com/admin/machines";
