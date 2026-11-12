@@ -1106,8 +1106,22 @@ PAGE_TEMPLATE = """<!doctype html>
               }
               document.getElementById('status').textContent =
                 'Bridge mode: fetching the document (' + s.bytes + ' bytes)...';
-              return fetch('/proxy-inline/doc/' + id, {cache: 'no-store'})
-                .then(function (r) { return r.text(); });
+              // Fetch the document in parts: a large transfer over the
+              // CheerpX socket never completes.
+              var parts = Math.max(1, Math.ceil(s.bytes / 16000));
+              var chunks = [];
+              function fetchPart(n) {
+                if (n >= parts) { return Promise.resolve(chunks.join('')); }
+                return fetch('/proxy-inline/doc/' + id + '?part=' + n + '&total=' + parts, {cache: 'no-store'})
+                  .then(function (r) { return r.text(); })
+                  .then(function (piece) {
+                    chunks.push(piece);
+                    document.getElementById('status').textContent =
+                      'Bridge mode: fetched part ' + (n + 1) + '/' + parts + '...';
+                    return fetchPart(n + 1);
+                  });
+              }
+              return fetchPart(0);
             });
         }
         return poll();
@@ -1326,7 +1340,28 @@ class Handler(object):
                 self._send(202, "application/json; charset=utf-8",
                            b'{"state":"not ready"}')
                 return
-            send_response(self.request, 200, headers, body,
+            # The document can be a few hundred kilobytes and a large
+            # transfer over the CheerpX socket never completes, so it is
+            # fetched in parts.
+            part = 0
+            total = 1
+            if "?" in path:
+                params = {}
+                for chunk in path.split("?", 1)[1].split("&"):
+                    if "=" in chunk:
+                        key, _, value = chunk.partition("=")
+                        params[key] = unquote(value)
+                try:
+                    part = int(params.get("part", "0"))
+                    total = max(1, int(params.get("total", "1")))
+                except ValueError:
+                    part, total = 0, 1
+            piece_size = max(1, (len(body) + total - 1) // total)
+            piece = body[part * piece_size:(part + 1) * piece_size]
+            out_headers = [(name, value) for name, value in headers
+                           if name.lower() != "content-length"]
+            out_headers.append(("Content-Length", str(len(piece))))
+            send_response(self.request, 200, out_headers, piece,
                           client=self.client_label())
             return
         if path in ("/", "/index.html"):
