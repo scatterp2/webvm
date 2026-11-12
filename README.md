@@ -10,7 +10,7 @@
 | 2 — Telnet access to the VM | **DONE** | `plink.exe -raw -P 2323 <ip>` gives a root shell. |
 | 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
 | 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | `http://<ip>:28082/` shows the real Kaggle page in an iframe and the parent can read its DOM (`sameOrigin: true`). |
-| 4b — that iframe **inside the GitHub Pages WebVM page** | **ONE STEP LEFT** | The Service Worker proxy bridge is written, deployed and measured. A worker **cannot** fetch the VM's plain-`http://` proxy (mixed content rejects it in 0–1 ms), but it **can** fetch `https://`. So the proxy needs an https origin with a publicly trusted certificate: **enable Tailscale Serve on the tailnet (one click) and run `tailscale serve --bg http://127.0.0.1:28443`**. Nothing has to be installed on the laptop. |
+| 4b — that iframe **inside the GitHub Pages WebVM page** | **ONE STEP LEFT** | The Service Worker proxy bridge is written, deployed and measured. A worker **cannot** fetch the VM's plain-`http://` proxy (mixed content rejects it in 0–1 ms), but it **can** fetch `https://`. So the proxy needs an https origin with a publicly trusted certificate: **enable Tailscale Serve on the tailnet (one click) and run `python examples/python3/publish_proxy.py --tag tag:webvm`**. The certificate is the tailnet's own — nothing is installed on the laptop. |
 
 **The single most useful next command** (after a fresh browser reset, so
 the current Service Worker is loaded):
@@ -21,6 +21,12 @@ fetch('/webvm/httpsproxy/diag?ip=' + '<tailscale-ip>').then(r => r.text()).then(
 
 It reports exactly what the worker can fetch, which decides between the
 Service Worker route and the Tailscale Serve route.
+
+**Bump `?v=` when you change the service worker.** `src/app.html` loads
+`serviceWorker.js?v=3`; the browser caches a worker for a long time and
+`unregister()` does not release control until the page reloads, so a
+changed worker will otherwise keep serving the old code. See "Service
+Worker update gotcha" below.
 
 ## Active Goals (in priority order)
 
@@ -387,29 +393,98 @@ the worker can fetch. Its output settles the design:
 #### The one remaining step
 
 Give the proxy an `https://` origin with a **publicly trusted**
-certificate, then the worker fetches it with `mode: "cors"`, the proxy's
-`Access-Control-Allow-Origin: *` makes the response readable, the page
-injects it with `srcdoc`, and the DOM stays reachable.
+certificate. The proxy then serves it, the browser fetches it with CORS,
+the page injects it with `srcdoc`, and the DOM stays reachable.
 
-That is **Tailscale Serve**, and it is one click plus one command:
+**Where the certificate has to live — and why**
 
-```
-# 1. enable Serve on the tailnet, using the link `tailscale serve` prints:
-#    https://login.tailscale.com/f/serve?node=nc9YBdxiPq11CNTRL
-# 2. publish the proxy (proxy_forward.py is already running on :28443 and
-#    re-resolves the WebVM automatically):
-tailscale serve --bg http://127.0.0.1:28443
-```
+A `https` front talking to a plain `http` upstream is completely normal:
+nginx, Caddy and `tailscale serve` all do it, because the **server** makes
+the outbound request and servers are not subject to the browser's
+mixed-content rules.
 
-After that the worker can fetch
-`https://desktop-21m8c49.tailf987e.ts.net/proxy/<url>` — a normal CORS
-request to a trusted origin — and the whole chain works with **nothing
-installed on the laptop**.
+The important distinction here is **who plays the server role**:
 
-The development CA on the WebVM's own `:28443` listener is the
-alternative, but it needs the CA in the browser's trust store, and adding
-a root certificate on this machine is blocked by the protected-root
-confirmation prompt ("UI is not allowed in this operation").
+- `https://scatterp2.github.io/webvm/httpsproxy/` is **not a server** —
+  GitHub Pages serves static files. The only thing that can act as the
+  server for that route is the site's **Service Worker, which runs in the
+  browser**. Its outbound request to the WebVM is therefore made by the
+  browser from a secure context, and the browser's mixed-content rules
+  apply to it. That is why the Service Worker route cannot use the VM's
+  plain-`http://` proxy.
+- A **real** https front (Tailscale Serve) *is* a server. It terminates
+  https with a real certificate and forwards to `http://<vm>:28082`
+  server-side, over the tailnet. The browser only ever sees https. This
+  is the ordinary "https front, http upstream" arrangement and it has no
+  mixed-content problem at all.
+
+So the certificate belongs on the **browser → proxy** hop, and it is
+needed for the browser to trust it — nothing else.
+
+**Recipe (the tagged auth key makes the target stable)**
+
+1. **Enable Serve on the tailnet** — one click at the link
+   `tailscale serve` prints:
+   `https://login.tailscale.com/f/serve?node=nc9YBdxiPq11CNTRL`
+2. **Create a Tailscale auth key that carries the tag `tag:webvm`** (in
+   the admin console, *Settings → Keys → Generate auth key*, then add the
+   tag `tag:webvm`). A tagged node is always named `tag-webvm`, so the
+   node name no longer changes when the WebVM reboots.
+3. **Put that key in the WebVM URL**:
+   `https://scatterp2.github.io/webvm/?reset=1745#authKey=tskey-auth-…`
+4. **Publish the proxy** (once; the target name is stable):
+   ```powershell
+   cd examples/python3
+   python publish_proxy.py --tag tag:webvm
+   ```
+   which runs `tailscale serve --bg http://tag-webvm.tailf987e.ts.net:28082`
+   and prints the resulting `https://…/proxy/<url>` URL.
+5. The WebVM page picks that origin up automatically (it is in the
+   candidate list), or force it with `#proxyOrigin=<url>` in the page
+   hash.
+
+Without a tagged key the same command still works, but the target has to
+be the live address, so it has to be re-run after each reboot:
+`python publish_proxy.py`.
+
+**Nothing is installed on the laptop**: no certificate, no trust-store
+change, no `127.0.0.1` forwarder. `tailscaled` on the host is already
+running; this only adds a serve configuration to it.
+
+#### The alternative: a certificate on the WebVM itself
+
+The WebVM already serves https on `:28443` with a development certificate
+for the tailnet's MagicDNS names (`*.tailf987e.ts.net`), fetched from
+`main` at boot. The chain verifies — `VERIFIED CHAIN OK -> 200 ok`.
+
+Using it would need the development CA in the browser's trust store, which
+is **not** possible here: adding a root certificate needs a confirmation
+dialog and this session cannot show one (`certutil` hangs,
+`Import-Certificate` reports *"UI is not allowed in this operation"*,
+and `CertAddEncodedCertificateToStore` returns `ERROR_CANCELLED`). The
+certificate files stay on the WebVM; only the trust anchor would have to
+be installed locally, and that is deliberately not done.
+
+#### Why `tailscale cert` cannot be run on the WebVM
+
+`tailscale cert` would be the ideal way to get a real certificate for the
+node's own name, but it needs the `tailscale` CLI **and** a `tailscaled`
+holding the node key:
+
+- the WebVM image does not install Tailscale at all (see
+  `dockerfiles/debian_mini` and `dockerfiles/debian_large` — no
+  `tailscale` package);
+- there is no `tailscale`/`tailscaled` binary anywhere in the guest
+  (`ls /usr/bin`, `/usr/sbin`, `/sbin`, `/usr/local/bin`, `/opt` all
+  checked);
+- the Tailscale client is the **CheerpX runtime in the browser** — the
+  browser performs the control-plane handshake
+  (`wss://controlplane.tailscale.com/ts2021?X-Tailscale-Handshake=…`
+  appears in the browser console), so the node key lives in the browser's
+  WebAssembly memory and is not reachable from the guest.
+
+So the node key is only available in the browser, and the certificate has
+to be issued through the tailnet's own Serve/HTTPS facility instead.
 
 ### The other route: an https origin for the proxy
 
@@ -575,8 +650,9 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 | `examples/python3/test_proxy_local.py` | Local (host-side) end-to-end proxy test — no WebVM required |
 | `examples/python3/discover.py`, `proxy_test.py`, `probe.py`, `vmshell.py` | Host-side tools: find the live VM IP, test the proxy, probe ports, run commands inside the VM |
 | `examples/python3/proxy_forward.py` | Host-side forwarder `127.0.0.1:28443` → the live WebVM's proxy, re-resolving the WebVM automatically |
+| `examples/python3/publish_proxy.py` | Publishes the proxy over https with `tailscale serve`, targeting the WebVM's node **name** (stable with a tagged auth key) |
 | `examples/python3/make_proxy_certs.py` | Generates the throwaway development CA and the wildcard certificate for the tailnet's MagicDNS names |
-| `examples/python3/install_dev_ca.py` | Adds that CA to the current user's trust store without the UI prompt `certutil`/`Import-Certificate` require |
+| `examples/python3/install_dev_ca.py` | Adds that CA to the current user's trust store (blocked on this machine by the protected-root prompt) |
 | `examples/python3/check_tls.py` | Verifies the WebVM's HTTPS proxy and its certificate chain |
 | `examples/python3/web_adjuster/tls/` | The development CA and server certificate. **The private key is committed on purpose** so the WebVM can fetch it at boot; it only ever protects a throwaway local CA |
 | `redeploy` | Append a line to trigger GitHub Pages rebuild |

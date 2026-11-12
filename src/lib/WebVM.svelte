@@ -56,12 +56,21 @@
 		? ("http://" + $currentIpStore + ":28082")
 		: "";
 
-	// Bases the service worker can fetch the proxy through, tried in order.
-	// The plain-http one is rejected instantly by the mixed-content check
-	// (about 1 ms), so trying it first costs nothing.
+	// Bases the proxy is reachable at, in the order they are tried.
+	//
+	// An https origin is fetched directly by the page with CORS: the proxy
+	// sends Access-Control-Allow-Origin, so the response is readable and
+	// can be injected with srcdoc, which keeps DOM access.
+	//
+	// A plain-http origin cannot be fetched by the page (mixed content), so
+	// it goes through the site's service worker, which runs in the browser
+	// too and is bound by the same rule.  It only works for origins that
+	// are "potentially trustworthy" (127.0.0.1) and that the browser is
+	// allowed to reach.
 	function proxyBases()
 	{
-		const bases = [];
+		const https = [];
+		const http = [];
 		let override = null;
 		if(typeof window !== "undefined")
 		{
@@ -69,44 +78,65 @@
 			override = params.get("proxyOrigin");
 		}
 		if(override)
-			bases.push(override.replace(/\/$/, ""));
-		if(proxyHttpBase)
-			bases.push(proxyHttpBase);
+			https.push(override.replace(/\/$/, ""));
 		if($currentDnsNameStore)
-			bases.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
+			https.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
 		if(TAILSCALE_SERVE_ORIGIN)
-			bases.push(TAILSCALE_SERVE_ORIGIN);
-		return bases;
+			https.push(TAILSCALE_SERVE_ORIGIN);
+		if(proxyHttpBase)
+			http.push(proxyHttpBase);
+		return {https: https, http: http};
 	}
 
 	async function loadProxyFrame()
 	{
 		const bases = proxyBases();
-		if(bases.length === 0) {
+		if(bases.https.length === 0 && bases.http.length === 0) {
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
 		let lastError = "no candidate";
-		for(const base of bases) {
-			const url = "/webvm/httpsproxy?base=" + encodeURIComponent(base)
+		for(const origin of bases.https) {
+			const url = origin + "/proxy/" + encodeURIComponent(proxyTarget);
+			proxyStatus = "Fetching " + proxyTarget + " from " + origin + "...";
+			try {
+				const res = await fetch(url, {cache: "no-store", mode: "cors", credentials: "omit"});
+				if(!res.ok) {
+					lastError = origin + ": HTTP " + res.status;
+					continue;
+				}
+				const html = await res.text();
+				if(proxyFrameEl) {
+					proxyFrameEl.srcdoc = html;
+					proxyStatus = "Loaded " + res.status + " (" + html.length
+						+ " bytes) from " + origin
+						+ " - srcdoc frame keeps DOM access.";
+				}
+				return;
+			} catch (e) {
+				lastError = origin + ": " + e;
+			}
+		}
+		for(const origin of bases.http) {
+			const url = "/webvm/httpsproxy?base=" + encodeURIComponent(origin)
 				+ "&target=" + encodeURIComponent(proxyTarget);
-			proxyStatus = "Fetching " + proxyTarget + " through " + base + "...";
+			proxyStatus = "Fetching " + proxyTarget + " through the service worker from "
+				+ origin + "...";
 			try {
 				const res = await fetch(url, {cache: "no-store"});
 				const html = await res.text();
 				if(!res.ok || html.startsWith("proxy bridge failed")) {
-					lastError = base + ": " + html.slice(0, 120);
+					lastError = origin + ": " + html.slice(0, 120);
 					continue;
 				}
 				if(proxyFrameEl) {
 					proxyFrameEl.srcdoc = html;
 					proxyStatus = "Loaded " + res.status + " (" + html.length
-						+ " bytes) from " + base
-						+ " - srcdoc frame keeps DOM access.";
+						+ " bytes) via the service worker - srcdoc frame keeps DOM access.";
 				}
 				return;
 			} catch (e) {
-				lastError = base + ": " + e;
+				lastError = origin + ": " + e;
 			}
 		}
 		proxyStatus = "Every proxy origin failed (" + lastError + ").";
