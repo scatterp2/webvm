@@ -49,3 +49,4 @@ Deploy Tailscale exit-node indicator fix: keep the selected exit node latched ac
 49: Make proxy startup non-blocking so telnet shell starts immediately; bump reset to 1727.
 50: Fix proxy wrapper serve_forever for CheerpX; runtime-fetch launcher.py from GitHub; bump reset to 1730.
 print tailscale ip on boot
+proxy panel with cors and srcdoc
