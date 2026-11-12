@@ -1560,7 +1560,7 @@ def start_web_adjuster_sidecar():
 TLS_PORT = 28443
 TLS_BASE_URL = ("https://raw.githubusercontent.com/scatterp2/webvm/main/"
                 "examples/python3/web_adjuster/tls/")
-TLS_FILES = ("webvm-proxy.crt", "webvm-proxy.key")
+TLS_FILES = ("proxy-leaf.crt", "proxy-leaf.key")
 
 
 def _start_tls_wrapper(launcher_ns):
@@ -1620,8 +1620,8 @@ def _start_tls_wrapper(launcher_ns):
     # The cert file may contain a full chain (leaf + intermediates).
     # Some OpenSSL builds choke on the chain — try the full file first,
     # fall back to just the leaf certificate.
-    cert_path = target_dir / "webvm-proxy.crt"
-    key_path = target_dir / "webvm-proxy.key"
+    cert_path = target_dir / "proxy-leaf.crt"
+    key_path = target_dir / "proxy-leaf.key"
 
     start_tls = launcher_ns.get("start_tls_wrapper")
     if start_tls is None:
@@ -1632,44 +1632,9 @@ def _start_tls_wrapper(launcher_ns):
     try:
         start_tls(TLS_PORT, cert_path, key_path)
         print("TLS_PROXY_STARTED port={}".format(TLS_PORT), flush=True)
-        return
     except Exception as exc:
-        print("TLS_CHAIN_FAILED error={}: {} — trying leaf only".format(
+        print("TLS_START_FAILED error={}: {}".format(
             type(exc).__name__, str(exc)[:200]), flush=True)
-
-    # Extract just the first PEM block (the leaf certificate).
-    try:
-        raw = cert_path.read_bytes()
-        end_marker = b"-----END CERTIFICATE-----"
-        first_end = raw.find(end_marker)
-        if first_end >= 0:
-            leaf = raw[:first_end + len(end_marker)] + b"\n"
-            leaf_path = target_dir / "webvm-proxy-leaf.crt"
-            leaf_path.write_bytes(leaf)
-            print("TLS_LEAF_EXTRACTED bytes={}".format(len(leaf)), flush=True)
-            start_tls(TLS_PORT, leaf_path, key_path)
-            print("TLS_PROXY_STARTED port={} cert=leaf-only".format(TLS_PORT),
-                  flush=True)
-            return
-    except Exception as exc:
-        print("TLS_LEAF_FAILED error={}: {}".format(
-            type(exc).__name__, str(exc)[:200]), flush=True)
-
-    # Last resort: try loading key first to diagnose which file is bad.
-    try:
-        import ssl as _ssl
-        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-    except Exception as exc:
-        print("TLS_DIAG_COMBINED error={}".format(str(exc)[:300]), flush=True)
-    try:
-        import ssl as _ssl
-        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
-        # Try key only (will fail but shows if key parses)
-        ctx.load_cert_chain(certfile=str(key_path), keyfile=str(key_path))
-    except Exception as exc:
-        print("TLS_DIAG_KEY_AS_CERT error={}".format(str(exc)[:300]),
-              flush=True)
 
 
 def _run_endpoint_tests():
