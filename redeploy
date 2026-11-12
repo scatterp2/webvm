@@ -50,3 +50,4 @@ Deploy Tailscale exit-node indicator fix: keep the selected exit node latched ac
 50: Fix proxy wrapper serve_forever for CheerpX; runtime-fetch launcher.py from GitHub; bump reset to 1730.
 print tailscale ip on boot
 proxy panel with cors and srcdoc
+service worker proxy bridge
