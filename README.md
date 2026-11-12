@@ -355,9 +355,54 @@ because the address changes on every boot.
 | Part | State |
 |---|---|
 | The bridge routes are served by the worker | **VERIFIED** — a request to `/webvm/httpsproxy?base=…` produced the worker's own `502 proxy bridge failed: …` response, so the worker really is handling the route |
-| The worker's `fetch()` of the VM's **http** proxy | **NOT YET CONFIRMED.** The bridge answered `proxy bridge failed: TypeError: Failed to fetch`. The VM's proxy is reachable and correct from the host at the same moment (`/health` → `200 ok`, and a real page fetched through it with the marker injected), so the failure is in the worker's own fetch. Two candidates remain: mixed content applies to worker-initiated fetches too, or the browser cannot reach the VM over plain http. The `/webvm/httpsproxy/diag` route exists to settle this and **has not been run yet**, because the browser was still running the previous worker (see the next section). |
+| A worker may fetch a plain `http://` URL | **NO — mixed content applies to worker-initiated fetches too.** The diagnostic (`/webvm/httpsproxy/diag?ip=…`) settles it: `http://<vm>:28082/health` was rejected in **1 ms**, i.e. before any network activity, exactly like a document-level mixed-content block |
+| A worker may fetch an `https://` URL | **YES, but only with CORS approval.** `https://example.com/` was attempted for 602 ms and then rejected, because the page is cross-origin isolated (`COEP: require-corp`) and that response carries no `Access-Control-Allow-Origin` |
+| The VM's own `https://` proxy on `:28443` | rejected the same way, because `/health` had no CORS headers — **now fixed** (see below) |
+| The bridge, end to end | **the fix is deployed; the re-verification is the next step** |
 | The `srcdoc` injection and DOM access | **VERIFIED** in the VM's own proxy page (`sameOrigin: true`, `JS/DOM INJECTION CONFIRMED`) |
-| The `srcdoc` injection and DOM access **from the GitHub Pages page** | **NOT YET VERIFIED** — it depends on the bridge fetch succeeding |
+| The `srcdoc` injection and DOM access **from the GitHub Pages page** | depends on the bridge fetch succeeding |
+
+#### The fix that follows from the diagnostic
+
+Because the page is cross-origin isolated, the worker's fetches have to be
+CORS requests against a CORS-approved server, and the responses it hands
+back have to be embeddable:
+
+- the proxy now sends `Access-Control-Allow-Origin: *` and
+  `Cross-Origin-Resource-Policy: cross-origin` on **every** response, not
+  only on proxied ones (previously `/health` and `/proxy-status` had
+  neither, so a CORS fetch of them was rejected);
+- the worker's bridge fetch uses `mode: "cors"` explicitly — the default
+  in a worker can fall back to a no-cors request, which a cross-origin
+  isolated context rejects for lack of a CORP header;
+- the responses the worker constructs carry `CORP`/`COEP` headers.
+
+**The `http://` leg is still blocked by mixed content**, so the bridge
+cannot fetch the VM's plain-http proxy. The remaining options are:
+
+1. **Let the browser fetch the VM's `https://` proxy** — the VM already
+   serves one on `:28443` with the development certificate, and the proxy
+   now sends CORS headers, so a `mode: "cors"` fetch from the worker
+   should succeed **if the browser trusts that certificate**.
+2. **Publish the proxy with a publicly trusted certificate** — enable
+   Tailscale Serve on the tailnet (one click) and
+   `tailscale serve --bg http://127.0.0.1:28443`; then the worker fetches
+   `https://<node>.tailf987e.ts.net/...`, which is a normal CORS request
+   to a trusted origin. **This is the clean route** — nothing has to be
+   installed on the laptop and the certificate is a real one.
+3. **Make the worker's fetch of the plain-http proxy possible** — not
+   possible while the page is cross-origin isolated and the target is
+   `http://`.
+
+The diagnostic route is the fastest way to check any of these:
+
+```
+fetch('/webvm/httpsproxy/diag?ip=' + '<tailscale-ip>').then(r => r.text()).then(console.log)
+```
+
+It reports, for each target, whether `cors` or `no-cors` worked, and how
+long it took (a rejection in ~1 ms means mixed content; a rejection after
+a network round trip means CORS/COEP).
 
 ### The other route: an https origin for the proxy
 
@@ -389,9 +434,20 @@ To pick up a new worker:
 3. **Reload the page**
 4. Check `navigator.serviceWorker.controller.scriptURL`
 
-`src/app.html` now loads `serviceWorker.js?v=2` so a deployed change gets a
-new worker identity instead of being served from the stale cache. Bump the
-`?v=` number whenever `serviceWorker.js` changes.
+`src/app.html` now loads `serviceWorker.js?v=3` so a deployed change gets a
+new worker identity instead of being served from the stale cache. **Bump
+the `?v=` number whenever `serviceWorker.js` changes.**
+
+If the page is already cross-origin isolated the automatic registration
+does not happen at all, so after a deploy either unregister + reload, or
+register the new worker explicitly from the console:
+
+```js
+const reg = await navigator.serviceWorker.register('/webvm/serviceWorker.js?v=4', {scope: '/webvm/'});
+await reg.update();
+```
+
+and then reload the page so the new worker becomes the controller.
 
 ### How to test the bridge
 
