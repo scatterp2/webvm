@@ -209,6 +209,37 @@ def main():
     if b"WEBVM_ADJUSTER_INJECTED" not in data:
         failures.append("forward proxy did not inject the marker")
 
+    # Concurrency: a heavy page asks for many resources at once.  The proxy
+    # must queue them instead of opening them all at the same time, or
+    # CheerpX's cooperative scheduler stalls and the VM appears to hang.
+    print("[11] concurrent requests")
+    import threading
+    results = []
+    lock = threading.Lock()
+
+    def one(index):
+        try:
+            status, headers, body = raw_get(
+                wrapper_port,
+                "/proxy/" + quote("https://example.com/?n=%d" % index, safe=""),
+            )
+            with lock:
+                results.append((status, len(body)))
+        except Exception as exc:
+            with lock:
+                results.append(("error: %s" % exc, 0))
+
+    threads = [threading.Thread(target=one, args=(i,)) for i in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(90)
+    ok = sum(1 for status, _ in results
+             if status and "200" in str(status))
+    print("    completed {}/{} with 200".format(ok, len(results)))
+    if ok != 12:
+        failures.append("only {}/{} concurrent requests succeeded".format(ok, len(results)))
+
     for server in servers:
         server.shutdown()
 

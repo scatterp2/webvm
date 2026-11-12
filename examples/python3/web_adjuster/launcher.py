@@ -287,6 +287,17 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_TTL = 120.0
 _CACHE_MAX = 64
 
+# How many upstream fetches may be in flight at the same time.
+#
+# A heavy page (Kaggle's SPA) asks for dozens of resources at once.  Every
+# one of them would otherwise open a connection and start a TLS handshake
+# inside CheerpX, whose scheduler is cooperative: the VM's accept loop
+# stops running, the whole machine appears to hang, and the ports stop
+# answering.  Queuing the requests instead of running them all at once
+# keeps the VM responsive.
+_UPSTREAM_CONCURRENCY = 4
+_UPSTREAM_SEMAPHORE = threading.Semaphore(_UPSTREAM_CONCURRENCY)
+
 
 def _pool_get(key):
     with _POOL_LOCK:
@@ -430,7 +441,10 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
         conn = None
         timer = None
         reused = False
+        acquired = False
         try:
+            _UPSTREAM_SEMAPHORE.acquire()
+            acquired = True
             conn = _pool_get(key)
             if conn is not None:
                 reused = True
@@ -475,6 +489,9 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                 attempt, attempts, url, type(exc).__name__, str(exc)[:120]))
             if attempt < attempts:
                 time.sleep(min(2 * attempt, 6))
+        finally:
+            if acquired:
+                _UPSTREAM_SEMAPHORE.release()
     raise last_error
 
 
