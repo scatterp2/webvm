@@ -61,3 +61,4 @@ delete coi headers when disabled
 retry pages deploy
 bridge over the popup url fragment
 restore coi headers
+bridge hands the document over via a navigation to the page origin

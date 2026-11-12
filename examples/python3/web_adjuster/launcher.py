@@ -1095,28 +1095,21 @@ PAGE_TEMPLATE = """<!doctype html>
       .then(function (html) {
         console.log('[bridge] document bytes', html.length);
         document.getElementById('status').textContent =
-          'Bridge mode: handing the document to the opener (' + html.length
-          + ' bytes)...';
-        // Hand it over in the fragment.  The opener polls
-        // popup.location.href and extracts the chunks.  The chunks are
-        // paced so the opener cannot miss one.
-        var chunkSize = 40000;
-        var total = Math.max(1, Math.ceil(html.length / chunkSize));
-        var i = 0;
-        function nextChunk() {
-          if (i >= total) {
-            location.hash = 'doc=done';
-            console.log('[bridge] document handed over');
-            document.getElementById('status').textContent =
-              'Bridge mode: document handed over (' + html.length + ' bytes).';
-            return;
-          }
-          location.hash = 'doc=' + i + '-' + total + ':'
-            + encodeURIComponent(html.substr(i * chunkSize, chunkSize));
-          i++;
-          setTimeout(nextChunk, 600);
+          'Bridge mode: handing the document over (' + html.length + ' bytes)...';
+        // Hand the document over by navigating to the opener's own origin
+        // with the document in the query string.  A navigation to the
+        // page's origin is always intercepted by its service worker, which
+        // is the only channel left: COOP: same-origin nulls
+        // window.opener and also blocks reading popup.location.
+        var referrer = document.referrer || '';
+        var origin = referrer ? referrer.split('/')[0] : '';
+        if (!origin) {
+          document.getElementById('status').textContent =
+            'Bridge mode: cannot work out the opener origin.';
+          return;
         }
-        nextChunk();
+        location.href = origin + '/webvm/proxy-inbox?doc='
+          + encodeURIComponent(html);
       })
       .catch(function (e) {
         console.log('[bridge] failed', e);

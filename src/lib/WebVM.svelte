@@ -131,45 +131,32 @@
 	function pollBridgePopup()
 	{
 		const popup = proxyBridgePopup;
-		if(!popup || popup.closed) {
-			return;
-		}
-		let href = "";
-		try {
-			href = popup.location.href;
-		} catch (e) {
-			// A cross-origin popup can still be read for location.href.
-			return;
-		}
-		const marker = "doc=";
-		const index = href.indexOf(marker);
-		if(index !== -1) {
-			const payload = href.substring(index + marker.length);
-			if(payload === "done") {
-				finishBridge();
-				return;
-			}
-			const sep = payload.indexOf(":");
-			const head = payload.substring(0, sep);
-			const dash = head.indexOf("-");
-			const part = parseInt(head.substring(0, dash), 10);
-			const total = parseInt(head.substring(dash + 1), 10);
-			proxyBridgeTotal = total;
-			proxyBridgeChunks[part] = decodeURIComponent(payload.substring(sep + 1));
-			const have = Object.keys(proxyBridgeChunks).length;
-			proxyStatus = "Bridge: received " + have + "/" + total + " chunks...";
-		}
-		setTimeout(pollBridgePopup, 200);
+		// The bridge popup hands the document over by navigating to this
+		// origin with the document in the query string; the site's service
+		// worker stashes it and answers here.  A navigation to our own
+		// origin is the only channel that survives COOP: same-origin,
+		// which nulls window.opener and also blocks reading
+		// popup.location.
+		fetch("/webvm/proxy-inbox", {cache: "no-store"})
+			.then((res) => res.text())
+			.then((html) => {
+				if (html && html.length > 0) {
+					finishBridge(html);
+					return;
+				}
+				if (popup && !popup.closed) {
+					setTimeout(pollBridgePopup, 700);
+				}
+			})
+			.catch(() => {
+				if (popup && !popup.closed) {
+					setTimeout(pollBridgePopup, 1500);
+				}
+			});
 	}
 
-	function finishBridge()
+	function finishBridge(html)
 	{
-		let html = "";
-		for(let i = 0; i < proxyBridgeTotal; i++) {
-			html += (proxyBridgeChunks[i] || "");
-		}
-		proxyBridgeTotal = 0;
-		proxyBridgeChunks = {};
 		if(!html) {
 			proxyStatus = "The bridge popup returned an empty document.";
 			return;

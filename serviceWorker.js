@@ -59,6 +59,33 @@ async function handleFetch(request) {
 // --------------------------------------------------------------------------
 
 const PROXY_BRIDGE_PREFIX = "/webvm/httpsproxy";
+// The bridge popup hands the proxied document over by navigating to this
+// path on the page's own origin with the document in the query string.
+// A navigation to the worker's own origin is always intercepted by the
+// worker, even from a cross-origin popup -- and that is the only channel
+// that survives COOP: same-origin (which nulls window.opener and blocks
+// reading popup.location).
+const PROXY_INBOX_PATH = "/webvm/proxy-inbox";
+
+async function handleProxyInbox(request, url) {
+	const cache = await caches.open("webvm-proxy-inbox");
+	const doc = url.searchParams.get("doc");
+	if (doc) {
+		await cache.put(PROXY_INBOX_PATH, new Response(doc, {
+			headers: { "Content-Type": "text/html; charset=utf-8" },
+		}));
+		return new Response(
+			"<!doctype html><html><body style=\"font:14px system-ui;padding:16px\">"
+			+ "The proxied document was handed over. This window can be closed."
+			+ "</body></html>",
+			{ headers: { "Content-Type": "text/html; charset=utf-8" } });
+	}
+	const hit = await cache.match(PROXY_INBOX_PATH);
+	if (hit) {
+		return hit;
+	}
+	return new Response("", { status: 404 });
+}
 
 function bridgeParams(url) {
 	return {
@@ -180,6 +207,11 @@ function serviceWorkerInit() {
 	self.addEventListener("fetch", function (e) {
 		try {
 			const requestUrl = new URL(e.request.url);
+			if (requestUrl.origin === self.location.origin
+				&& requestUrl.pathname === PROXY_INBOX_PATH) {
+				e.respondWith(handleProxyInbox(e.request, requestUrl));
+				return;
+			}
 			if (requestUrl.origin === self.location.origin
 				&& requestUrl.pathname.startsWith(PROXY_BRIDGE_PREFIX)) {
 				if (requestUrl.pathname.endsWith("/diag")) {
