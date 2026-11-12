@@ -447,10 +447,43 @@ class Handler(BaseHTTPRequestHandler):
 
 class WrapperServer(ThreadingHTTPServer):
     daemon_threads = True
+    _cheerpx_serving = True
+
+    def serve_forever(self, poll_interval=0.5):
+        """CheerpX-compatible serve loop using blocking accept().
+
+        CheerpX does not support select()/poll()/epoll() on sockets, so
+        the default selectors-based serve_forever() never dispatches
+        connections.  A blocking accept() loop works (proven by the
+        telnet shell on port 2323).
+        """
+        try:
+            while self._cheerpx_serving:
+                try:
+                    request, client_address = self.get_request()
+                except OSError:
+                    if not self._cheerpx_serving:
+                        break
+                    continue
+                if self.verify_request(request, client_address):
+                    try:
+                        self.process_request(request, client_address)
+                    except Exception:
+                        self.handle_error(request, client_address)
+                        self.shutdown_request(request)
+                else:
+                    self.shutdown_request(request)
+        except Exception:
+            pass
+
+    def shutdown(self):
+        self._cheerpx_serving = False
+        try:
+            self.socket.close()
+        except OSError:
+            pass
 
     def handle_error(self, request, client_address):
-        # Browsers routinely close keep-alive connections early; that is not
-        # an error worth printing into the launcher log.
         import sys as _sys
 
         exc_type = _sys.exc_info()[0]
@@ -469,7 +502,7 @@ def main() -> None:
 
     def _shutdown(signum, frame):
         log("SHUTDOWN signal {}".format(signum))
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        server.shutdown()
 
     import signal
 
@@ -479,7 +512,10 @@ def main() -> None:
     try:
         server.serve_forever()
     finally:
-        server.server_close()
+        try:
+            server.server_close()
+        except OSError:
+            pass
         with STATE_LOCK:
             process = _adjuster_process
         if process is not None and process.poll() is None:

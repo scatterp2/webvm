@@ -1340,15 +1340,58 @@ def _kill_stale_launcher():
     time.sleep(0.5)
 
 
-def start_web_adjuster_sidecar():
-    """Use the wrapper already started by the disk-image pi.py's start_proxy().
+LAUNCHER_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
 
-    CheerpX cannot reliably start a second Python process (subprocess is starved
-    by the cooperative scheduler) or run serve_forever() in a daemon thread
-    (it never yields back to the main thread). So we skip the new launcher
-    entirely and test the one that start_proxy() already brought up on :28080.
+
+def start_web_adjuster_sidecar():
+    """Fetch launcher.py from GitHub, kill the stale one, and restart.
+
+    The disk-image launcher uses serve_forever() which depends on
+    select()/epoll() — broken in CheerpX.  The GitHub-fetched version
+    uses a blocking accept() loop that works.
     """
-    print("WEB_ADJUSTER_SIDECAR_MODE reusing_existing_launcher_from_start_proxy", flush=True)
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+
+    launcher_path = Path("/home/user/examples/python3/web_adjuster/launcher.py")
+
+    # Fetch the fixed launcher from GitHub main
+    try:
+        req = Request(
+            LAUNCHER_URL + "?t=" + str(int(time.time() * 1000)),
+            headers={"Cache-Control": "no-cache", "User-Agent": "webvm-launcher/1.0"},
+        )
+        with urlopen(req, timeout=20) as resp:
+            launcher_source = resp.read().decode("utf-8")
+        print("LAUNCHER_FETCHED source=main characters={}".format(len(launcher_source)), flush=True)
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        print("LAUNCHER_FETCH_FAILED error={}: {} — keeping disk-image version".format(
+            type(exc).__name__, exc), flush=True)
+        return
+
+    # Overwrite the local copy with the fetched version
+    try:
+        launcher_path.write_text(launcher_source, encoding="utf-8")
+        print("LAUNCHER_WRITTEN path={}".format(launcher_path), flush=True)
+    except OSError as exc:
+        print("LAUNCHER_WRITE_FAILED error={}: {}".format(type(exc).__name__, exc), flush=True)
+        return
+
+    # Kill the stale launcher (started by disk-image pi.py)
+    _kill_stale_launcher()
+    print("STALE_LAUNCHER_KILLED", flush=True)
+
+    # Start the fresh launcher
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    log_file = open("/tmp/web-adjuster.log", "ab", buffering=0)
+    subprocess.Popen(
+        [sys.executable, str(launcher_path)],
+        stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+        env=env, start_new_session=True, close_fds=True,
+    )
+    log_file.close()
+    print("LAUNCHER_RESTARTED path={} (CheerpX-compatible accept loop)".format(launcher_path), flush=True)
 
 
 def _run_endpoint_tests():
