@@ -53,6 +53,10 @@ https with a publicly trusted certificate and the whole page loads.
 
 ## Active Goals (in priority order)
 
+**Goal 5 is the only one still open** — goals 1 to 4 are done and
+verified. Goal 5 is "make the proxied page actually show"; its options and
+the measured reasons for each are in **Goal 5** below.
+
 ### Goal 1: Fix Tailscale auto-connect (DONE)
 
 **Status:** Deployed and working. Auto-connect fires 2 seconds after CheerpX init, calls `cx.networkLogin()`. Gets a 100.x.x.x Tailscale IP each boot.
@@ -301,7 +305,7 @@ but the page does not behave differently". Clear it before testing:
 then reload.
 
 
-### Goal 4: Load Kaggle via proxy in iframe (browser integration)
+### Goal 4: Load Kaggle via proxy in iframe (DONE — VERIFIED)
 
 **Status:** The proxy iframe works and keeps DOM access. Verified in the
 browser against the live WebVM:
