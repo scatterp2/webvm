@@ -35,13 +35,16 @@ jobs:
               "TORCH_DIAGNOSTIC",
               "KAGGLE_DIAGNOSTIC_FILE",
               "GPU_DIAGNOSTIC_DEFERRED",
+              "WEB_ADJUSTER_ONLY_MODE",
+              "Kaggle code disabled for proxy testing",
               "KAGGLE_DIAGNOSTICS_BEGIN",
           )
           SAFE_EVIDENCE = re.compile(
               r"GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|TORCH_DIAGNOSTIC|"
               r"KAGGLE_DIAGNOSTIC_FILE|nvidia-smi|/dev/nvidia|"
               r"cuda\.is_available|torch\.version\.cuda|CUDA availability|CUDA build|"
-              r"GPU_DIAGNOSTIC_DEFERRED|KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|"
+              r"GPU_DIAGNOSTIC_DEFERRED|WEB_ADJUSTER_ONLY_MODE|Kaggle code disabled for proxy testing|"
+              r"KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|"
               r"Traceback|RuntimeError|ImportError|ModuleNotFoundError|FileNotFoundError|"
               r"OSError|ProbeTimeout|Could not resolve|Name or service not known|"
               r"DNS.*(?:fail|error|timeout)|(?:fail|error|timeout).*DNS|"
@@ -57,7 +60,7 @@ jobs:
           RAW_BASE = "https://pste.us/raw/"
           SEEN = set()
           START = time.monotonic()
-          WINDOW_SECONDS = 780
+          WINDOW_SECONDS = 120
 
           def stamp():
               return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -92,7 +95,7 @@ jobs:
                       print(f"[{stamp()}] SEARCH_FETCH_FAILED tag={label} error={type(exc).__name__}", flush=True)
                       continue
 
-                  for pid in ids[:51]:
+                  for pid in (ids[:51] if label == "GPU" else ids[:5]):
                       key = (tag, pid)
                       if key in SEEN:
                           continue
@@ -112,6 +115,7 @@ jobs:
                           and (
                               "KAGGLE_DIAGNOSTICS_BEGIN" in body
                               or "GPU_DIAGNOSTIC_DEFERRED" in body
+                              or "WEB_ADJUSTER_ONLY_MODE" in body
                           )
                       )
                       if not has_diagnostic or not (source_kaggle or source_collected_logs):
