@@ -65,3 +65,4 @@ bridge hands the document over via a navigation to the page origin
 pass the opener origin to the bridge popup
 robust bridge polling
 tagged auth key for stable proxy DNS name
+Goal 5: real LE cert for HTTPS proxy on webvm-proxy.tailf987e.ts.net
