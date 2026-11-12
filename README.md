@@ -185,9 +185,10 @@ This is the reason the proxy exists, not just a smoke test:
 | Response cache | **PASS** — 120 s cache for GET responses without `Set-Cookie` |
 | Compressed bodies | **PASS** — the upstream request forces `Accept-Encoding: identity`; the browser's `gzip, deflate, br` would otherwise make the rewriting corrupt the body |
 | HTTPS listener on `:28443` | **PASS** — `TLS_WRAPPER_LISTENING port=28443`, and the chain verifies against the development CA (`VERIFIED CHAIN OK -> 200 ok`) |
-| Kaggle **app** loaded and usable in the iframe | **PASS** — `title: "Kaggle: The World's AI Proving Ground"` |
+| Kaggle **app** loaded and usable in the iframe | **PASS** — `title: "Kaggle: The World's AI Proving Ground"`, 15 scripts, the VM stays healthy afterwards |
 | JS/DOM injection confirmed inside the iframe | **PASS** — `JS/DOM INJECTION CONFIRMED: marker element present = true, documentElement attribute = true` |
 | DOM access from the parent page | **PASS** — `sameOrigin: true`; the parent reads `frame.contentDocument` |
+| The VM survives a full SPA load | **PASS** — after Kaggle's page and its resources loaded through the proxy, `/health` still answers `200` |
 | In-VM boot self-test | **OFF by default** (`WEBVM_SELFTEST=1` enables it) — see below |
 
 #### Additional bug found while verifying — `main()` was blocked
@@ -598,6 +599,7 @@ suspicions and partial observations, not confirmed root causes.**
 | 17 | **Tailscale Serve is not enabled on this tailnet**, and the WebVM's node cannot enable it (no `tailscaled` in the guest — Tailscale runs in the browser's CheerpX runtime) | `tailscale serve --bg ...` printed `Serve is not enabled on your tailnet` and a one-click enable link; the guest has no `tailscale`/`tailscaled` binary and no node HTTPS listener on 443 | **High** — one click in the admin console enables the publicly-trusted HTTPS route |
 | 18 | Adding a root certificate to the Windows trust store needs a **UI confirmation**, which a non-interactive session cannot answer | `certutil -user -addstore` hung on a dialog; `Import-Certificate` failed with `UI is not allowed in this operation`; `CertAddEncodedCertificateToStore` hung on the same protected-root prompt | **High** — `install_dev_ca.py` calls the Win32 API, but the protected-root prompt still applies; the Tailscale Serve route avoids the problem entirely |
 | 19 | The browser shares this machine's network namespace (`http://127.0.0.1:<port>` opened from the browser reached a server started here) | A local HTTP server on `127.0.0.1:18099` returned `HOSTLOCAL_OK` in the browser | **High** — useful for testing, but it is a machine dependency, so it is not used in the design |
+| 20 | **Two concurrent TLS handshakes inside the WebVM wedge the whole VM.** A TLS handshake blocks CheerpX's cooperative scheduler, so interleaved handshakes starve each other and the accept loop never runs — the ports stop answering and the VM looks dead | The terminal showed two `UPSTREAM_PHASE url_connect … ok` lines and no `tls_done`; the host could reach the same URL in 0.2 s; the ports then stopped answering entirely | **High** — the upstream fetches are now serialised through a semaphore of 1. A limit of 4 was not enough, 1 is. The local suite fires 12 simultaneous requests and all are answered |
 
 ## Host-side tooling (kept in the repo)
 
@@ -687,6 +689,12 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 7. **A long-lived subprocess server gets starved**, but short-lived
    subprocesses (`/bin/sh`, `fuser`) work fine. That is why the proxy runs
    as a thread inside `pi_impl.py` rather than as a separate process.
+8. **Never run two TLS handshakes at the same time inside the VM.** The
+   handshake blocks the cooperative scheduler, so interleaved handshakes
+   starve each other and the whole VM stops answering. The proxy's
+   upstream fetches go through a semaphore of **one**. A limit of four was
+   not enough. The response cache absorbs the repeats that the serialised
+   fetches would otherwise make slow.
 
 ## How the WebVM reset is triggered and verified
 
