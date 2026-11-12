@@ -293,9 +293,13 @@ _CACHE_MAX = 64
 # one of them would otherwise open a connection and start a TLS handshake
 # inside CheerpX, whose scheduler is cooperative: the VM's accept loop
 # stops running, the whole machine appears to hang, and the ports stop
-# answering.  Queuing the requests instead of running them all at once
-# keeps the VM responsive.
-_UPSTREAM_CONCURRENCY = 4
+# answering.
+#
+# One at a time is deliberate.  Two concurrent TLS handshakes were enough
+# to wedge the VM completely -- the handshake blocks the cooperative
+# scheduler, so interleaved handshakes starve each other.  Serialising
+# them keeps the VM responsive; the response cache absorbs the repeats.
+_UPSTREAM_CONCURRENCY = 1
 _UPSTREAM_SEMAPHORE = threading.Semaphore(_UPSTREAM_CONCURRENCY)
 
 
@@ -364,7 +368,11 @@ def _watchdog(sock, timeout):
     fires here and the read blocks forever.  A watchdog thread that closes
     the socket is the only reliable way to bound a network operation.
     """
-    timer = threading.Timer(timeout, _close_quietly, (sock,))
+    def _kill():
+        log("WATCHDOG_FIRED timeout={}s".format(timeout))
+        _close_quietly(sock)
+
+    timer = threading.Timer(timeout, _kill)
     timer.daemon = True
     timer.start()
     return timer
