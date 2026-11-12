@@ -350,7 +350,7 @@ the cross-origin hop**.
 
 ### The design that is implemented: the bridge popup
 
-Three facts force this shape:
+Four facts force this shape:
 
 1. The page is https and the proxy is http → the page cannot fetch the
    proxy (mixed content), and neither can the Service Worker.
@@ -358,20 +358,28 @@ Three facts force this shape:
    at start-up and never registers on the tailnet — verified), and
    `COOP: same-origin` **nulls a popup's `window.opener`**, so a popup
    cannot `postMessage` back.
-3. The opener **can** read `popup.location.href` across origins.
+3. `COOP: same-origin` also **blocks reading `popup.location.href`**:
+   `SecurityError: Failed to read a named property 'href' from
+   'Location'`. (Without COOP, reading the href of a cross-origin popup
+   is allowed — so the fragment channel works *only* when the opener is
+   not COOP-isolated, which the WebVM cannot afford.)
+4. The popup therefore has **no channel back to the opener at all** —
+   except a **navigation to the opener's own origin**, which the opener's
+   Service Worker always intercepts.
 
 So the chain is:
 
 ```
 WebVM page (https)
-  └─ opens popup  http://<vm>:28082/?bridge=1&target=…
-        └─ GET /proxy-inline/<target>          (same-origin http, no mixed content)
-              └─ the proxy fetches the target and its sub-resources
-                 SERVER SIDE, where the mixed-content rule does not apply,
-                 and inlines each one as a data: URI
-        └─ hands the self-contained document back in its URL fragment,
-           in paced chunks:  #doc=<part>-<total>:<encoded chunk>
-  └─ the opener polls popup.location.href, assembles the chunks
+  └─ opens popup  http://<vm>:28082/?bridge=1&origin=<page origin>&target=…
+        └─ GET /proxy/<target>                (same-origin http, no mixed content)
+              └─ the proxy fetches the target, strips the framing headers,
+                 rewrites the URLs back through the proxy and injects the
+                 proof script
+        └─ navigates to  <page origin>/webvm/proxy-inbox?doc=<document>
+  └─ the page's service worker intercepts that navigation, stashes the
+     document in the Cache Storage and answers with a small page
+  └─ the opener polls /webvm/proxy-inbox and injects the document
   └─ iframe.srcdoc = document      -> the frame inherits the page's origin
 ```
 
@@ -380,10 +388,10 @@ installed on the laptop, and no tailnet setting is needed.**
 
 | Piece | Where | State |
 |---|---|---|
-| `/proxy-inline/<url>` — builds the self-contained document | `examples/python3/web_adjuster/launcher.py` | **VERIFIED** — `200`, 148000 bytes, 3 sub-resources inlined as `data:` URIs, **0** `http://` references left |
-| `/?bridge=1&target=…` — the popup mode | same file | **VERIFIED** — the served page contains the bridge code and the flag is `true` |
-| The opener: open the popup, poll `popup.location.href`, `srcdoc` it | `src/lib/WebVM.svelte` | **BUILT, not yet re-verified end to end** |
-| `popup.location.href` readable across origins | the browser | **VERIFIED** — it is one of the few cross-origin-readable properties |
+| `/proxy/<url>` — the proxied document | `examples/python3/web_adjuster/launcher.py` | **VERIFIED** — 200, 7145 bytes for Kaggle, framing headers stripped, script injected |
+| `/?bridge=1&origin=…&target=…` — the popup mode | same file | **VERIFIED** — the popup fetched the document (`[bridge] proxy status 200`, `[bridge] document bytes 7145`) |
+| The opener: open the popup, poll `/webvm/proxy-inbox`, `srcdoc` it | `src/lib/WebVM.svelte` | **BUILT** — the last run reached "cannot work out the opener origin", fixed by passing the origin explicitly; **not yet re-verified end to end** |
+| `/webvm/proxy-inbox` — the service worker's inbox | `serviceWorker.js` | **BUILT** — a navigation to the page's own origin is always intercepted by its worker |
 | `srcdoc` frames inherit the parent origin | the browser | **VERIFIED** in the VM's own proxy page (`sameOrigin: true`) |
 
 ### What is verified and what is not
@@ -392,9 +400,20 @@ installed on the laptop, and no tailnet setting is needed.**
 |---|---|
 | The proxy's CORS/CORP headers | **VERIFIED** — `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin` on every response |
 | The bridge routes are served by the worker | **VERIFIED** — the worker answered with its own `502 proxy bridge failed: …` |
-| `/proxy-inline/` | **VERIFIED** — 148 KB self-contained document, no external references |
-| The popup hands the document over | **NOT RE-VERIFIED** — the last run left the popup's fragment empty because the popup was *also* loading the target in its own iframe, and the two requests starved each other in the proxy's serialised upstream queue. The popup no longer renders the page in bridge mode, and it logs each step (`[bridge] …`) to the console. |
+| The popup fetching the document | **VERIFIED** — `[bridge] proxy status 200`, `[bridge] document bytes 7145` |
+| The popup handing the document over | **NOT RE-VERIFIED** — the last run stopped at "cannot work out the opener origin" (empty `document.referrer`); the opener now passes its origin explicitly |
 | The panel on the WebVM page | **BUILT** — a "Proxy" button in the bottom-right corner opens the panel with target buttons (Kaggle / Example / Google) |
+
+### Things the browser will not let us do (all measured, not assumed)
+
+| Attempt | Result |
+|---|---|
+| `<iframe src="http://<vm>:28082/…">` on the https page | **blocked** — mixed content, and no request is even sent |
+| `fetch("http://<vm>:28082/…")` from the page | **blocked** — mixed content |
+| the same fetch from the service worker | **blocked** — mixed content, rejected in 0–1 ms |
+| `popup.postMessage` from the popup to the page | **impossible** — `window.opener` is null under `COOP: same-origin` |
+| reading `popup.location.href` from the page | **blocked** — `SecurityError` under `COOP: same-origin` |
+| a **navigation** by the popup to the page's own origin | **works** — the page's service worker always intercepts it, even from a cross-origin popup |
 
 ### The alternative: an https origin for the proxy
 
