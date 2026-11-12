@@ -1343,45 +1343,24 @@ def _kill_stale_launcher():
 LAUNCHER_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
 
 
-def _wait_port_free(port, timeout=15):
-    """Wait until nothing is listening on port, with repeated kill attempts."""
-    import socket as _sock
-    for i in range(timeout):
-        try:
-            s = _sock.create_connection(("127.0.0.1", port), timeout=0.5)
-            s.close()
-        except OSError:
-            print("PORT_FREE port={} after {}s".format(port, i), flush=True)
-            return True
-        # Still occupied — kill again
-        try:
-            subprocess.run(["fuser", "-k", "{}/tcp".format(port)],
-                           capture_output=True, timeout=3, check=False)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        time.sleep(1)
-    print("PORT_STILL_OCCUPIED port={} after {}s".format(port, timeout), flush=True)
-    return False
+WRAPPER_PORT_INPROC = 28082
 
 
 def start_web_adjuster_sidecar():
-    """Fetch launcher.py from GitHub, kill the stale subprocess, and run
-    the HTTP server as a daemon thread in this process.
+    """Fetch launcher.py from GitHub and run the HTTP server as a daemon
+    thread in this process on port 28082.
 
     CheerpX's cooperative scheduler starves separate subprocesses, so the
-    disk-image launcher (a subprocess) never accepts connections.  Running
-    the server as a thread in the main process works — proven by the
-    telnet shell on port 2323.
+    disk-image launcher (a subprocess on port 28080) never accepts
+    connections.  Running the server as a thread in the main process works
+    — proven by the telnet shell on port 2323.
+
+    We use port 28082 to avoid fighting with the stale disk-image launcher
+    that holds port 28080 and is slow to die in CheerpX.
     """
     import threading as _threading
     from urllib.request import Request, urlopen
     from urllib.error import HTTPError, URLError
-
-    # Kill the stale launcher subprocess (started by disk-image pi.py)
-    # and wait until the port is actually free
-    _kill_stale_launcher()
-    print("STALE_LAUNCHER_KILLED", flush=True)
-    _wait_port_free(28080)
 
     # Fetch launcher.py from GitHub main
     try:
@@ -1409,22 +1388,14 @@ def start_web_adjuster_sidecar():
     WrapperServer = launcher_ns["WrapperServer"]
     Handler = launcher_ns["Handler"]
     BIND = launcher_ns["BIND"]
-    WRAPPER_PORT = launcher_ns["WRAPPER_PORT"]
 
-    # Create the server — retry a few times in case the port takes a moment
-    server = None
-    for attempt in range(5):
-        try:
-            server = WrapperServer((BIND, WRAPPER_PORT), Handler)
-            break
-        except OSError as exc:
-            if attempt == 4:
-                print("WRAPPER_BIND_FAILED error={}: {} (gave up)".format(
-                    type(exc).__name__, exc), flush=True)
-                return
-            print("WRAPPER_BIND_RETRY attempt={} error={}".format(attempt + 1, exc), flush=True)
-            _kill_stale_launcher()
-            time.sleep(2)
+    # Bind on port 28082 to avoid conflict with stale disk-image launcher on 28080
+    try:
+        server = WrapperServer((BIND, WRAPPER_PORT_INPROC), Handler)
+    except OSError as exc:
+        print("WRAPPER_BIND_FAILED port={} error={}: {}".format(
+            WRAPPER_PORT_INPROC, type(exc).__name__, exc), flush=True)
+        return
 
     def _serve():
         try:
@@ -1435,7 +1406,8 @@ def start_web_adjuster_sidecar():
 
     thread = _threading.Thread(target=_serve, daemon=True, name="wrapper-http")
     thread.start()
-    print("WRAPPER_STARTED_IN_THREAD port={} (CheerpX-compatible)".format(WRAPPER_PORT), flush=True)
+    print("WRAPPER_STARTED_IN_THREAD port={} (CheerpX-compatible)".format(
+        WRAPPER_PORT_INPROC), flush=True)
 
 
 def _run_endpoint_tests():
@@ -1444,10 +1416,11 @@ def _run_endpoint_tests():
     from urllib.error import HTTPError, URLError
     import socket as _sock
 
-    print("ENDPOINT_TEST waiting for wrapper on :28080 ...", flush=True)
+    wrapper_port = WRAPPER_PORT_INPROC
+    print("ENDPOINT_TEST waiting for wrapper on :{} ...".format(wrapper_port), flush=True)
     for attempt in range(60):
         try:
-            s = _sock.create_connection(("127.0.0.1", 28080), timeout=1)
+            s = _sock.create_connection(("127.0.0.1", wrapper_port), timeout=1)
             s.close()
             print("ENDPOINT_TEST wrapper_ready after {} seconds".format(attempt), flush=True)
             break
@@ -1457,7 +1430,7 @@ def _run_endpoint_tests():
         print("ENDPOINT_TEST WRAPPER_NOT_READY after 60s — skipping tests", flush=True)
         return
 
-    base = "http://127.0.0.1:28080"
+    base = "http://127.0.0.1:{}".format(wrapper_port)
     endpoints = ["/health", "/proxy-status", "/"]
     for ep in endpoints:
         url = base + ep
@@ -1557,7 +1530,7 @@ def main():
     # run_io_loop_proof()
 
     print("WEB_ADJUSTER_ONLY_MODE — Kaggle code disabled for proxy testing", flush=True)
-    print("Wrapper: http://0.0.0.0:28080/", flush=True)
+    print("Wrapper: http://0.0.0.0:{}/".format(WRAPPER_PORT_INPROC), flush=True)
     print("Adjuster: http://0.0.0.0:28081/", flush=True)
     print("Telnet shell: 0.0.0.0:2323 (plink.exe -raw -P 2323 <tailscale-ip>)", flush=True)
 
