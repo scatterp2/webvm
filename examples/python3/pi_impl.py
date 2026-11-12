@@ -1478,7 +1478,6 @@ def main():
     _run_endpoint_tests()
 
     print("Tailing /tmp/web-adjuster.log ...", flush=True)
-    import time
     log_path = Path("/tmp/web-adjuster.log")
     seen = 0
     while True:
