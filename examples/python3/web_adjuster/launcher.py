@@ -659,7 +659,7 @@ STATUS_TEXT = {
 }
 
 
-def send_response(sock, status, headers, body, close=True):
+def send_response(sock, status, headers, body, close=True, client=None):
     """Write a complete HTTP response.  Never raises on a dead client."""
     reason = STATUS_TEXT.get(status, "OK")
     head = ["HTTP/1.1 {} {}".format(status, reason)]
@@ -673,13 +673,24 @@ def send_response(sock, status, headers, body, close=True):
     head.append("Cache-Control: no-store")
     if close:
         head.append("Connection: close")
-    payload = ("\r\n".join(head) + "\r\n\r\n").encode("iso-8859-1")
-    payload += body or b""
+    try:
+        raw_head = ("\r\n".join(head) + "\r\n\r\n").encode("iso-8859-1")
+    except UnicodeEncodeError as exc:
+        log("SEND_ENCODING_FAILED status={} error={}".format(status, exc))
+        raw_head = ("HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                    "Content-Length: 40\r\nConnection: close\r\n\r\n"
+                    "header encoding failed\r\n").encode("ascii")
+        body = b""
+    payload = raw_head + (body or b"")
+    log("SEND_START status={} bytes={} client={}".format(
+        status, len(payload), client))
     try:
         sock.sendall(payload)
+        log("SEND_OK status={} bytes={}".format(status, len(payload)))
         return True
     except OSError as exc:
-        log("SEND_FAILED error={}: {}".format(type(exc).__name__, exc))
+        log("SEND_FAILED status={} bytes={} client={} error={}: {}".format(
+            status, len(payload), client, type(exc).__name__, exc))
         return False
 
 
@@ -793,11 +804,18 @@ class Handler(object):
         self.parsed = None
 
     # -- helpers ---------------------------------------------------------
+    def client_label(self):
+        try:
+            return "{}:{}".format(*self.client_address)
+        except Exception:
+            return "?"
+
     def _send(self, status, content_type, body, extra=None):
         headers = [("Content-Type", content_type)]
         if extra:
             headers.extend(extra)
-        send_response(self.request, status, headers, body)
+        send_response(self.request, status, headers, body,
+                      client=self.client_label())
 
     def _send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
@@ -828,7 +846,8 @@ class Handler(object):
             status, upstream_headers, upstream_body, url
         )
         log("PROXIED status={} url={} bytes={}".format(status, url, len(out_body)))
-        send_response(self.request, status, out_headers, out_body)
+        send_response(self.request, status, out_headers, out_body,
+                      client=self.client_label())
 
     # -- dispatch --------------------------------------------------------
     def handle(self):
@@ -850,6 +869,8 @@ class Handler(object):
     def dispatch(self, request):
         target = request.target
         mode = self.mode
+        log("REQUEST method={} target={} client={}".format(
+            request.method, target[:140], self.client_label()))
 
         # Forward-proxy mode: the request line carries an absolute URI.
         if mode == "forward" and target.startswith("http://") \
