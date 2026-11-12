@@ -1344,18 +1344,23 @@ LAUNCHER_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/
 
 
 def start_web_adjuster_sidecar():
-    """Fetch launcher.py from GitHub, kill the stale one, and restart.
+    """Fetch launcher.py from GitHub, kill the stale subprocess, and run
+    the HTTP server as a daemon thread in this process.
 
-    The disk-image launcher uses serve_forever() which depends on
-    select()/epoll() — broken in CheerpX.  The GitHub-fetched version
-    uses a blocking accept() loop that works.
+    CheerpX's cooperative scheduler starves separate subprocesses, so the
+    disk-image launcher (a subprocess) never accepts connections.  Running
+    the server as a thread in the main process works — proven by the
+    telnet shell on port 2323.
     """
+    import threading as _threading
     from urllib.request import Request, urlopen
     from urllib.error import HTTPError, URLError
 
-    launcher_path = Path("/home/user/examples/python3/web_adjuster/launcher.py")
+    # Kill the stale launcher subprocess (started by disk-image pi.py)
+    _kill_stale_launcher()
+    print("STALE_LAUNCHER_KILLED", flush=True)
 
-    # Fetch the fixed launcher from GitHub main
+    # Fetch launcher.py from GitHub main
     try:
         req = Request(
             LAUNCHER_URL + "?t=" + str(int(time.time() * 1000)),
@@ -1365,33 +1370,42 @@ def start_web_adjuster_sidecar():
             launcher_source = resp.read().decode("utf-8")
         print("LAUNCHER_FETCHED source=main characters={}".format(len(launcher_source)), flush=True)
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        print("LAUNCHER_FETCH_FAILED error={}: {} — keeping disk-image version".format(
+        print("LAUNCHER_FETCH_FAILED error={}: {}".format(
             type(exc).__name__, exc), flush=True)
         return
 
-    # Overwrite the local copy with the fetched version
+    # exec into a namespace to get classes and functions
+    launcher_ns = {}
     try:
-        launcher_path.write_text(launcher_source, encoding="utf-8")
-        print("LAUNCHER_WRITTEN path={}".format(launcher_path), flush=True)
-    except OSError as exc:
-        print("LAUNCHER_WRITE_FAILED error={}: {}".format(type(exc).__name__, exc), flush=True)
+        exec(compile(launcher_source, LAUNCHER_URL, "exec"), launcher_ns)
+    except Exception as exc:
+        print("LAUNCHER_COMPILE_FAILED error={}: {}".format(
+            type(exc).__name__, str(exc)[:300]), flush=True)
         return
 
-    # Kill the stale launcher (started by disk-image pi.py)
-    _kill_stale_launcher()
-    print("STALE_LAUNCHER_KILLED", flush=True)
+    WrapperServer = launcher_ns["WrapperServer"]
+    Handler = launcher_ns["Handler"]
+    BIND = launcher_ns["BIND"]
+    WRAPPER_PORT = launcher_ns["WRAPPER_PORT"]
 
-    # Start the fresh launcher
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    log_file = open("/tmp/web-adjuster.log", "ab", buffering=0)
-    subprocess.Popen(
-        [sys.executable, str(launcher_path)],
-        stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=env, start_new_session=True, close_fds=True,
-    )
-    log_file.close()
-    print("LAUNCHER_RESTARTED path={} (CheerpX-compatible accept loop)".format(launcher_path), flush=True)
+    # Create the server in the main thread, serve in a daemon thread
+    try:
+        server = WrapperServer((BIND, WRAPPER_PORT), Handler)
+    except OSError as exc:
+        print("WRAPPER_BIND_FAILED error={}: {}".format(
+            type(exc).__name__, exc), flush=True)
+        return
+
+    def _serve():
+        try:
+            server.serve_forever()
+        except Exception as exc:
+            print("WRAPPER_SERVE_ERROR error={}: {}".format(
+                type(exc).__name__, str(exc)[:200]), flush=True)
+
+    thread = _threading.Thread(target=_serve, daemon=True, name="wrapper-http")
+    thread.start()
+    print("WRAPPER_STARTED_IN_THREAD port={} (CheerpX-compatible)".format(WRAPPER_PORT), flush=True)
 
 
 def _run_endpoint_tests():
