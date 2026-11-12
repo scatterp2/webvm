@@ -43,36 +43,73 @@
 	var proxyTarget = "https://www.kaggle.com/";
 	var proxyStatus = "";
 	var proxyFrameEl = null;
+	const PROXY_TLS_PORT = 28443;
+	// A Tailscale Serve endpoint publishes the proxy with a publicly trusted
+	// certificate, so the service worker can fetch it over https without a
+	// development CA having to be trusted.  Serve has to be enabled on the
+	// tailnet first (see the README).
+	const TAILSCALE_SERVE_ORIGIN = "https://desktop-21m8c49.tailf987e.ts.net";
 
 	// The WebVM's plain-http proxy origin, taken from the netmap because
 	// the address changes on every boot.
 	$: proxyHttpBase = $currentIpStore
 		? ("http://" + $currentIpStore + ":28082")
 		: "";
-	// The same-origin route the service worker answers.
-	$: proxyBridgeUrl = proxyHttpBase
-		? ("/webvm/httpsproxy?base=" + encodeURIComponent(proxyHttpBase)
-			+ "&target=" + encodeURIComponent(proxyTarget))
-		: "";
+
+	// Bases the service worker can fetch the proxy through, tried in order.
+	// The plain-http one is rejected instantly by the mixed-content check
+	// (about 1 ms), so trying it first costs nothing.
+	function proxyBases()
+	{
+		const bases = [];
+		let override = null;
+		if(typeof window !== "undefined")
+		{
+			const params = new URLSearchParams("?" + window.location.hash.substr(1));
+			override = params.get("proxyOrigin");
+		}
+		if(override)
+			bases.push(override.replace(/\/$/, ""));
+		if(proxyHttpBase)
+			bases.push(proxyHttpBase);
+		if($currentDnsNameStore)
+			bases.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
+		if(TAILSCALE_SERVE_ORIGIN)
+			bases.push(TAILSCALE_SERVE_ORIGIN);
+		return bases;
+	}
 
 	async function loadProxyFrame()
 	{
-		if(!proxyBridgeUrl) {
+		const bases = proxyBases();
+		if(bases.length === 0) {
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
-		proxyStatus = "Fetching " + proxyTarget + " through the proxy bridge...";
-		try {
-			const res = await fetch(proxyBridgeUrl, {cache: "no-store"});
-			const html = await res.text();
-			if(proxyFrameEl) {
-				proxyFrameEl.srcdoc = html;
-				proxyStatus = "Loaded " + res.status + " (" + html.length
-					+ " bytes) - srcdoc frame keeps DOM access.";
+		let lastError = "no candidate";
+		for(const base of bases) {
+			const url = "/webvm/httpsproxy?base=" + encodeURIComponent(base)
+				+ "&target=" + encodeURIComponent(proxyTarget);
+			proxyStatus = "Fetching " + proxyTarget + " through " + base + "...";
+			try {
+				const res = await fetch(url, {cache: "no-store"});
+				const html = await res.text();
+				if(!res.ok || html.startsWith("proxy bridge failed")) {
+					lastError = base + ": " + html.slice(0, 120);
+					continue;
+				}
+				if(proxyFrameEl) {
+					proxyFrameEl.srcdoc = html;
+					proxyStatus = "Loaded " + res.status + " (" + html.length
+						+ " bytes) from " + base
+						+ " - srcdoc frame keeps DOM access.";
+				}
+				return;
+			} catch (e) {
+				lastError = base + ": " + e;
 			}
-		} catch (e) {
-			proxyStatus = "Proxy bridge failed (" + e + ").";
 		}
+		proxyStatus = "Every proxy origin failed (" + lastError + ").";
 	}
 
 	function toggleProxyPanel()
