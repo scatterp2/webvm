@@ -46,36 +46,61 @@
 	var proxyStatus = "";
 	var proxyFrameEl = null;
 	const PROXY_TLS_PORT = 28443;
-	$: proxyOrigin = $currentDnsNameStore
-		? ("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT)
-		: "";
-	$: proxyTargetLabel = proxyTarget;
+
+	// Candidate proxy origins, tried in order.  The first one that answers
+	// wins.  A different origin can be forced with #proxyOrigin=<url> in the
+	// page hash, e.g. a Tailscale Serve endpoint published for the tailnet.
+	function proxyOriginCandidates()
+	{
+		const candidates = [];
+		let override = null;
+		if(typeof window !== "undefined")
+		{
+			const hash = window.location.hash.substr(1);
+			const params = new URLSearchParams("?" + hash);
+			override = params.get("proxyOrigin");
+		}
+		if(override)
+			candidates.push(override.replace(/\/$/, ""));
+		if($currentDnsNameStore)
+			candidates.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
+		return candidates;
+	}
+	$: proxyOrigin = proxyOriginCandidates();
 
 	async function loadProxyFrame()
 	{
-		if(!proxyOrigin) {
+		const candidates = proxyOriginCandidates();
+		if(candidates.length === 0) {
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
-		const url = proxyOrigin + "/proxy/" + encodeURIComponent(proxyTarget);
-		proxyStatus = "Fetching " + proxyTarget + " through the proxy...";
-		try {
-			const res = await fetch(url, {cache: "no-store"});
-			const html = await res.text();
-			if(proxyFrameEl) {
-				proxyFrameEl.srcdoc = html;
-				proxyStatus = "Loaded " + res.status + " (" + html.length
-					+ " bytes) - srcdoc frame keeps DOM access.";
+		let lastError = "no candidate";
+		for(const origin of candidates) {
+			const url = origin + "/proxy/" + encodeURIComponent(proxyTarget);
+			proxyStatus = "Fetching " + proxyTarget + " through " + origin + "...";
+			try {
+				const res = await fetch(url, {cache: "no-store"});
+				const html = await res.text();
+				if(proxyFrameEl) {
+					proxyFrameEl.srcdoc = html;
+					proxyStatus = "Loaded " + res.status + " (" + html.length
+						+ " bytes) from " + origin
+						+ " - srcdoc frame keeps DOM access.";
+				}
+				return;
+			} catch (e) {
+				lastError = origin + ": " + e;
 			}
-		} catch (e) {
-			// Fall back to a direct frame: it still renders, but the DOM is
-			// then cross-origin and unreachable from this page.
-			proxyStatus = "Cross-origin fetch failed (" + e
-				+ ") - falling back to a direct frame.";
-			if(proxyFrameEl) {
-				proxyFrameEl.removeAttribute("srcdoc");
-				proxyFrameEl.src = url;
-			}
+		}
+		// Fall back to a direct frame: it still renders, but the DOM is
+		// then cross-origin and unreachable from this page.
+		proxyStatus = "Fetch failed (" + lastError
+			+ ") - falling back to a direct frame.";
+		if(proxyFrameEl && candidates.length) {
+			proxyFrameEl.removeAttribute("srcdoc");
+			proxyFrameEl.src = candidates[0] + "/proxy/"
+				+ encodeURIComponent(proxyTarget);
 		}
 	}
 
@@ -560,7 +585,7 @@
 			<div class="absolute top-0 bottom-0 right-0 w-1/2 flex flex-col bg-gray-900 border-l border-gray-700">
 				<div class="flex items-center gap-2 px-2 py-1 bg-gray-800 text-xs text-gray-200">
 					<strong>Proxy</strong>
-					<span class="truncate opacity-70">{proxyTargetLabel}</span>
+					<span class="truncate opacity-70">{proxyTarget}</span>
 					<span class="flex-1"></span>
 					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={() => setProxyTarget("https://www.kaggle.com/")}>Kaggle</button>
 					<button class="px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600" on:click={() => setProxyTarget("https://example.com/")}>Example</button>
