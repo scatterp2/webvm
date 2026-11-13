@@ -357,7 +357,7 @@ challenge**, so the frame shows Kaggle's own crash page
 | The page's own API calls | **works** — the injected script patches `fetch` and `XMLHttpRequest.open` so absolute calls to the original site are rewritten to `/proxy/<encoded-url>` |
 | **`example.com` in the panel** | **works** — it renders completely |
 | **Kaggle's own data call** | **BROKEN** — Kaggle answers with a **reCAPTCHA enterprise challenge** (`https://www.google.com/recaptcha/enterprise/anchor` shows up in the network log), so the app renders its crash page. This is Kaggle's bot detection, not the proxy |
-| Fonts | **works now** — fonts are fetched in CORS mode, so they must be *proxied* (the proxy adds `Access-Control-Allow-Origin`), not 302-redirected to a CDN that sends no CORS header |
+| Fonts | **known limitation** — the stylesheet is rewritten to an absolute Kaggle CDN URL, so the font inside it resolves against the CDN and is fetched in CORS mode; Kaggle's CDN sends no `Access-Control-Allow-Origin` for fonts, so that one font fails with `ERR_FAILED`. Making it work means proxying the CSS **and** rewriting its `url(...)` references to the proxy, which risks CheerpX dropping the CSS transfer. Cosmetic only — the page still renders. Fonts are no longer CDN-redirected when they do come through the proxy. |
 
 #### What was done (commits, most recent first)
 
