@@ -251,6 +251,21 @@ def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
     return text
 
 
+def rewrite_css(text: str, base: str, proxy_origin=None) -> str:
+    """Rewrite url() references inside a CSS file through the proxy."""
+
+    def _css_url(match):
+        url = match.group("url").strip()
+        rewritten = _rewrite_url(url, base, proxy_origin)
+        if rewritten == url:
+            return match.group(0)
+        return "url({q}{u}{q})".format(q=match.group("q"), u=rewritten)
+
+    text = _CSS_URL_RE.sub(_css_url, text)
+    text = _REL_CSS_URL_RE.sub(_css_url, text)
+    return text
+
+
 # --------------------------------------------------------------------------
 # Self-contained documents
 #
@@ -832,6 +847,8 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
     # embeddable by a COEP: require-corp document.
     out_headers.append(("Cross-Origin-Resource-Policy", "cross-origin"))
 
+    is_css = "text/css" in content_type
+
     if is_html and body:
         try:
             text = body.decode("utf-8", "replace")
@@ -850,6 +867,15 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
                 text = text + script
             else:
                 text = text[:index] + script + text[index:]
+            body = text.encode("utf-8")
+
+    elif is_css and body:
+        try:
+            text = body.decode("utf-8", "replace")
+        except Exception:
+            text = None
+        if text is not None:
+            text = rewrite_css(text, request_url, proxy_origin)
             body = text.encode("utf-8")
 
     return status, out_headers, body
@@ -1375,6 +1401,22 @@ class Handler(object):
             body = render_page(target_url, self.proxy_origin(), bridge).encode("utf-8")
             self._send(200, "text/html; charset=utf-8", body)
             return
+        # Catch-all: resolve bare paths (e.g. /static/assets/app.css) that
+        # sub-resources request when the iframe navigates directly to a
+        # /proxy/ URL.  The Referer carries the proxy URL of the page that
+        # triggered the load, so we can recover the target origin.
+        referer = request.header("referer", "")
+        ref_path = urlsplit(referer).path if referer else ""
+        if ref_path.startswith("/proxy/"):
+            ref_target = target_from_path(ref_path)
+            if ref_target:
+                resolved = absolutize(target, ref_target)
+                if resolved and urlsplit(resolved).scheme in ("http", "https"):
+                    log("CATCHALL resolved={} from referer={}".format(
+                        resolved[:140], ref_target[:80]))
+                    self._proxy_url(resolved, method=request.method,
+                                    body=request.body or None)
+                    return
         self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
 
 

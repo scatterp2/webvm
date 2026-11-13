@@ -108,10 +108,9 @@
 				const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
 				const resp = await fetch(proxyUrl, {mode: "cors"});
 				if(!resp.ok) continue;
-				const html = await resp.text();
-				if(html && html.length > 0 && proxyFrameEl) {
-					proxyFrameEl.srcdoc = html;
-					proxyStatus = "Loaded " + html.length + " bytes via HTTPS proxy (" + base + ").";
+				if(proxyFrameEl) {
+					proxyFrameEl.src = proxyUrl;
+					proxyStatus = "Navigated to HTTPS proxy (" + base + ").";
 					return;
 				}
 			} catch (e) {
