@@ -86,7 +86,23 @@ HOP_BY_HOP = frozenset((
     "te", "trailer", "transfer-encoding", "upgrade",
 ))
 
+# Headers that reveal the proxy/iframe context to upstream servers.
+# Stripping these prevents bot-detection systems (like Kaggle's) from
+# seeing that the request originates from an iframe inside a proxy.
+PROXY_REVEAL_HEADERS = frozenset((
+    "origin", "referer", "sec-fetch-dest", "sec-fetch-mode",
+    "sec-fetch-site", "sec-fetch-user", "sec-ch-ua-platform",
+    "sec-ch-ua-mobile", "sec-ch-ua",
+))
+
 FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
+
+# File extensions that should be redirected to the CDN instead of proxied.
+_STATIC_EXTS = frozenset((
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf", ".map",
+    ".webp", ".avif", ".mp4", ".webm",
+))
 
 STATE_LOCK = threading.Lock()
 _state = {
@@ -699,11 +715,18 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     if parts.query:
         path += "?" + parts.query
 
+    target_origin = "{}://{}".format(parts.scheme, parts.hostname)
+    if parts.port and parts.port not in (80, 443):
+        target_origin += ":{}".format(parts.port)
+
     outgoing = {}
     for name, value in (headers or {}).items():
-        if name.lower() in HOP_BY_HOP:
+        lower = name.lower()
+        if lower in HOP_BY_HOP:
             continue
-        if name.lower() in ("host", "content-length", "connection"):
+        if lower in ("host", "content-length", "connection"):
+            continue
+        if lower in PROXY_REVEAL_HEADERS:
             continue
         outgoing[name] = value
     # Always ask for an uncompressed body.  The proxy has to rewrite the HTML
@@ -713,6 +736,15 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     outgoing.setdefault("User-Agent",
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    outgoing.setdefault("Accept-Language", "en-US,en;q=0.9")
+    outgoing.setdefault("Accept",
+                        "text/html,application/xhtml+xml,application/xml;"
+                        "q=0.9,image/avif,image/webp,*/*;q=0.8")
+    outgoing["Referer"] = target_origin + "/"
+    outgoing["sec-fetch-dest"] = "document"
+    outgoing["sec-fetch-mode"] = "navigate"
+    outgoing["sec-fetch-site"] = "none"
+    outgoing["sec-fetch-user"] = "?1"
 
     cache_key = (method, url)
     if method == "GET":
@@ -1446,6 +1478,18 @@ class Handler(object):
             if ref_target:
                 resolved = absolutize(target, ref_target)
                 if resolved and urlsplit(resolved).scheme in ("http", "https"):
+                    # Static assets (JS, CSS, images, fonts) → 302 to CDN.
+                    # CheerpX TLS drops large transfers so proxying bundles
+                    # is unreliable; the browser fetches them directly.
+                    ext = resolved.rsplit("?", 1)[0].rsplit(".", 1)
+                    ext = ("." + ext[-1].lower()) if len(ext) > 1 else ""
+                    if ext in _STATIC_EXTS:
+                        log("REDIRECT resolved={} from referer={}".format(
+                            resolved[:140], ref_target[:80]))
+                        self._send(302, "text/plain; charset=utf-8",
+                                   b"Redirecting\n",
+                                   extra=[("Location", resolved)])
+                        return
                     log("CATCHALL resolved={} from referer={}".format(
                         resolved[:140], ref_target[:80]))
                     self._proxy_url(resolved, method=request.method,
