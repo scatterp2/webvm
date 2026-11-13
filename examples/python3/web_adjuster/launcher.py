@@ -554,6 +554,13 @@ def sanitize_set_cookie(value: str) -> str:
 # Upstream fetching
 # --------------------------------------------------------------------------
 
+# CheerpX's cooperative scheduler means two TLS handshakes at the same
+# time starve each other and can wedge the whole VM.  Serialising them
+# avoids that; the watchdog bounds a handshake whose client disappears.
+_TLS_HANDSHAKE_LOCK = threading.Lock()
+TLS_HANDSHAKE_TIMEOUT = 25
+
+
 def _ssl_context():
     ctx = ssl.create_default_context()
     # The proxy terminates the client's TLS leg upstream, so the upstream
@@ -1575,9 +1582,19 @@ class WrapperServer(object):
     def _handle_client(self, client, addr):
         try:
             if self.ssl_context is not None:
-                # The handshake happens in this thread so that one slow
-                # client cannot block the accept loop.
-                client = self.ssl_context.wrap_socket(client, server_side=True)
+                # Two TLS handshakes at the same time starve each other in
+                # CheerpX and wedge the whole VM (see finding 20), so the
+                # handshake is serialised.  The watchdog bounds it as well:
+                # a client that goes away mid-handshake (the browser
+                # aborts its health check) must not hold the lock forever
+                # and block every later connection.
+                timer = _watchdog(client, TLS_HANDSHAKE_TIMEOUT)
+                try:
+                    with _TLS_HANDSHAKE_LOCK:
+                        client = self.ssl_context.wrap_socket(
+                            client, server_side=True)
+                finally:
+                    timer.cancel()
             handler = self.handler_class(client, addr, self)
             handler.handle()
         except Exception as exc:

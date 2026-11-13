@@ -43,6 +43,7 @@
 	var proxyTarget = "https://www.kaggle.com/";
 	var proxyStatus = "";
 	var proxyFrameEl = null;
+	var proxyBaseIndex = 0;
 	const PROXY_TLS_PORT = 28443;
 	// A Tailscale Serve endpoint publishes the proxy with a publicly trusted
 	// certificate, so the service worker can fetch it over https without a
@@ -101,55 +102,30 @@
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
-		const bases = proxyBases();
-		// Try each HTTPS base: first a lightweight no-cors health check,
-		// then navigate the iframe directly.  CheerpX's cooperative
-		// scheduler makes CORS fetches unreliable (the TLS handshake
-		// can stall), so on failure we still try iframe.src — direct
-		// navigation often works when fetch() does not.
-		for(const base of bases.https) {
-			proxyStatus = "Trying HTTPS proxy at " + base + "...";
-			const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
-			try {
-				const ctrl = new AbortController();
-				const timer = setTimeout(() => ctrl.abort(), 8000);
-				await fetch(base + "/health", {mode: "no-cors", signal: ctrl.signal});
-				clearTimeout(timer);
-				if(proxyFrameEl) {
-					proxyFrameEl.src = proxyUrl;
-					proxyStatus = "Navigated to HTTPS proxy (" + base + ").";
-					return;
-				}
-			} catch (e) {
-				proxyStatus = "HTTPS proxy at " + base + " check failed (" + e.message + "), trying direct navigation...";
-				// fetch() failed but direct iframe navigation may still work
-				if(proxyFrameEl) {
-					proxyFrameEl.src = proxyUrl;
-					proxyStatus = "Navigated to HTTPS proxy (" + base + ") directly.";
-					return;
-				}
-			}
+		proxyBaseIndex = 0;
+		tryNextProxyBase();
+	}
+
+	// Navigate the frame straight to the proxy.  No health check first:
+	// an aborted check leaves the WebVM's TLS handshake half-finished, and
+	// the document request then races it.  Two TLS handshakes at once wedge
+	// the WebVM, so exactly one connection is made at a time.
+	function tryNextProxyBase()
+	{
+		const https = proxyBases().https;
+		if(proxyBaseIndex >= https.length) {
+			proxyStatus = "None of the proxy origins answered.";
+			return;
 		}
-		proxyStatus = "Opening the proxy bridge for " + proxyTarget + "...";
-		try {
-			const popup = window.open(
-				proxyHttpBase + "/?bridge=1&origin="
-					+ encodeURIComponent(window.location.origin)
-					+ "&target=" + encodeURIComponent(proxyTarget),
-				"webvm-proxy-bridge", "width=900,height=700");
-			if(!popup) {
-				proxyStatus = "The browser blocked the popup - allow popups "
-					+ "for this site and try again.";
-				return;
-			}
-			proxyBridgePopup = popup;
-			proxyBridgeChunks = {};
-			proxyBridgeTotal = 0;
-			proxyStatus = "Waiting for the bridge popup to return the "
-				+ proxyTarget + " document...";
-			pollBridgePopup();
-		} catch (e) {
-			proxyStatus = "Could not open the bridge popup (" + e + ").";
+		const base = https[proxyBaseIndex];
+		const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
+		if(proxyFrameEl) {
+			proxyFrameEl.onerror = () => {
+				proxyBaseIndex += 1;
+				tryNextProxyBase();
+			};
+			proxyFrameEl.src = proxyUrl;
+			proxyStatus = "Navigated to HTTPS proxy (" + base + ").";
 		}
 	}
 
