@@ -782,13 +782,24 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                         "text/html,application/xhtml+xml,application/xml;"
                         "q=0.9,image/avif,image/webp,*/*;q=0.8")
     outgoing["Referer"] = target_origin + "/"
+    # CSRF/anti-forgery middleware commonly checks Origin on state-changing
+    # requests.  The browser's Origin is the proxy origin, so do not forward
+    # it verbatim; send the upstream target origin instead.  Keep Referer on
+    # the upstream origin as well (never leak the proxy URL upstream).
+    if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
+        outgoing["Origin"] = target_origin
     outgoing["sec-fetch-dest"] = "document"
     outgoing["sec-fetch-mode"] = "navigate"
     outgoing["sec-fetch-site"] = "none"
     outgoing["sec-fetch-user"] = "?1"
 
+    # HTML can contain a session-bound anti-forgery token without a
+    # Set-Cookie response header. A URL-only cache key could replay that
+    # token across sessions.  Cookie-bearing requests must bypass the cache.
+    has_request_cookie = any(name.lower() == "cookie"
+                             for name, _ in (headers or {}).items())
     cache_key = (method, url)
-    if method == "GET":
+    if method == "GET" and not has_request_cookie:
         cached = _cache_get(cache_key)
         if cached is not None:
             log("UPSTREAM_TIMING url={} cache=hit total_ms=0".format(url))
@@ -828,7 +839,14 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                 conn = None
             log("UPSTREAM_TIMING url={} reused={} status={} bytes={} total_ms={}".format(
                 url, reused, result[0], len(data), int((time.time() - started) * 1000)))
-            if method == "GET" and result[0] < 400:
+            response_type = ""
+            for name, value in result[1]:
+                if name.lower() == "content-type":
+                    response_type = value.lower()
+                    break
+            if (method == "GET" and not has_request_cookie
+                    and result[0] < 400
+                    and "text/html" not in response_type):
                 has_cookie = any(name.lower() == "set-cookie"
                                   for name, _ in result[1])
                 if not has_cookie:

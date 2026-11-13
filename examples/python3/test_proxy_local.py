@@ -162,12 +162,20 @@ def main():
         failures.append("no connection was pooled for reuse")
 
     # Cache: the same URL twice must be served from the cache.
+    # HTML is now excluded from cache (anti-forgery token fix),
+    # so we verify the non-HTML static asset is still cached.
     launcher._CACHE.clear()
     launcher.upstream_fetch("https://example.com/", headers={})
     hit = launcher._cache_get(("GET", "https://example.com/"))
-    print("[10] response cache -> {}".format("HIT" if hit else "MISS"))
-    if hit is None:
-        failures.append("response was not cached")
+    print("[10] HTML response cache -> {}".format("HIT" if hit else "MISS (expected)"))
+    if hit is not None:
+        failures.append("HTML response should not be cached")
+    # Verify a non-HTML asset is still cached.
+    launcher.upstream_fetch("https://example.com/s.js", headers={})
+    js_hit = launcher._cache_get(("GET", "https://example.com/s.js"))
+    print("[11] .js response cache -> {}".format("HIT" if js_hit else "MISS"))
+    if js_hit is None:
+        failures.append("non-HTML response was not cached")
 
     # CSP nonce: a nonce in script-src makes browsers ignore
     # 'unsafe-inline', so the injected script must carry the same nonce.
