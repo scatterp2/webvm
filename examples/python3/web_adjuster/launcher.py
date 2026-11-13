@@ -163,6 +163,20 @@ _CSS_URL_RE = re.compile(
 _SRCSET_RE = re.compile(r"""(?P<pre>\bsrcset\s*=\s*)(?P<q>["'])(?P<val>[^"']*)(?P=q)""",
                          re.IGNORECASE)
 
+# Matches src, href, action, poster, data attributes with ANY URL value
+# (including relative).  Applied AFTER _ABS_URL_RE so already-rewritten
+# absolute proxy URLs are left alone.
+_REL_ATTR_RE = re.compile(
+    r"""(?P<pre>\b(?:src|href|action|poster|data)\s*=\s*)"""
+    r"""(?P<q>["'])(?P<url>[^"']*)(?P=q)""",
+    re.IGNORECASE,
+)
+# Matches CSS url() with relative paths (not already absolute or data:).
+_REL_CSS_URL_RE = re.compile(
+    r"""url\(\s*(?P<q>['"]?)(?P<url>[^)'"\s]+)(?P=q)\s*\)""",
+    re.IGNORECASE,
+)
+
 
 def _rewrite_srcset(value: str, base: str, proxy_origin=None) -> str:
     parts = []
@@ -177,7 +191,11 @@ def _rewrite_srcset(value: str, base: str, proxy_origin=None) -> str:
 
 
 def _rewrite_url(url: str, base: str, proxy_origin=None) -> str:
-    """Point an absolute URL back through this proxy."""
+    """Point a URL (absolute or relative) back through this proxy."""
+    if not url or url.startswith(("data:", "#", "javascript:", "mailto:", "blob:")):
+        return url
+    if "/proxy/" in url:
+        return url
     absolute = absolutize(url, base)
     parts = urlsplit(absolute)
     if parts.scheme not in ("http", "https"):
@@ -186,7 +204,7 @@ def _rewrite_url(url: str, base: str, proxy_origin=None) -> str:
 
 
 def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
-    """Route every absolute URL in the document back through the proxy."""
+    """Route every URL (absolute and relative) in the document back through the proxy."""
 
     def _abs(match):
         return match.group("pre") + _rewrite_url(
@@ -208,6 +226,28 @@ def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
     text = _ABS_URL_RE.sub(_abs, text)
     text = _CSS_URL_RE.sub(_css, text)
     text = _SRCSET_RE.sub(_srcset, text)
+
+    # Second pass: rewrite relative URLs in src/href/action/poster/data attrs.
+    def _rel_attr(match):
+        url = match.group("url").strip()
+        rewritten = _rewrite_url(url, base, proxy_origin)
+        if rewritten == url:
+            return match.group(0)
+        return "{p}{q}{u}{q}".format(
+            p=match.group("pre"), q=match.group("q"), u=rewritten)
+
+    text = _REL_ATTR_RE.sub(_rel_attr, text)
+
+    # Third pass: rewrite relative URLs inside CSS url().
+    def _rel_css(match):
+        url = match.group("url").strip()
+        rewritten = _rewrite_url(url, base, proxy_origin)
+        if rewritten == url:
+            return match.group(0)
+        return "url({q}{u}{q})".format(q=match.group("q"), u=rewritten)
+
+    text = _REL_CSS_URL_RE.sub(_rel_css, text)
+
     return text
 
 
