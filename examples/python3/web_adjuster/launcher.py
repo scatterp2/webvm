@@ -203,34 +203,68 @@ def _rewrite_url(url: str, base: str, proxy_origin=None) -> str:
     return proxy_path(absolute, proxy_origin)
 
 
+def _direct_url(url: str, base: str) -> str:
+    """Resolve a relative URL to an absolute URL on the target origin.
+
+    Static assets (JS, CSS, images, fonts) are fetched directly by the
+    browser from the target CDN instead of routing through this proxy.
+    CheerpX's TLS socket drops large transfers (>1 MB), so proxying
+    multi-megabyte bundles like vendor.js is not reliable.
+    """
+    if not url or url.startswith(("data:", "#", "javascript:", "mailto:", "blob:")):
+        return url
+    if "/proxy/" in url:
+        return url
+    absolute = absolutize(url, base)
+    parts = urlsplit(absolute)
+    if parts.scheme not in ("http", "https"):
+        return url
+    return absolute
+
+
 def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
-    """Route every URL (absolute and relative) in the document back through the proxy."""
+    """Resolve every URL in the document to an absolute target-origin URL.
+
+    Static sub-resources (JS, CSS, images, fonts) are loaded directly from
+    the target CDN — CheerpX's TLS socket drops large transfers so routing
+    multi-megabyte bundles through the proxy is unreliable.  The Referer-
+    based catch-all in dispatch() handles any relative requests that slip
+    through (e.g. from inside JS bundles).
+    """
 
     def _abs(match):
-        return match.group("pre") + _rewrite_url(
-            match.group("url"), base, proxy_origin)
+        return match.group("pre") + _direct_url(
+            match.group("url"), base)
 
     def _css(match):
         return "url({q}{u}{q})".format(
             q=match.group("q"),
-            u=_rewrite_url(match.group("url"), base, proxy_origin),
+            u=_direct_url(match.group("url"), base),
         )
 
     def _srcset(match):
+        parts = []
+        for chunk in match.group("val").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            bits = chunk.split(None, 1)
+            bits[0] = _direct_url(bits[0], base)
+            parts.append(" ".join(bits))
         return "{p}{q}{v}{q}".format(
             p=match.group("pre"),
             q=match.group("q"),
-            v=_rewrite_srcset(match.group("val"), base, proxy_origin),
-        )
+            v=", ".join(parts))
 
     text = _ABS_URL_RE.sub(_abs, text)
     text = _CSS_URL_RE.sub(_css, text)
     text = _SRCSET_RE.sub(_srcset, text)
 
-    # Second pass: rewrite relative URLs in src/href/action/poster/data attrs.
+    # Second pass: resolve relative URLs in src/href/action/poster/data attrs
+    # to absolute target-origin URLs.
     def _rel_attr(match):
         url = match.group("url").strip()
-        rewritten = _rewrite_url(url, base, proxy_origin)
+        rewritten = _direct_url(url, base)
         if rewritten == url:
             return match.group(0)
         return "{p}{q}{u}{q}".format(
@@ -238,10 +272,10 @@ def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
 
     text = _REL_ATTR_RE.sub(_rel_attr, text)
 
-    # Third pass: rewrite relative URLs inside CSS url().
+    # Third pass: resolve relative URLs inside CSS url().
     def _rel_css(match):
         url = match.group("url").strip()
-        rewritten = _rewrite_url(url, base, proxy_origin)
+        rewritten = _direct_url(url, base)
         if rewritten == url:
             return match.group(0)
         return "url({q}{u}{q})".format(q=match.group("q"), u=rewritten)
@@ -252,11 +286,11 @@ def rewrite_html(text: str, base: str, proxy_origin=None) -> str:
 
 
 def rewrite_css(text: str, base: str, proxy_origin=None) -> str:
-    """Rewrite url() references inside a CSS file through the proxy."""
+    """Resolve url() references inside a CSS file to absolute target URLs."""
 
     def _css_url(match):
         url = match.group("url").strip()
-        rewritten = _rewrite_url(url, base, proxy_origin)
+        rewritten = _direct_url(url, base)
         if rewritten == url:
             return match.group(0)
         return "url({q}{u}{q})".format(q=match.group("q"), u=rewritten)
