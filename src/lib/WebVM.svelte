@@ -49,6 +49,7 @@
 	// development CA having to be trusted.  Serve has to be enabled on the
 	// tailnet first (see the README).
 	const TAILSCALE_SERVE_ORIGIN = "https://desktop-21m8c49.tailf987e.ts.net";
+	const PROXY_TLS_HOSTNAME = "webvm-proxy.tailf987e.ts.net";
 
 	// The WebVM's plain-http proxy origin, taken from the netmap because
 	// the address changes on every boot.
@@ -79,7 +80,8 @@
 		}
 		if(override)
 			https.push(override.replace(/\/$/, ""));
-		if($currentDnsNameStore)
+		https.push("https://" + PROXY_TLS_HOSTNAME + ":" + PROXY_TLS_PORT);
+		if($currentDnsNameStore && $currentDnsNameStore !== PROXY_TLS_HOSTNAME)
 			https.push("https://" + $currentDnsNameStore + ":" + PROXY_TLS_PORT);
 		if(TAILSCALE_SERVE_ORIGIN)
 			https.push(TAILSCALE_SERVE_ORIGIN);
@@ -99,15 +101,24 @@
 			proxyStatus = "Waiting for the WebVM's Tailscale address...";
 			return;
 		}
+		const bases = proxyBases();
+		for(const base of bases.https) {
+			proxyStatus = "Trying HTTPS proxy at " + base + "...";
+			try {
+				const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
+				const resp = await fetch(proxyUrl, {mode: "cors"});
+				if(!resp.ok) continue;
+				const html = await resp.text();
+				if(html && html.length > 0 && proxyFrameEl) {
+					proxyFrameEl.srcdoc = html;
+					proxyStatus = "Loaded " + html.length + " bytes via HTTPS proxy (" + base + ").";
+					return;
+				}
+			} catch (e) {
+				proxyStatus = "HTTPS proxy at " + base + " failed (" + e.message + "), trying next...";
+			}
+		}
 		proxyStatus = "Opening the proxy bridge for " + proxyTarget + "...";
-		// The page is https and the proxy is http, so the page cannot fetch
-		// it itself.  A popup opened on the proxy's own http origin can:
-		// it asks the proxy for a self-contained document (every
-		// sub-resource is inlined server side, where the mixed-content
-		// rule does not apply) and hands it back in its URL fragment.
-		// The opener can read popup.location.href across origins, and
-		// injecting the document with srcdoc keeps the frame
-		// same-origin with this page, so the DOM stays reachable.
 		try {
 			const popup = window.open(
 				proxyHttpBase + "/?bridge=1&origin="
