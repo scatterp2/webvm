@@ -1464,6 +1464,7 @@ def print_connection_banner(timeout=120):
                       flush=True)
                 print("=" * 68, flush=True)
                 print("", flush=True)
+                _rename_tailscale_node(address)
                 return
             _time.sleep(2)
         print("TAILSCALE_IP_NOT_FOUND timeout={}s".format(timeout), flush=True)
@@ -1471,6 +1472,81 @@ def print_connection_banner(timeout=120):
     thread = _threading.Thread(target=_worker, name="tailscale-ip-banner", daemon=True)
     thread.start()
     return thread
+
+
+TAILSCALE_API_KEY = "tskey-api-kEPDLHZyez11CNTRL-LySsqL9XHo2b8Eq47modq2QhVHuiixJxd"
+TAILSCALE_TAILNET = "tailf987e.ts.net"
+PROXY_HOSTNAME = "webvm-proxy"
+
+
+def _rename_tailscale_node(ip):
+    """Rename this WebVM's Tailscale node to PROXY_HOSTNAME via the API.
+
+    The LE cert is issued for PROXY_HOSTNAME.TAILNET, so the node must
+    carry that name for the cert to match.  CheerpX ignores the hostname
+    parameter in networkInterface, so we rename via the admin API after
+    the IP is assigned.
+    """
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+    import json as _json
+
+    target_name = PROXY_HOSTNAME + "." + TAILSCALE_TAILNET
+    headers = {
+        "Authorization": "Bearer " + TAILSCALE_API_KEY,
+        "Content-Type": "application/json",
+    }
+    try:
+        req = Request(
+            "https://api.tailscale.com/api/v2/tailnet/{}/devices".format(
+                TAILSCALE_TAILNET),
+            headers=headers,
+        )
+        with urlopen(req, timeout=15) as resp:
+            devices = _json.loads(resp.read()).get("devices", [])
+        device_id = None
+        for d in devices:
+            addrs = d.get("addresses", [])
+            if addrs and addrs[0] == ip:
+                device_id = d["id"]
+                if d.get("name", "") == target_name:
+                    print("TAILSCALE_RENAME skip name_already={}".format(
+                        target_name), flush=True)
+                    return
+                break
+        if not device_id:
+            print("TAILSCALE_RENAME skip device_not_found ip={}".format(ip),
+                  flush=True)
+            return
+        old_holders = [d for d in devices
+                       if d.get("name", "") == target_name
+                       and str(d["id"]) != str(device_id)]
+        for old in old_holders:
+            evict = Request(
+                "https://api.tailscale.com/api/v2/device/{}/name".format(
+                    old["id"]),
+                data=_json.dumps({"name": "js-old"}).encode(),
+                headers=headers,
+                method="POST",
+            )
+            try:
+                urlopen(evict, timeout=10)
+                print("TAILSCALE_RENAME evicted old={} id={}".format(
+                    old.get("name"), old["id"]), flush=True)
+            except Exception:
+                pass
+        rename = Request(
+            "https://api.tailscale.com/api/v2/device/{}/name".format(device_id),
+            data=_json.dumps({"name": PROXY_HOSTNAME}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        urlopen(rename, timeout=10)
+        print("TAILSCALE_RENAME ok name={} id={}".format(
+            target_name, device_id), flush=True)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        print("TAILSCALE_RENAME failed error={}: {}".format(
+            type(exc).__name__, str(exc)[:200]), flush=True)
 
 
 def start_web_adjuster_sidecar():
