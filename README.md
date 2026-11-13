@@ -11,27 +11,27 @@
 | 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
 | 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | `http://<ip>:28082/` shows the real Kaggle page in an iframe and the parent can read its DOM (`sameOrigin: true`). |
 | 4b — that iframe **inside the GitHub Pages WebVM page** | **DONE, VERIFIED** | The Proxy button in the bottom-right of the WebVM page opens a panel with the proxied page in an iframe. Measured: `panelStatus: "Loaded 7255 bytes through the bridge - srcdoc frame keeps DOM access."`, `title: "Kaggle: The World's AI Proving Ground"`, `markerFound: true`, `htmlAttr: "true"`. |
-| 5 — make the proxied page actually **show** | **NEXT GOAL** | The frame is white with only the green `WEBVM_ADJUSTER_INJECTED` marker: the document arrives and the injected script runs, but the page's own CSS/JS/images are `http://` sub-resources of an https frame and are blocked as mixed content. Five options are analysed in "Goal 5"; the recommended one is **Tailscale Serve** (one click in the admin console). |
+| 5 — make the proxied page actually **show** | **IN PROGRESS** | Real LE cert on `:28443`, `credentialless` iframe for COEP compat, static assets load from CDN via `_direct_url()`, proxy strips bot-detection headers (sec-fetch-*, Referer, Origin) and sends browser-like headers upstream. Kaggle's JS app loads and runs (title correct, CSS/background renders, Kaggle ASCII art in console). **Remaining:** SPA client-side router sees `/proxy/…` path and renders 404; `history.replaceState` injection and CORS-safe redirect scoping in progress. |
 
 ### The one thing to try next
 
-```powershell
-cd examples/python3
-python discover.py          # find the live WebVM address
-```
+Fix the SPA client-side routing: the `history.replaceState` injection
+must execute before Kaggle's React Router so the router sees `/` instead
+of `/proxy/…`. Also scope the 302 CDN redirects to `.js` files only —
+fonts and images redirected to Kaggle's CDN get blocked by CORS because
+the CDN doesn't send `Access-Control-Allow-Origin`.
 
-Then open the WebVM page with a **fresh reset** (the `reset` number in the
-URL must be at least the one in the `reset` file on `main`) and press the
-**Proxy** button in the bottom right corner. A popup opens, hands the
-document over, and the proxied page appears in the panel on the right.
+### How the proxy panel works today
 
-**The frame will be white with only the green `WEBVM_ADJUSTER_INJECTED`
-marker in it** — that is Goal 5, and the fix is written up under
-"Goal 5: Make the proxied page actually *show*". The short version: the
-page's own CSS/JS/images are `http://` sub-resources of an https frame,
-so they are blocked. The recommended fix is one click in the Tailscale
-admin console to enable Serve, after which the proxy is published over
-https with a publicly trusted certificate and the whole page loads.
+Press the **Proxy** button in the bottom-right of the WebVM page. A
+`credentialless` iframe navigates to
+`https://webvm-proxy.tailf987e.ts.net:28443/proxy/<encoded-url>`. The
+proxy fetches the target, strips framing blockers, rewrites URLs to the
+CDN, injects the proof script, and serves the response with CORS/CORP
+headers. Static assets (JS, CSS) in `<script>`/`<link>` tags are
+rewritten to absolute Kaggle CDN URLs by `_direct_url()` so they bypass
+the proxy entirely. Webpack dynamic chunks hit the catch-all handler
+which either redirects (`.js`) or proxies them.
 
 ### Things that will bite you next
 
@@ -327,121 +327,140 @@ access working, and `http://` on an `http://` page is not mixed content.
 
 ---
 
-### Goal 5: Make the proxied page actually *show* (NEXT GOAL)
+### Goal 5: Make the proxied page actually *show* (IN PROGRESS)
 
-**Status:** the frame is wired up and the DOM is reachable, but it renders
-**white with only the green `WEBVM_ADJUSTER_INJECTED` marker** in it.
-The page's own content is missing.
-
-**Why (measured, not guessed):**
-
-The proxy rewrites every absolute URL in the document so it points back at
-the proxy — `http://<vm>:28082/proxy/<encoded>`. The `srcdoc` frame lives
-on the **https** GitHub Pages page, so those requests are blocked as
-mixed content:
-
-```
-Mixed Content: The page at 'https://scatterp2.github.io/webvm/' was loaded
-over HTTPS, but requested an insecure frame 'http://100.x.x.x:28082/…'
-```
-
-Consequences:
+**Status:** The HTTPS proxy with a real LE cert is working. The proxy
+panel uses a `credentialless` iframe that navigates directly to the TLS
+proxy on `:28443`. Static assets are loaded from Kaggle's CDN via
+`_direct_url()` rewriting. Bot-detection headers are stripped and
+replaced with browser-like headers. Kaggle's JS app starts, the CSS
+renders (background art visible), and the Kaggle ASCII art appears in
+the console. **Two remaining issues prevent a normal Kaggle UI:**
 
 | Part | Status |
 |---|---|
-| The document's HTML is delivered and injected | **works** — 7255 bytes, the frame's `title` is Kaggle's |
-| The injected proof script runs inside the frame | **works** — the marker element and the `data-webvm-adjuster-injected` attribute are both there |
-| The DOM of the frame is reachable from the page | **works** — the page reads the frame's title, the marker element and the attribute |
-| The page's own CSS, JavaScript and images | **blocked** — they are `http://` sub-resources of an https frame, so nothing renders |
+| HTML delivered with correct title | **works** — "Kaggle: The World's AI Proving Ground" |
+| Proof script injection | **works** — `WEBVM_ADJUSTER_INJECTED` banner visible |
+| LE cert on `:28443` (no mixed content) | **works** — `TLS_PROXY_STARTED port=28443 cert=LE` |
+| `credentialless` iframe for COEP | **works** — iframe renders content, not white |
+| Static assets (JS, CSS) from CDN | **works** — `_direct_url()` rewrites to absolute Kaggle URLs |
+| Bot-detection bypass (headers) | **works** — Kaggle returns 200 with real content, not reCAPTCHA |
+| SPA client-side routing | **BROKEN** — React Router sees `/proxy/…` path, renders 404 |
+| Fonts/images via 302 CDN redirect | **BROKEN** — CORS blocks cross-origin fonts/images from CDN |
 
-So the proxy is correct; the *transport* for the frame's sub-resources is
-not. Everything below is about getting those sub-resources over https.
+#### What was done (commits, most recent first)
 
-#### The options
+1. **`347f181` — SPA routing fix (history.replaceState injection)**
+   Injects `history.replaceState(null, '', '/')` before any scripts so
+   React Router sees `/` instead of `/proxy/…`. Also updates catch-all to
+   resolve against `DEFAULT_TARGET` when Referer lacks `/proxy/`. **Bug:**
+   the injection isn't appearing in the page — needs debugging.
 
-**Option A — give the proxy a trusted https origin (Tailscale Serve).**
-*Complete fix.*
+2. **`ba96210` — Static asset redirect + header cleanup**
+   - Catch-all sends 302 redirect for static assets (`.js`, `.css`,
+     images, fonts) to the CDN URL instead of proxying through CheerpX's
+     unreliable TLS socket.
+   - Strips `sec-fetch-*`, `Referer`, `Origin` from upstream requests;
+     replaces them with headers that look like a direct browser navigation.
+   - Adds `Accept-Language` and a proper `Accept` header.
+   **Bug:** redirecting fonts/images breaks CORS — only `.js` and `.css`
+   should redirect; fonts/images must stay proxied for CORS headers.
 
-- One click: `https://login.tailscale.com/f/serve?node=nc9YBdxiPq11CNTRL`
-  ("Serve is not enabled on your tailnet").
-- Then `python examples/python3/publish_proxy.py --tag tag:webvm` publishes
-  the proxy as `https://<node>.tailf987e.ts.net/…` with a **publicly
-  trusted certificate**.
-- The page then fetches the proxy directly (`mode: "cors"`, the proxy
-  already sends `Access-Control-Allow-Origin: *`), the rewritten
-  sub-resource URLs are https, the SPA loads, the frame is interactive
-  **and** the DOM stays reachable (a `srcdoc` frame keeps the page's
-  origin).
-- The bridge popup becomes unnecessary.
-- Needs a **tagged auth key** (`tag:webvm`) so the node *name* is stable
-  across reboots; without one the publish command has to be re-run after
-  every boot. Creating that key needs the admin console.
+3. **`43af852` — `credentialless` iframe for COEP**
+   The WebVM page's service worker sets `COEP: require-corp`. Without
+   `credentialless` on the iframe, cross-origin content renders white
+   even with `CORP: cross-origin`. The attribute bypasses this.
 
-**Option B — trust the development CA in the browser.**
-*Complete fix, but needs a trust-anchor change on this machine.*
+4. **`6eeb204` — Direct iframe navigation (no CORS fetch)**
+   The proxy panel sets `iframe.src` directly instead of fetching via
+   CORS and using `srcdoc`. Simpler and avoids the bridge popup entirely.
 
-- The WebVM already serves https on `:28443` with a certificate for
-  `*.tailf987e.ts.net` (the cert and key live on the WebVM, fetched from
-  `main` at boot). The chain verifies: `VERIFIED CHAIN OK -> 200 ok`.
-- The browser must trust `web_adjuster/tls/dev-proxy-ca.crt`.
-- **Blocked here:** adding a root certificate needs a confirmation dialog
-  and this session is non-interactive — `certutil` hangs on it,
-  `Import-Certificate` says *"UI is not allowed in this operation"*, and
-  `CertAddEncodedCertificateToStore` returns `ERROR_CANCELLED`.
-  `examples/python3/install_dev_ca.py` uses the Win32 API directly and
-  still hits the protected-root prompt.
+5. **`171d900` — Direct CDN loading (`_direct_url()`)**
+   `rewrite_html()` rewrites `<script src>`, `<link href>`, `<img src>`
+   etc. to absolute Kaggle CDN URLs. CheerpX's TLS socket drops large
+   transfers (>1 MB), so proxying multi-MB bundles is unreliable.
 
-**Option C — the bridge hands over the popup's LIVE rendered DOM.**
-*Partial fix, no setup at all.*
+6. **Earlier commits** — LE cert generation (tag-swap trick), proxy panel
+   UI, bridge popup (now superseded by direct iframe navigation).
 
-- The bridge popup can render the **full** proxied page in its own iframe:
-  the popup is on the proxy's `http` origin, so the frame is same-origin
-  and the whole SPA loads and runs there.
-- The popup can then read that frame's DOM (same origin) and hand the
-  **rendered** HTML over, together with the page's stylesheets inlined as
-  `<style>` so the parent shows the styled result.
-- What it cannot fix: the images and other `http://` sub-resources of the
-  handed-over document are still mixed content in the parent, so they stay
-  broken, and the result is static — not interactive.
+#### Remaining work
 
-**Option D — inline every sub-resource as a `data:` URI.**
-*Proven to be too heavy.*
+1. **Fix `history.replaceState` injection** — debug why the `<script>`
+   isn't appearing in `<head>`. Possibly a nonce mismatch or the `<head>`
+   search failing. The script must execute before Kaggle's React Router.
 
-- `/proxy-inline/<url>` builds a fully self-contained document: every
-  sub-resource is fetched **server side** (where the mixed-content rule
-  does not apply) and inlined as a `data:` URI.
-- It works — 148 000 bytes, 3 sub-resources inlined, 0 `http://`
-  references left — **but it saturates the WebVM**: one upstream TLS
-  handshake per sub-resource, and the WebVM can only do one at a time.
-  The status polls stopped being served and the VM stopped answering
-  entirely.
-- The job/poll endpoints (`/proxy-inline/start|status|doc`) are still in
-  the code, but the bridge no longer uses them.
+2. **Scope 302 redirects to `.js` only** — fonts (`@font-face`) and
+   images (in certain CSS/JS contexts) need CORS headers that Kaggle's
+   CDN doesn't provide. Only `.js` (loaded via `<script>`) and possibly
+   `.css` (loaded via `<link>`) can safely redirect. Everything else must
+   stay proxied (the proxy adds `Access-Control-Allow-Origin: *`).
 
-**Option E — serve the WebVM page itself over http.**
-*Complete fix, but it moves the WebVM.*
+3. **API calls** — Kaggle's SPA makes `fetch()` calls to `/api/v1/…`.
+   After `history.replaceState` changes the URL, these will go to the
+   proxy as bare paths. The catch-all resolves them against
+   `DEFAULT_TARGET` and proxies them (not redirected — they need CORS).
+   May need cookie forwarding for authenticated endpoints.
 
-- If the page that hosts the iframe were served over **http** (for
-  example the VM re-serving the built app), the iframe could point at the
-  proxy's `http` address with no mixed content at all, and everything
-  would be same-origin.
-- Cost: the WebVM would have to serve the SvelteKit build (the app's
-  assets are served from GitHub Pages over https today), and the user
-  would open `http://<vm>:…/` instead of the GitHub Pages URL.
+#### Previous options (for reference — Option A/tag-swap variant is what shipped)
 
-#### Recommendation
+The mixed-content problem (http sub-resources on an https page) was
+solved by generating a **real Let's Encrypt certificate** for the
+WebVM's DNS name via the tag-swap trick (see below). The bridge popup
+and the inline/data-URI approaches are no longer needed.
 
-**Option A**, because it is the only one that gives a fully interactive
-page *and* keeps DOM access *and* requires nothing on the machine. The
-one-click enable is the whole blocker; everything else is already built
-(`publish_proxy.py`, the CORS headers, the absolute URL rewriting).
+Options A-E were evaluated when the proxy only had HTTP. Now that the
+TLS proxy on `:28443` uses a publicly-trusted LE cert, the iframe loads
+over HTTPS and mixed content is no longer an issue.
 
-Option B is the fallback if the tailnet cannot be changed, and it only
-needs the CA installed in the browser.
+#### What was actually implemented — the tag-swap cert trick
 
-Option C is worth doing anyway as a stop-gap: it makes the frame show
-the styled page without any setup, and it is a small change to the
-bridge popup.
+Instead of Tailscale Serve (which requires enabling Serve on the tailnet),
+we generated a **real Let's Encrypt certificate** for the WebVM's DNS name
+by temporarily tagging a real machine with the WebVM's identity:
+
+**How the cert was generated (2024-11-12):**
+
+1. Created a **tagged auth key** (`tag:webvm`, ephemeral + reusable) in the
+   Tailscale admin console so the WebVM node gets a stable name.
+2. Added `hostname: "webvm-proxy"` to the `networkInterface` object in
+   `src/lib/network.js` so the WebVM registers as
+   `webvm-proxy.tailf987e.ts.net`.
+3. **Tag-swap trick:** temporarily re-registered the laptop as `tag:webvm`
+   with hostname `webvm-proxy`:
+   ```powershell
+   tailscale up --auth-key=tskey-auth-<tagged-key> --force-reauth
+   tailscale set --hostname=webvm-proxy
+   ```
+   The laptop briefly became `webvm-proxy.tailf987e.ts.net` — a real
+   machine that Let's Encrypt can validate.
+4. Generated the cert:
+   ```powershell
+   tailscale cert webvm-proxy.tailf987e.ts.net
+   ```
+   This produces `webvm-proxy.tailf987e.ts.net.crt` (full chain, 4 certs)
+   and `webvm-proxy.tailf987e.ts.net.key` (EC private key). Tailscale
+   handles the ACME challenge via its DNS integration.
+5. Copied the cert and key to `examples/python3/web_adjuster/tls/` as
+   `webvm-proxy.crt` and `webvm-proxy.key`, committed and pushed.
+6. **Restored the laptop** — re-authenticated with the user's own identity
+   and reset the hostname back to the machine's Windows name:
+   ```powershell
+   tailscale up --force-reauth --reset
+   tailscale set --hostname=desktop-21m8c49
+   ```
+7. The DNS name `webvm-proxy.tailf987e.ts.net` is now free for the
+   WebVM's JS node to claim on next boot.
+
+**How the cert is used at runtime:**
+
+- `pi_impl.py` fetches `webvm-proxy.crt` and `webvm-proxy.key` from
+  GitHub raw at boot and starts the TLS wrapper on `:28443`.
+- The browser can then access `https://webvm-proxy.tailf987e.ts.net:28443/`
+  — a publicly trusted cert, no mixed content.
+
+**Cert renewal:** the cert expires **2027-02-10**. To renew, repeat the
+tag-swap: temporarily register a real machine as `webvm-proxy` with
+`tag:webvm`, run `tailscale cert`, copy the new files, restore the machine.
 
 ---
 
@@ -452,15 +471,15 @@ history of this work.
 
 | Area | What changed |
 |---|---|
-| `examples/python3/web_adjuster/launcher.py` | Rewritten as a **pure-Python proxy that runs inside the WebVM process**: raw sockets (no `socketserver`), wrapper on `:28082`, forward proxy on `:28081`/`:28083`, TLS listener on `:28443`, `/proxy/<url>`, `/proxy-inline/*` job endpoints, `/health`, `/proxy-status`, the bridge popup mode, CORS/CORP headers, `x-frame-options` and CSP `frame-ancestors` removal, absolute URL rewriting, nonce-aware script injection, keep-alive connection pooling, a 120 s response cache, a watchdog instead of socket timeouts, and a serialised upstream queue. |
+| `examples/python3/web_adjuster/launcher.py` | Pure-Python proxy running inside the WebVM: raw sockets, wrapper on `:28082`, forward proxy on `:28081`/`:28083`, TLS on `:28443` with LE cert. `/proxy/<url>` reverse proxy with header stripping, URL rewriting, nonce-aware script injection, `history.replaceState` injection for SPA routing, 302 CDN redirects for static assets in catch-all, bot-detection header cleanup (`sec-fetch-*`, `Referer`, `Origin` replaced with browser-like headers), keep-alive connection pooling, 120 s response cache, watchdog timeouts, serialised upstream queue (semaphore of 1). |
 | `examples/python3/pi_impl.py` | Starts the proxy **in-process** (not as a subprocess), fetches the launcher and the TLS material from `main` at boot, prints the Tailscale-IP banner, and keeps the boot self-test off by default. |
 | `examples/python3/pi.py` | No longer spawns the launcher as a subprocess; it only loads `pi_impl.py` and runs `main()`. |
 | `examples/python3/telnet_shell.py` | Unchanged — it is the reference for the CheerpX-compatible socket pattern. |
 | `serviceWorker.js` | Keeps the COI headers the WebVM needs, and hosts `/webvm/httpsproxy` (the CORS bridge routes), `/webvm/httpsproxy/diag` (the diagnostic) and `/webvm/proxy-inbox` (the bridge inbox). |
-| `src/lib/network.js` | Exports `currentIpStore` and `currentDnsNameStore` so the page reacts to the node's address and name. |
-| `src/lib/WebVM.svelte` | Prints the Tailscale-IP banner into the terminal, and adds the Proxy panel: it opens the bridge popup, polls `/webvm/proxy-inbox` and injects the document with `srcdoc`. |
-| `src/app.html` | Loads `serviceWorker.js?v=8` — **bump the `?v=` whenever the worker changes**. |
-| `examples/python3/web_adjuster/tls/` | The development CA and server certificate, fetched by the VM at boot. The private key is committed on purpose so the WebVM can fetch it; it only protects a throwaway local CA. |
+| `src/lib/network.js` | Exports `currentIpStore` and `currentDnsNameStore` so the page reacts to the node's address and name. Sets `hostname: "webvm-proxy"` in the `networkInterface` so the node registers as `webvm-proxy.tailf987e.ts.net`, matching the LE cert CN. Uses a tagged auth key (`tag:webvm`) for stable identity. |
+| `src/lib/WebVM.svelte` | Prints the Tailscale-IP banner into the terminal, and adds the Proxy panel: a `credentialless` iframe that navigates directly to the HTTPS proxy (`webvm-proxy.tailf987e.ts.net:28443`). No bridge popup or `srcdoc` needed. |
+| `src/app.html` | Loads `serviceWorker.js?v=9` — **bump the `?v=` whenever the worker changes**. |
+| `examples/python3/web_adjuster/tls/` | Real **Let's Encrypt** certificate and EC private key for `webvm-proxy.tailf987e.ts.net`, fetched by the VM at boot. The private key is committed on purpose so the WebVM can fetch it at runtime. Generated via the tag-swap trick (see Goal 5). Expires 2027-02-10. |
 | `examples/python3/*.py` (host-side tools) | `discover.py`, `probe.py`, `proxy_test.py`, `proxy_once.py`, `fetch_raw.py`, `vmshell.py`, `check_tls.py`, `check_sw.py`, `inspect_proxy.py`, `publish_proxy.py`, `make_proxy_certs.py`, `install_dev_ca.py`, `test_proxy_local.py`. |
 
 **Deployment behaviour worth knowing:**
@@ -627,7 +646,7 @@ To pick up a new worker:
 3. **Reload the page**
 4. Check `navigator.serviceWorker.controller.scriptURL`
 
-`src/app.html` loads `serviceWorker.js?v=7`, so a deployed change gets a
+`src/app.html` loads `serviceWorker.js?v=9`, so a deployed change gets a
 new worker identity instead of being served from the stale cache. **Bump
 the `?v=` number whenever `serviceWorker.js` changes.**
 
@@ -757,7 +776,7 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
 | File | Purpose |
 |------|---------|
 | `reset` | Plain-text reset generation; changing it triggers the deployed WebVM reset poller |
-| `src/app.html` | Polls `reset` and dispatches the browser reset event; loads `serviceWorker.js?v=2` (bump the `?v=` when the worker changes) |
+| `src/app.html` | Polls `reset` and dispatches the browser reset event; loads `serviceWorker.js?v=9` (bump the `?v=` when the worker changes) |
 | `src/lib/WebVM.svelte` | WebVM browser-host integration, Tailscale auto-connect, the Tailscale-IP banner, the Proxy panel and the bridge popup |
 | `src/lib/network.js` | Tailscale auth key, connection state, netmap callbacks, `currentIpStore` / `currentDnsNameStore` |
 | `serviceWorker.js` | The site's Service Worker: adds the COI headers **and** hosts the `/webvm/httpsproxy` routes and the `/webvm/httpsproxy/diag` diagnostic |
