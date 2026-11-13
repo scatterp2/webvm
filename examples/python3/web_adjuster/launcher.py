@@ -554,13 +554,6 @@ def sanitize_set_cookie(value: str) -> str:
 # Upstream fetching
 # --------------------------------------------------------------------------
 
-# A TLS handshake whose client disappears mid-handshake would otherwise
-# spin forever.  The handshake is NOT serialised: the WebVM's own internal
-# traffic needs TLS too, and a lock here queues it behind browser
-# connections (that made the pi_impl heartbeat time out).
-TLS_HANDSHAKE_TIMEOUT = 25
-
-
 def _ssl_context():
     ctx = ssl.create_default_context()
     # The proxy terminates the client's TLS leg upstream, so the upstream
@@ -1584,20 +1577,7 @@ class WrapperServer(object):
             if self.ssl_context is not None:
                 # The handshake happens in this thread so that one slow
                 # client cannot block the accept loop.
-                #
-                # It is bounded by a watchdog: a client that goes away
-                # mid-handshake (the browser aborts a request) would
-                # otherwise leave the handshake spinning forever.
-                #
-                # Do NOT serialise the handshakes: the WebVM's own
-                # internal traffic (the pi_impl heartbeat) needs TLS too,
-                # and a lock here queues it behind browser connections.
-                timer = _watchdog(client, TLS_HANDSHAKE_TIMEOUT)
-                try:
-                    client = self.ssl_context.wrap_socket(
-                        client, server_side=True)
-                finally:
-                    timer.cancel()
+                client = self.ssl_context.wrap_socket(client, server_side=True)
             handler = self.handler_class(client, addr, self)
             handler.handle()
         except Exception as exc:
