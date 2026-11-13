@@ -1479,13 +1479,16 @@ TAILSCALE_TAILNET = "tailf987e.ts.net"
 PROXY_HOSTNAME = "webvm-proxy"
 
 
-def _rename_tailscale_node(ip):
+def _rename_tailscale_node(ip=None):
     """Rename this WebVM's Tailscale node to PROXY_HOSTNAME via the API.
 
     The LE cert is issued for PROXY_HOSTNAME.TAILNET, so the node must
     carry that name for the cert to match.  CheerpX ignores the hostname
-    parameter in networkInterface, so we rename via the admin API after
-    the IP is assigned.
+    parameter in networkInterface, so we rename via the admin API.
+
+    If *ip* is given, match by IP.  Otherwise find the newest device whose
+    name starts with ``js.`` — that is CheerpX's default, and the newest
+    one is almost certainly this session.
     """
     from urllib.request import Request, urlopen
     from urllib.error import HTTPError, URLError
@@ -1505,17 +1508,26 @@ def _rename_tailscale_node(ip):
         with urlopen(req, timeout=15) as resp:
             devices = _json.loads(resp.read()).get("devices", [])
         device_id = None
-        for d in devices:
-            addrs = d.get("addresses", [])
-            if addrs and addrs[0] == ip:
-                device_id = d["id"]
-                if d.get("name", "") == target_name:
-                    print("TAILSCALE_RENAME skip name_already={}".format(
-                        target_name), flush=True)
-                    return
-                break
+        if ip:
+            for d in devices:
+                addrs = d.get("addresses", [])
+                if addrs and addrs[0] == ip:
+                    device_id = d["id"]
+                    if d.get("name", "") == target_name:
+                        print("TAILSCALE_RENAME skip name_already={}".format(
+                            target_name), flush=True)
+                        return
+                    break
         if not device_id:
-            print("TAILSCALE_RENAME skip device_not_found ip={}".format(ip),
+            js_devices = [d for d in devices
+                          if d.get("name", "").startswith("js." + TAILSCALE_TAILNET)]
+            if js_devices:
+                js_devices.sort(key=lambda d: d.get("lastSeen", ""), reverse=True)
+                device_id = js_devices[0]["id"]
+                print("TAILSCALE_RENAME matched_by=newest_js name={} id={}".format(
+                    js_devices[0].get("name"), device_id), flush=True)
+        if not device_id:
+            print("TAILSCALE_RENAME skip no_js_device_found ip={}".format(ip),
                   flush=True)
             return
         old_holders = [d for d in devices
@@ -1864,6 +1876,10 @@ def _run_endpoint_tests():
 
 def main():
     prepare_system()
+    # Rename the Tailscale node to webvm-proxy so the LE cert matches.
+    # Runs in a daemon thread — it doesn't need the IP, just the API.
+    import threading as _thr
+    _thr.Thread(target=_rename_tailscale_node, name="ts-rename", daemon=True).start()
     # Print the Tailscale address as soon as it is assigned.  Runs in a
     # background thread so it never delays the proxy or the telnet shell.
     print_connection_banner()
