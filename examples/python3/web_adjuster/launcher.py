@@ -130,10 +130,19 @@ PROXY_REVEAL_HEADERS = frozenset((
 FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
 
 # File extensions that should be redirected to the CDN instead of proxied.
+#
+# CheerpX's TLS drops large transfers, so proxying multi-megabyte bundles is
+# unreliable; the browser fetches them straight from the CDN instead.
+#
+# Fonts are deliberately NOT in this list.  A stylesheet, a script and an
+# image are fetched in no-cors mode, so a redirect to the CDN works for
+# them.  A font is always fetched in CORS mode, and Kaggle's CDN sends no
+# Access-Control-Allow-Origin for fonts, so a redirected font fails with
+# ERR_FAILED.  Fonts are proxied instead, and the proxy adds
+# Access-Control-Allow-Origin to every response.
 _STATIC_EXTS = frozenset((
     ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot", ".otf", ".map",
-    ".webp", ".avif", ".mp4", ".webm",
+    ".map", ".webp", ".avif", ".mp4", ".webm",
 ))
 
 STATE_LOCK = threading.Lock()

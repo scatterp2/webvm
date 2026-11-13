@@ -36,7 +36,7 @@ which either redirects (`.js`) or proxies them.
 ### Things that will bite you next
 
 - **Bump `?v=` when you change `serviceWorker.js`.** `src/app.html` loads
-  `serviceWorker.js?v=7`. The browser caches a worker for a long time and
+  `serviceWorker.js?v=9`. The browser caches a worker for a long time and
   `unregister()` does not release control until the page reloads, so a
   changed worker keeps serving the old code until you unregister **and**
   reload. See "Service Worker update gotcha" below.
@@ -44,8 +44,10 @@ which either redirects (`.js`) or proxies them.
   worker sets `COEP: require-corp` + `COOP: same-origin`. With them
   removed the guest hangs at start-up and never registers on the tailnet.
   They are required, and `COOP` is exactly what nulls a popup's
-  `window.opener` — which is why the bridge uses the popup's URL fragment
-  instead of `postMessage`.
+  `window.opener` — which is why the proxy panel navigates the frame
+  **directly** to the proxy's https origin instead of going through a
+  popup.  (The popup bridge still exists in the code and in
+  `serviceWorker.js`, but it is no longer on the panel's path.)
 - **The Pages deploy can fail spuriously.** The build job succeeds and
   only `actions/deploy-pages@v4` fails; re-running the workflow (touch
   `redeploy` and push) fixed it. The job logs need auth to read.
@@ -332,21 +334,30 @@ access working, and `http://` on an `http://` page is not mixed content.
 **Status:** The HTTPS proxy with a real LE cert is working. The proxy
 panel uses a `credentialless` iframe that navigates directly to the TLS
 proxy on `:28443`. Static assets are loaded from Kaggle's CDN via
-`_direct_url()` rewriting. Bot-detection headers are stripped and
-replaced with browser-like headers. Kaggle's JS app starts, the CSS
-renders (background art visible), and the Kaggle ASCII art appears in
-the console. **Two remaining issues prevent a normal Kaggle UI:**
+`_direct_url()` rewriting and through 302 redirects. Bot-detection
+headers are stripped and replaced with browser-like headers.
+
+**`example.com` renders perfectly in the panel** (verified visually: the
+book icon, the English text and all the translations). Kaggle's own SPA
+loads too — its CSS, its JavaScript and its images all arrive — but
+Kaggle answers the app's data call with a **reCAPTCHA enterprise
+challenge**, so the frame shows Kaggle's own crash page
+("Something went wrong and this page crashed!").
+
+**The remaining issues:**
 
 | Part | Status |
 |---|---|
 | HTML delivered with correct title | **works** — "Kaggle: The World's AI Proving Ground" |
 | Proof script injection | **works** — `WEBVM_ADJUSTER_INJECTED` banner visible |
-| LE cert on `:28443` (no mixed content) | **works** — `TLS_PROXY_STARTED port=28443 cert=LE` |
-| `credentialless` iframe for COEP | **works** — iframe renders content, not white |
-| Static assets (JS, CSS) from CDN | **works** — `_direct_url()` rewrites to absolute Kaggle URLs |
-| Bot-detection bypass (headers) | **works** — Kaggle returns 200 with real content, not reCAPTCHA |
-| SPA client-side routing | **BROKEN** — React Router sees `/proxy/…` path, renders 404 |
-| Fonts/images via 302 CDN redirect | **BROKEN** — CORS blocks cross-origin fonts/images from CDN |
+| LE cert on `:28443` (no mixed content) | **works** — `TLS_PROXY_STARTED port=28443 cert=LE`, and the chain validates from an ordinary client: `https://webvm-proxy.tailf987e.ts.net:28443/health` → `200 ok` |
+| `credentialless` iframe for COEP | **works** — the frame renders the page, not a blank frame |
+| Static assets (JS, CSS, images) | **works** — `_direct_url()` rewrites them to absolute Kaggle URLs, and the catch-all 302-redirects them to the CDN; they arrive with `200` |
+| `history.replaceState` routing injection | **works** — verified byte-for-byte in the served HTML, injected before the first script and carrying the page's nonce: `<script nonce="…">try{history.replaceState(null,"","/")}catch(e){}</script>` |
+| The page's own API calls | **works** — the injected script patches `fetch` and `XMLHttpRequest.open` so absolute calls to the original site are rewritten to `/proxy/<encoded-url>` |
+| **`example.com` in the panel** | **works** — it renders completely |
+| **Kaggle's own data call** | **BROKEN** — Kaggle answers with a **reCAPTCHA enterprise challenge** (`https://www.google.com/recaptcha/enterprise/anchor` shows up in the network log), so the app renders its crash page. This is Kaggle's bot detection, not the proxy |
+| Fonts | **works now** — fonts are fetched in CORS mode, so they must be *proxied* (the proxy adds `Access-Control-Allow-Origin`), not 302-redirected to a CDN that sends no CORS header |
 
 #### What was done (commits, most recent first)
 
