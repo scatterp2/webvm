@@ -922,11 +922,34 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
             text = None
         if text is not None:
             text = rewrite_html(text, request_url, proxy_origin)
-            # Inject just before </body> so the marker element exists.
-            # The script has to carry the page's CSP nonce, otherwise the
-            # browser blocks it (a nonce in script-src disables
-            # 'unsafe-inline').
-            script = build_injection_script(extract_nonce(text))
+            nonce = extract_nonce(text)
+            # SPAs use window.location.pathname for client-side routing.
+            # When the page is served at /proxy/<encoded-url>, the router
+            # sees that path and renders a 404.  Fix by replacing the URL
+            # with the target's own path before any scripts run.
+            target_parts = urlsplit(request_url)
+            target_path = target_parts.path or "/"
+            if target_parts.query:
+                target_path += "?" + target_parts.query
+            nonce_attr = ' nonce="{}"'.format(nonce) if nonce else ""
+            path_fix = (
+                '<script{nonce}>'
+                'try{{history.replaceState(null,"",{path})}}catch(e){{}}'
+                '</script>'
+            ).format(nonce=nonce_attr, path=json.dumps(target_path))
+            # Inject the path fix into <head> BEFORE any other scripts
+            # so the SPA router sees the correct pathname.
+            lowered = text.lower()
+            head_end = lowered.find("</head>")
+            first_script = lowered.find("<script")
+            if first_script != -1 and (head_end == -1 or first_script < head_end):
+                text = text[:first_script] + path_fix + text[first_script:]
+            elif head_end != -1:
+                text = text[:head_end] + path_fix + text[head_end:]
+            else:
+                text = path_fix + text
+            # Inject the proof marker just before </body>.
+            script = build_injection_script(nonce)
             lowered = text.lower()
             index = lowered.rfind("</body>")
             if index == -1:
@@ -1471,30 +1494,34 @@ class Handler(object):
         # sub-resources request when the iframe navigates directly to a
         # /proxy/ URL.  The Referer carries the proxy URL of the page that
         # triggered the load, so we can recover the target origin.
+        # After history.replaceState the Referer won't contain /proxy/,
+        # so fall back to DEFAULT_TARGET for any unmatched path.
         referer = request.header("referer", "")
         ref_path = urlsplit(referer).path if referer else ""
+        ref_target = None
         if ref_path.startswith("/proxy/"):
             ref_target = target_from_path(ref_path)
-            if ref_target:
-                resolved = absolutize(target, ref_target)
-                if resolved and urlsplit(resolved).scheme in ("http", "https"):
-                    # Static assets (JS, CSS, images, fonts) → 302 to CDN.
-                    # CheerpX TLS drops large transfers so proxying bundles
-                    # is unreliable; the browser fetches them directly.
-                    ext = resolved.rsplit("?", 1)[0].rsplit(".", 1)
-                    ext = ("." + ext[-1].lower()) if len(ext) > 1 else ""
-                    if ext in _STATIC_EXTS:
-                        log("REDIRECT resolved={} from referer={}".format(
-                            resolved[:140], ref_target[:80]))
-                        self._send(302, "text/plain; charset=utf-8",
-                                   b"Redirecting\n",
-                                   extra=[("Location", resolved)])
-                        return
-                    log("CATCHALL resolved={} from referer={}".format(
-                        resolved[:140], ref_target[:80]))
-                    self._proxy_url(resolved, method=request.method,
-                                    body=request.body or None)
-                    return
+        if not ref_target:
+            ref_target = DEFAULT_TARGET
+        resolved = absolutize(target, ref_target)
+        if resolved and urlsplit(resolved).scheme in ("http", "https"):
+            # Static assets (JS, CSS, images, fonts) → 302 to CDN.
+            # CheerpX TLS drops large transfers so proxying bundles
+            # is unreliable; the browser fetches them directly.
+            ext = resolved.rsplit("?", 1)[0].rsplit(".", 1)
+            ext = ("." + ext[-1].lower()) if len(ext) > 1 else ""
+            if ext in _STATIC_EXTS:
+                log("REDIRECT resolved={} from referer={}".format(
+                    resolved[:140], ref_target[:80]))
+                self._send(302, "text/plain; charset=utf-8",
+                           b"Redirecting\n",
+                           extra=[("Location", resolved)])
+                return
+            log("CATCHALL resolved={} from referer={}".format(
+                resolved[:140], ref_target[:80]))
+            self._proxy_url(resolved, method=request.method,
+                            body=request.body or None)
+            return
         self._send(404, "text/plain; charset=utf-8", b"Not Found\n")
 
 
