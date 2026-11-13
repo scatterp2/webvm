@@ -722,6 +722,7 @@
 				<iframe
 					bind:this={proxyFrameEl}
 					title="Proxied page through the WebVM proxy"
+					credentialless
 					class="flex-1 w-full bg-white"></iframe>
 			</div>
 		{/if}

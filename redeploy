@@ -70,3 +70,4 @@ Goal 5: proxy panel uses HTTPS fetch with LE cert, popup bridge fallback
 Goal 5: iframe.src instead of srcdoc; Referer catch-all for relative URLs
 Goal 5: fallback to on-disk launcher.py when GitHub fetch fails; direct CDN loading
 Goal 5: skip CORS fetch in proxy panel; navigate iframe directly
+Goal 5: add credentialless to proxy iframe for COEP compatibility
