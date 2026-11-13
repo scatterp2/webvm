@@ -102,19 +102,32 @@
 			return;
 		}
 		const bases = proxyBases();
+		// Try each HTTPS base: first a lightweight no-cors health check,
+		// then navigate the iframe directly.  CheerpX's cooperative
+		// scheduler makes CORS fetches unreliable (the TLS handshake
+		// can stall), so on failure we still try iframe.src — direct
+		// navigation often works when fetch() does not.
 		for(const base of bases.https) {
 			proxyStatus = "Trying HTTPS proxy at " + base + "...";
+			const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
 			try {
-				const proxyUrl = base + "/proxy/" + encodeURIComponent(proxyTarget);
-				const resp = await fetch(proxyUrl, {mode: "cors"});
-				if(!resp.ok) continue;
+				const ctrl = new AbortController();
+				const timer = setTimeout(() => ctrl.abort(), 8000);
+				await fetch(base + "/health", {mode: "no-cors", signal: ctrl.signal});
+				clearTimeout(timer);
 				if(proxyFrameEl) {
 					proxyFrameEl.src = proxyUrl;
 					proxyStatus = "Navigated to HTTPS proxy (" + base + ").";
 					return;
 				}
 			} catch (e) {
-				proxyStatus = "HTTPS proxy at " + base + " failed (" + e.message + "), trying next...";
+				proxyStatus = "HTTPS proxy at " + base + " check failed (" + e.message + "), trying direct navigation...";
+				// fetch() failed but direct iframe navigation may still work
+				if(proxyFrameEl) {
+					proxyFrameEl.src = proxyUrl;
+					proxyStatus = "Navigated to HTTPS proxy (" + base + ") directly.";
+					return;
+				}
 			}
 		}
 		proxyStatus = "Opening the proxy bridge for " + proxyTarget + "...";
