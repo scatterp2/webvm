@@ -554,10 +554,10 @@ def sanitize_set_cookie(value: str) -> str:
 # Upstream fetching
 # --------------------------------------------------------------------------
 
-# CheerpX's cooperative scheduler means two TLS handshakes at the same
-# time starve each other and can wedge the whole VM.  Serialising them
-# avoids that; the watchdog bounds a handshake whose client disappears.
-_TLS_HANDSHAKE_LOCK = threading.Lock()
+# A TLS handshake whose client disappears mid-handshake would otherwise
+# spin forever.  The handshake is NOT serialised: the WebVM's own internal
+# traffic needs TLS too, and a lock here queues it behind browser
+# connections (that made the pi_impl heartbeat time out).
 TLS_HANDSHAKE_TIMEOUT = 25
 
 
@@ -1582,17 +1582,20 @@ class WrapperServer(object):
     def _handle_client(self, client, addr):
         try:
             if self.ssl_context is not None:
-                # Two TLS handshakes at the same time starve each other in
-                # CheerpX and wedge the whole VM (see finding 20), so the
-                # handshake is serialised.  The watchdog bounds it as well:
-                # a client that goes away mid-handshake (the browser
-                # aborts its health check) must not hold the lock forever
-                # and block every later connection.
+                # The handshake happens in this thread so that one slow
+                # client cannot block the accept loop.
+                #
+                # It is bounded by a watchdog: a client that goes away
+                # mid-handshake (the browser aborts a request) would
+                # otherwise leave the handshake spinning forever.
+                #
+                # Do NOT serialise the handshakes: the WebVM's own
+                # internal traffic (the pi_impl heartbeat) needs TLS too,
+                # and a lock here queues it behind browser connections.
                 timer = _watchdog(client, TLS_HANDSHAKE_TIMEOUT)
                 try:
-                    with _TLS_HANDSHAKE_LOCK:
-                        client = self.ssl_context.wrap_socket(
-                            client, server_side=True)
+                    client = self.ssl_context.wrap_socket(
+                        client, server_side=True)
                 finally:
                     timer.cancel()
             handler = self.handler_class(client, addr, self)
