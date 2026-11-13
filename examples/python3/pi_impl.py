@@ -1592,7 +1592,19 @@ def start_web_adjuster_sidecar():
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
         print("LAUNCHER_FETCH_FAILED error={}: {}".format(
             type(exc).__name__, exc), flush=True)
-        return
+        fallback_path = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
+        if fallback_path.is_file():
+            try:
+                launcher_source = fallback_path.read_text(encoding="utf-8")
+                print("LAUNCHER_FALLBACK source=disk characters={}".format(
+                    len(launcher_source)), flush=True)
+            except OSError as fallback_exc:
+                print("LAUNCHER_FALLBACK_FAILED error={}: {}".format(
+                    type(fallback_exc).__name__, fallback_exc), flush=True)
+                return
+        else:
+            print("LAUNCHER_FALLBACK_MISSING path={}".format(fallback_path), flush=True)
+            return
 
     # exec into a namespace to get classes and functions
     launcher_ns = {}
