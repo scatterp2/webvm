@@ -1533,20 +1533,22 @@ def _rename_tailscale_node(ip=None):
         old_holders = [d for d in devices
                        if d.get("name", "") == target_name
                        and str(d["id"]) != str(device_id)]
-        for old in old_holders:
+        for idx, old in enumerate(old_holders):
+            evict_name = "js-evicted-{}".format(str(old["id"])[-6:])
             evict = Request(
                 "https://api.tailscale.com/api/v2/device/{}/name".format(
                     old["id"]),
-                data=_json.dumps({"name": "js-old"}).encode(),
+                data=_json.dumps({"name": evict_name}).encode(),
                 headers=headers,
                 method="POST",
             )
             try:
                 urlopen(evict, timeout=10)
-                print("TAILSCALE_RENAME evicted old={} id={}".format(
-                    old.get("name"), old["id"]), flush=True)
-            except Exception:
-                pass
+                print("TAILSCALE_RENAME evicted old={} to={} id={}".format(
+                    old.get("name"), evict_name, old["id"]), flush=True)
+            except Exception as exc:
+                print("TAILSCALE_RENAME evict_failed old={} error={}".format(
+                    old.get("name"), str(exc)[:100]), flush=True)
         rename = Request(
             "https://api.tailscale.com/api/v2/device/{}/name".format(device_id),
             data=_json.dumps({"name": PROXY_HOSTNAME}).encode(),
