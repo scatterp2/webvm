@@ -4,6 +4,15 @@
 
 ## Where things stand
 
+## Current Kaggle blocker and finish line
+
+**Next step: fix Kaggle's anti-forgery-token failure.** Keep the browser's session cookies and matching token together, ensure session-dependent HTML is not served from a shared URL-only cache, and verify the upstream request headers against the failing request. The proposed patch is a hypothesis until tested; do not mark this step complete just because it has been committed.
+
+**Final step: make the real Kaggle page visibly display inside WebVM through the proxy.** The job is not finished when the anti-forgery error disappears, when the proxy returns HTTP 200, or when scripts load. The final acceptance test is a browser-visible Kaggle page rendered in the WebVM proxy panel, with any remaining routing/rendering failures resolved. Update the status table below only when that end-to-end result has actually been observed.
+
+The detailed sequence and validation checklist are in [the Kaggle anti-forgery handoff](docs/handoff-kaggle-antiforgery.md).
+
+
 | Goal | State | Evidence |
 |---|---|---|
 | 1 — Tailscale auto-connect | **DONE** | The node gets a 100.x address on every boot and the address is printed in the WebVM terminal. |
