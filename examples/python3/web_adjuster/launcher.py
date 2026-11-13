@@ -81,6 +81,38 @@ INJECTION_SCRIPT = (
     "</script>"
 )
 
+# Routes the page's own API calls back through the proxy.
+#
+# The document is served from the proxy's origin, but the page's JavaScript
+# calls the original site absolutely ("https://www.kaggle.com/api/...").
+# Those calls would leave the proxy, hit the internet directly and be
+# blocked by CORS, which is what made Kaggle's SPA render its crash page.
+# Patching fetch and XMLHttpRequest sends them to the proxy instead, where
+# the catch-all resolves them against the original target.
+#
+# Like the proof script, the text avoids spaces so it survives being passed
+# through command-line argument handling.
+_API_ROUTING_SCRIPT = (
+    "<script>(function(){try{"
+    "var O=__TARGET_ORIGIN__;"
+    "function P(u){try{"
+    "if(typeof u!=='string')return u;"
+    "if(u.indexOf(O)!==0)return u;"
+    "return '/proxy/'+encodeURIComponent(u);"
+    "}catch(e){return u;}}"
+    "var f=window.fetch;"
+    "window.fetch=function(i,o){try{"
+    "if(typeof i==='string')i=P(i);"
+    "else if(i&&i.url)i=new Request(P(i.url),i);"
+    "}catch(e){}"
+    "return f.call(this,i,o);};"
+    "var x=XMLHttpRequest.prototype.open;"
+    "XMLHttpRequest.prototype.open=function(m,u){try{u=P(u);}catch(e){}"
+    "return x.call(this,m,u);};"
+    "}catch(e){}})();"
+    "</script>"
+)
+
 HOP_BY_HOP = frozenset((
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade",
@@ -826,11 +858,23 @@ def extract_nonce(text):
     return match.group(1) if match else None
 
 
-def build_injection_script(nonce=None):
-    """The proof script, carrying the page's nonce when there is one."""
+def build_injection_script(nonce=None, target_origin=None):
+    """The proof script, carrying the page's nonce when there is one.
+
+    When ``target_origin`` is given the script also routes the page's own
+    API calls back through the proxy.  A proxied page is served from the
+    proxy's origin, so an absolute call to the original site would go
+    straight out to the internet and be blocked by CORS.  Patching
+    ``fetch`` and ``XMLHttpRequest.open`` sends those calls to the proxy
+    instead, where they are resolved against the original target.
+    """
+    script = INJECTION_SCRIPT
+    if target_origin:
+        script += _API_ROUTING_SCRIPT.replace("__TARGET_ORIGIN__",
+                                              json.dumps(target_origin))
     if not nonce:
-        return INJECTION_SCRIPT
-    return INJECTION_SCRIPT.replace(
+        return script
+    return script.replace(
         "<script>", '<script nonce="{}">'.format(nonce), 1
     )
 
@@ -949,7 +993,10 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
             else:
                 text = path_fix + text
             # Inject the proof marker just before </body>.
-            script = build_injection_script(nonce)
+            target_parts = urlsplit(request_url)
+            target_origin = "{}://{}".format(
+                target_parts.scheme, target_parts.netloc)
+            script = build_injection_script(nonce, target_origin)
             lowered = text.lower()
             index = lowered.rfind("</body>")
             if index == -1:
