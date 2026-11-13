@@ -1,22 +1,20 @@
-*** Begin Patch
-*** Update File: examples/python3/web_adjuster/launcher.py
+--- a/examples/python3/web_adjuster/launcher.py
++++ b/examples/python3/web_adjuster/launcher.py
 @@
 -    outgoing["Referer"] = target_origin + "/"
 +    # CSRF/anti-forgery middleware commonly checks Origin on state-changing
-+    # requests.  The browser's Origin is the proxy origin, so do not forward
-+    # it verbatim; send the upstream target origin instead.  Keep the
-+    # Referer on the upstream origin as well (the original proxy URL must
-+    # never leak upstream).
++    # requests. The browser's Origin is the proxy origin, so do not forward
++    # it verbatim; send the upstream target origin instead. Keep Referer on
++    # the upstream origin as well (never leak the proxy URL upstream).
 +    outgoing["Referer"] = target_origin + "/"
 +    if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
 +        outgoing["Origin"] = target_origin
 @@
 -    cache_key = (method, url)
 -    if method == "GET":
-+    # Never share a response across browser sessions.  In particular, HTML
-+    # can embed a per-session anti-forgery token even when it has no
-+    # Set-Cookie header, and a URL-only cache key would replay that token to
-+    # a different session.  Cookie-bearing requests always bypass cache.
++    # HTML can contain a session-bound anti-forgery token without a
++    # Set-Cookie response header. A URL-only cache key could replay that
++    # token across sessions. Cookie-bearing requests must bypass the cache.
 +    has_request_cookie = any(name.lower() == "cookie"
 +                             for name in (headers or {}))
 +    cache_key = (method, url)
@@ -31,4 +29,3 @@
 +            if (method == "GET" and not has_request_cookie
 +                    and result[0] < 400
 +                    and "text/html" not in response_type):
-*** End Patch
