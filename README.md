@@ -11,15 +11,29 @@
 | 3 — The proxy works | **DONE, VERIFIED** | A real HTTPS page is fetched through the VM, `x-frame-options` is stripped and the proof script is injected and executes. |
 | 4 — Kaggle in a proxy iframe | **DONE, VERIFIED** | `http://<ip>:28082/` shows the real Kaggle page in an iframe and the parent can read its DOM (`sameOrigin: true`). |
 | 4b — that iframe **inside the GitHub Pages WebVM page** | **DONE, VERIFIED** | The Proxy button in the bottom-right of the WebVM page opens a panel with the proxied page in an iframe. Measured: `panelStatus: "Loaded 7255 bytes through the bridge - srcdoc frame keeps DOM access."`, `title: "Kaggle: The World's AI Proving Ground"`, `markerFound: true`, `htmlAttr: "true"`. |
-| 5 — make the proxied page actually **show** | **IN PROGRESS** | Real LE cert on `:28443`, `credentialless` iframe for COEP compat, static assets load from CDN via `_direct_url()`, proxy strips bot-detection headers (sec-fetch-*, Referer, Origin) and sends browser-like headers upstream. Kaggle's JS app loads and runs (title correct, CSS/background renders, Kaggle ASCII art in console). **Remaining:** SPA client-side router sees `/proxy/…` path and renders 404; `history.replaceState` injection and CORS-safe redirect scoping in progress. |
+| 5 — make the proxied page actually **show** | **DONE, VERIFIED** | The proxy panel renders **Kaggle's real homepage**: the logo, `Login` / `Sign Up`, the hero headline "Evaluating what works at AI's frontier" and the illustration, with the `WEBVM_ADJUSTER_INJECTED` marker on top. `example.com` renders too. Six defects had to be fixed to get there — the cookies, the CSP nonce, the script ordering, the forged `Sec-Fetch-*` headers, the missing keep-alive and the truncated large responses. See the Goal 5 section. |
 
 ### The one thing to try next
 
-Fix the SPA client-side routing: the `history.replaceState` injection
-must execute before Kaggle's React Router so the router sees `/` instead
-of `/proxy/…`. Also scope the 302 CDN redirects to `.js` files only —
-fonts and images redirected to Kaggle's CDN get blocked by CORS because
-the CDN doesn't send `Access-Control-Allow-Origin`.
+Kaggle's page is showing. What is left is polish and the two known
+limitations:
+
+- **Fonts.** The stylesheet is rewritten to an absolute Kaggle CDN URL,
+  so the font inside it is fetched from the CDN in CORS mode and
+  Kaggle's CDN sends no `Access-Control-Allow-Origin` for fonts. Making
+  it work means proxying the CSS *and* rewriting its `url(...)`
+  references to the proxy.
+- **The cookie jar is global, not per session.** The proxy holds one
+  jar per origin, so two pages in the same VM share a session. A
+  per-session jar would need a session id the credentialless iframe can
+  carry.
+
+The diagnostics that made this tractable are kept in the repo:
+`/proxy-log` (the proxy's own log ring buffer), `/proxy-tune` (the
+socket write settings), `check_transfer_integrity.py` (is a response
+arriving whole?), `sweep_send_settings.py` (find write settings that
+survive), and `wedge_probe.py` (does the VM stay healthy while the
+browser loads a page through it?).
 
 ### How the proxy panel works today
 
