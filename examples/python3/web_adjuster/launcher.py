@@ -1291,6 +1291,24 @@ class HttpError(Exception):
     pass
 
 
+# How long a client connection may sit idle before the proxy gives up on it.
+#
+# The browser opens connections it may never use -- Chrome speculatively
+# connects to an origin it is about to use, and abandons the connection
+# when a navigation is superseded or the frame is replaced.  A client
+# socket with no timeout leaves the handler thread blocked in recv()
+# forever.
+#
+# That is fatal here rather than merely untidy: CheerpX schedules the
+# VM's threads cooperatively, so one thread parked in a socket call can
+# stall the whole VM.  The symptom was that the proxy stopped answering
+# *everything* -- even a plain /health request from another client --
+# as soon as the browser loaded a page through it.  Bounding the wait
+# turns that from a permanent hang into a failed connection.
+CLIENT_READ_TIMEOUT = 15
+CLIENT_WRITE_TIMEOUT = 30
+
+
 def recv_until(sock, terminator, limit=65536):
     data = b""
     while terminator not in data:
@@ -1424,6 +1442,14 @@ def send_response(sock, status, headers, body, close=True, client=None):
         # truncated, and the browser then reports "Failed to fetch" even
         # though the server logged SEND_OK.  The self-contained document is
         # a few hundred kilobytes, so this matters.
+        #
+        # The write is bounded too: a client that stops reading (the
+        # browser replacing a frame mid-load) would otherwise park this
+        # thread in sendall() and stall the whole VM.
+        try:
+            sock.settimeout(CLIENT_WRITE_TIMEOUT)
+        except OSError:
+            pass
         sent = 0
         while sent < len(payload):
             chunk = payload[sent:sent + SEND_CHUNK]
@@ -1901,6 +1927,11 @@ class WrapperServer(object):
                 continue
             try:
                 client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            # Never wait on a client forever.  See CLIENT_READ_TIMEOUT.
+            try:
+                client.settimeout(CLIENT_READ_TIMEOUT)
             except OSError:
                 pass
             threading.Thread(
