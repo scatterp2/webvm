@@ -59,6 +59,12 @@ check("/proxy-cookie?target=" in script, "the bridge has somewhere to write")
 check("XMLHttpRequest.prototype.open" in script, "the routing patch is present")
 check("window.fetch=function" in script, "the routing patch patches fetch")
 
+print("[4b] the endpoint is a plain URL, not a JSON-quoted one")
+check("'https://proxy.example:28443/proxy-cookie?target=" in script,
+      "the endpoint is a bare URL inside the script")
+check('"https://proxy.example' not in script,
+      "the endpoint does not carry JSON quotes")
+
 print("[5] the proof marker still carries the nonce")
 proof = launcher.build_injection_script("NONCE")
 check('nonce="NONCE"' in proof, "the proof marker carries the nonce")

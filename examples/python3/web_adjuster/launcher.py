@@ -1000,9 +1000,10 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
 
     # HTML can contain a session-bound anti-forgery token without a
     # Set-Cookie response header. A URL-only cache key could replay that
-    # token across sessions.  Cookie-bearing requests must bypass the cache.
-    has_request_cookie = any(name.lower() == "cookie"
-                             for name, _ in (headers or {}).items())
+    # token across sessions. Cookie-bearing requests must bypass the cache.
+    # The cookie that matters is the one the request actually went out
+    # with, which includes the ones the proxy replayed from its own jar.
+    has_request_cookie = any(name.lower() == "cookie" for name in outgoing)
     cache_key = (method, url)
     if method == "GET" and not has_request_cookie:
         cached = _cache_get(cache_key)
@@ -1049,9 +1050,15 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
                 if name.lower() == "content-type":
                     response_type = value.lower()
                     break
+            # Only cache what is safe to replay: no session cookie went
+            # out with the request, the response is not HTML (it can carry
+            # a session-bound anti-forgery token), and it is not JSON (the
+            # site's own API answers, which are bound to the session that
+            # asked for them).
             if (method == "GET" and not has_request_cookie
                     and result[0] < 400
-                    and "text/html" not in response_type):
+                    and "text/html" not in response_type
+                    and "json" not in response_type):
                 has_cookie = any(name.lower() == "set-cookie"
                                   for name, _ in result[1])
                 if not has_cookie:
@@ -1131,7 +1138,7 @@ def build_runtime_scripts(nonce=None, target_origin=None, proxy_origin=None,
             quote(target_origin or "", safe=""))
         scripts.append(_COOKIE_BRIDGE_SCRIPT.replace(
             "__COOKIE_STRING__", json.dumps(cookies or "")
-        ).replace("__COOKIE_ENDPOINT__", json.dumps(endpoint)))
+        ).replace("__COOKIE_ENDPOINT__", endpoint))
     if not scripts:
         return ""
     attr = ' nonce="{}"'.format(nonce) if nonce else ""
