@@ -66,3 +66,6 @@ wheels/
 # Jupyter
 .ipynb_checkpoints
 ```
+# Downloaded page bundles used for diagnostics
+examples/python3/app.js
+
