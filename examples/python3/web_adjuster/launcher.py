@@ -81,6 +81,48 @@ INJECTION_SCRIPT = (
     "</script>"
 )
 
+# Gives the page a read/write view of the cookie jar the proxy holds.
+#
+# In a credentialless iframe `document.cookie` is always empty, so a page
+# that reads a cookie to build a request header (Kaggle reads XSRF-TOKEN
+# that way) cannot find it and gives up.  This bridges the jar into the
+# page: the getter returns the cookies the proxy holds for the target,
+# and the setter records what the page writes and hands it to the proxy
+# so it goes upstream with the next request.
+#
+# Like the other injected scripts, the text avoids spaces so it survives
+# being passed through command-line argument handling.
+_COOKIE_BRIDGE_SCRIPT = (
+    "<script>(function(){try{"
+    "var C=__COOKIE_STRING__;"
+    "var S={};"
+    "function parse(s){s.split(';').forEach(function(p){"
+    "var i=p.indexOf('=');"
+    "if(i>0)S[p.slice(0,i).trim()]=p.slice(i+1).trim();"
+    "});}"
+    "parse(C);"
+    "function str(){var a=[];for(var k in S){a.push(k+'='+S[k]);}return a.join('; ');}"
+    "var proto=window.Document&&Document.prototype;"
+    "var desc=proto&&Object.getOwnPropertyDescriptor(proto,'cookie');"
+    "if(desc&&desc.configurable){"
+    "Object.defineProperty(document,'cookie',{"
+    "configurable:true,enumerable:true,"
+    "get:function(){return str();},"
+    "set:function(v){"
+    "if(typeof v!=='string')return;"
+    "var i=v.indexOf('=');if(i<0)return;"
+    "var k=v.slice(0,i).trim(),val=v.slice(i+1).trim();"
+    "if(val===''){delete S[k];}else{S[k]=val;}"
+    "try{"
+    "var b=new Blob([k+'='+val],{type:'text/plain'});"
+    "navigator.sendBeacon('__COOKIE_ENDPOINT__',b);"
+    "}catch(e){}"
+    "}});"
+    "}"
+    "}catch(e){}})();"
+    "</script>"
+)
+
 # Routes the page's own API calls back through the proxy.
 #
 # The document is served from the proxy's origin, but the page's JavaScript
@@ -121,10 +163,17 @@ HOP_BY_HOP = frozenset((
 # Headers that reveal the proxy/iframe context to upstream servers.
 # Stripping these prevents bot-detection systems (like Kaggle's) from
 # seeing that the request originates from an iframe inside a proxy.
+#
+# Only "origin" and "referer" qualify: they carry the proxy's own URL.
+# The Sec-Fetch-* and Sec-CH-UA-* headers describe the *browser*, and a
+# real browser always sends them.  Dropping them -- or claiming
+# "sec-fetch-mode: navigate" on an API call, which no browser ever does --
+# is a much stronger bot signal than the headers themselves, and it is
+# what earned us a reCAPTCHA challenge page.  They are forwarded
+# verbatim instead, with Sec-Fetch-* rewritten to describe a direct visit
+# to the target origin.
 PROXY_REVEAL_HEADERS = frozenset((
-    "origin", "referer", "sec-fetch-dest", "sec-fetch-mode",
-    "sec-fetch-site", "sec-fetch-user", "sec-ch-ua-platform",
-    "sec-ch-ua-mobile", "sec-ch-ua",
+    "origin", "referer",
 ))
 
 FRAME_BLOCKED_HEADERS = frozenset(("x-frame-options",))
@@ -154,6 +203,109 @@ _state = {
     "requests": 0,
     "upstream_errors": 0,
 }
+
+# --------------------------------------------------------------------------
+# Cookie jar
+# --------------------------------------------------------------------------
+#
+# The proxied page is served from the proxy's own origin, and the panel
+# renders it in a `credentialless` iframe.  A credentialless iframe has an
+# ephemeral storage context: it neither sends cookies nor accepts them, and
+# `document.cookie` is always empty inside it.
+#
+# That breaks any site whose front end reads a cookie to build a request
+# header.  Kaggle does exactly that:
+#
+#     var e = cookie.get("XSRF-TOKEN") || env.XSRF_COOKIE;
+#     if (!e) throw Error("An anti-forgery token could not be found.");
+#
+# so the client threw before it ever sent a request, and the page showed
+# its own crash screen.
+#
+# The proxy therefore keeps the upstream session itself: it records the
+# Set-Cookie headers it receives, sends them back upstream, and hands the
+# page a read/write view of the same jar through an injected cookie
+# bridge.  The page then behaves exactly as it would in a normal browser.
+
+_COOKIE_JAR = {}
+_COOKIE_JAR_LOCK = threading.Lock()
+
+
+def cookie_jar_get(origin):
+    """The cookies the proxy holds for ``origin`` (name -> value)."""
+    with _COOKIE_JAR_LOCK:
+        return dict(_COOKIE_JAR.get(origin) or {})
+
+
+def cookie_jar_store(origin, raw_values):
+    """Record Set-Cookie header values.  Returns the updated jar.
+
+    Only the cookie's name and value are kept; the attributes (Domain,
+    Path, Expires, ...) are the upstream site's business and are dropped
+    because the cookie is replayed against that same origin anyway.
+    """
+    with _COOKIE_JAR_LOCK:
+        jar = _COOKIE_JAR.setdefault(origin, {})
+        for raw in raw_values or ():
+            head = (raw or "").split(";", 1)[0].strip()
+            if "=" not in head:
+                continue
+            name, value = head.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if not name:
+                continue
+            if cookie_is_expired(raw):
+                jar.pop(name, None)
+            else:
+                jar[name] = value
+        return dict(jar)
+
+
+def cookie_is_expired(raw):
+    """True when a Set-Cookie value deletes the cookie."""
+    low = (raw or "").lower()
+    for part in low.split(";")[1:]:
+        part = part.strip()
+        if part.startswith("max-age="):
+            try:
+                return int(part.split("=", 1)[1].strip()) <= 0
+            except ValueError:
+                return False
+        if part.startswith("expires="):
+            if "1970" in part or "Thu, 01 Jan 1970" in part:
+                return True
+    return False
+
+
+def cookie_jar_header(origin):
+    """The ``Cookie`` request header for ``origin``, or None."""
+    jar = cookie_jar_get(origin)
+    if not jar:
+        return None
+    return "; ".join("{}={}".format(k, v) for k, v in jar.items())
+
+
+def cookie_jar_string(origin):
+    """The jar as a ``name=value; name=value`` string."""
+    return cookie_jar_header(origin) or ""
+
+
+def target_origin_of(url):
+    """The ``scheme://host[:port]`` of an absolute URL.
+
+    The cookie jar is keyed by this, so the same function has to be used
+    everywhere the origin is needed -- a mismatch would silently split
+    one site's session into two jars.
+    """
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return ""
+    origin = "{}://{}".format(parts.scheme, parts.hostname)
+    port = parts.port
+    if port and port not in (80, 443):
+        origin += ":{}".format(port)
+    return origin
 
 
 def log(message: str) -> None:
@@ -734,32 +886,15 @@ def _open_upstream(scheme, host, port, timeout):
     return raw, timer
 
 
-def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
-                   attempts=3):
-    """Fetch an absolute http/https URL.  Returns (status, headers, body).
+def build_upstream_headers(url, method, headers, target_origin=None):
+    """The headers to send upstream for ``url``.
 
-    The WebVM resolves DNS through the browser, and the browser's network
-    is occasionally unavailable ("Temporary failure in name resolution").
-    Retrying turns those transient failures into a successful fetch
-    instead of a 502.
+    The request has to look like a request the browser would make
+    directly to the target, because that is what the target's bot
+    detection is looking for.
     """
-    import http.client
-
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise ValueError("unsupported scheme: {}".format(parts.scheme))
-    host = parts.hostname
-    if not host:
-        raise ValueError("no host in {}".format(url))
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    path = parts.path or "/"
-    if parts.query:
-        path += "?" + parts.query
-
-    target_origin = "{}://{}".format(parts.scheme, parts.hostname)
-    if parts.port and parts.port not in (80, 443):
-        target_origin += ":{}".format(parts.port)
-
+    if not target_origin:
+        target_origin = target_origin_of(url)
     outgoing = {}
     for name, value in (headers or {}).items():
         lower = name.lower()
@@ -788,10 +923,80 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     # the upstream origin as well (never leak the proxy URL upstream).
     if method.upper() in ("POST", "PUT", "PATCH", "DELETE"):
         outgoing["Origin"] = target_origin
-    outgoing["sec-fetch-dest"] = "document"
-    outgoing["sec-fetch-mode"] = "navigate"
-    outgoing["sec-fetch-site"] = "none"
-    outgoing["sec-fetch-user"] = "?1"
+    # The page runs in a credentialless iframe, so the browser cannot hold
+    # the upstream's cookies.  Replay the jar the proxy holds for this
+    # origin instead; a cookie the browser did send wins, because it is
+    # the same cookie arriving by a different route.
+    jar_cookie = cookie_jar_header(target_origin)
+    if jar_cookie:
+        merged = dict(cookie_jar_get(target_origin))
+        for name, value in (headers or {}).items():
+            if name.lower() != "cookie":
+                continue
+            for part in value.split(";"):
+                if "=" in part:
+                    key, val = part.split("=", 1)
+                    merged[key.strip()] = val.strip()
+        outgoing["Cookie"] = "; ".join(
+            "{}={}".format(k, v) for k, v in merged.items())
+    # Sec-Fetch-*: forward the browser's real values.  A document request
+    # keeps the navigation shape, because that is what a direct visit to
+    # the target looks like.  Everything else (the site's own API calls)
+    # keeps the shape the browser gave it -- claiming "navigate" for an
+    # API call is the sort of thing bot detection looks for.
+    #
+    # Exactly one set goes out: the copy above keeps the browser's
+    # capitalisation, so emitting our own lowercase set as well would
+    # send the header twice and the first one would win upstream.
+    sec_fetch = {}
+    for name, value in (headers or {}).items():
+        if name.lower().startswith("sec-fetch-"):
+            sec_fetch[name.lower()] = value
+    for name in list(outgoing):
+        if name.lower().startswith("sec-fetch-"):
+            del outgoing[name]
+    if not sec_fetch or sec_fetch.get(
+            "sec-fetch-dest", "").lower() == "document":
+        outgoing["sec-fetch-dest"] = "document"
+        outgoing["sec-fetch-mode"] = "navigate"
+        outgoing["sec-fetch-site"] = "none"
+        outgoing["sec-fetch-user"] = "?1"
+    else:
+        outgoing.update(sec_fetch)
+        # "cross-site" would reveal that the page lives in a frame on
+        # another site; the request is presented as a same-site one.
+        if sec_fetch.get("sec-fetch-site", "").lower() == "cross-site":
+            outgoing["sec-fetch-site"] = "same-origin"
+    return outgoing
+
+
+def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
+                   attempts=3):
+    """Fetch an absolute http/https URL.  Returns (status, headers, body).
+
+    The WebVM resolves DNS through the browser, and the browser's network
+    is occasionally unavailable ("Temporary failure in name resolution").
+    Retrying turns those transient failures into a successful fetch
+    instead of a 502.
+    """
+    import http.client
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("unsupported scheme: {}".format(parts.scheme))
+    host = parts.hostname
+    if not host:
+        raise ValueError("no host in {}".format(url))
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+
+    target_origin = target_origin_of(url)
+    if not target_origin:
+        raise ValueError("no host in {}".format(url))
+
+    outgoing = build_upstream_headers(url, method, headers, target_origin)
 
     # HTML can contain a session-bound anti-forgery token without a
     # Set-Cookie response header. A URL-only cache key could replay that
@@ -885,25 +1090,53 @@ def extract_nonce(text):
     return match.group(1) if match else None
 
 
-def build_injection_script(nonce=None, target_origin=None):
-    """The proof script, carrying the page's nonce when there is one.
-
-    When ``target_origin`` is given the script also routes the page's own
-    API calls back through the proxy.  A proxied page is served from the
-    proxy's origin, so an absolute call to the original site would go
-    straight out to the internet and be blocked by CORS.  Patching
-    ``fetch`` and ``XMLHttpRequest.open`` sends those calls to the proxy
-    instead, where they are resolved against the original target.
-    """
-    script = INJECTION_SCRIPT
-    if target_origin:
-        script += _API_ROUTING_SCRIPT.replace("__TARGET_ORIGIN__",
-                                              json.dumps(target_origin))
+def build_injection_script(nonce=None):
+    """The proof marker, carrying the page's nonce when there is one."""
     if not nonce:
-        return script
-    return script.replace(
+        return INJECTION_SCRIPT
+    return INJECTION_SCRIPT.replace(
         "<script>", '<script nonce="{}">'.format(nonce), 1
     )
+
+
+def build_runtime_scripts(nonce=None, target_origin=None, proxy_origin=None,
+                          cookies=None):
+    """The scripts that have to run *before* the page's own JavaScript.
+
+    Two of them:
+
+    * the API routing patch, which sends the page's own absolute API
+      calls back through the proxy instead of straight out to the
+      internet, where they would be blocked by CORS;
+    * the cookie bridge, which gives the page the cookies the proxy
+      holds for the target, because a credentialless iframe cannot hold
+      cookies itself.
+
+    Both have to be installed before the page's first script runs: the
+    page reads its cookie while it initialises, and it may capture
+    ``fetch`` at that moment too.
+
+    Every script carries the page's own CSP nonce.  A page's CSP often
+    lists a nonce *and* 'unsafe-inline'; the 'unsafe-inline' is ignored
+    once a nonce is present, so an injected script without the nonce is
+    silently blocked and never runs.
+    """
+    scripts = []
+    if target_origin:
+        scripts.append(_API_ROUTING_SCRIPT.replace(
+            "__TARGET_ORIGIN__", json.dumps(target_origin)))
+    if proxy_origin:
+        endpoint = "{}/proxy-cookie?target={}".format(
+            proxy_origin.rstrip("/"),
+            quote(target_origin or "", safe=""))
+        scripts.append(_COOKIE_BRIDGE_SCRIPT.replace(
+            "__COOKIE_STRING__", json.dumps(cookies or "")
+        ).replace("__COOKIE_ENDPOINT__", json.dumps(endpoint)))
+    if not scripts:
+        return ""
+    attr = ' nonce="{}"'.format(nonce) if nonce else ""
+    return "".join(script.replace("<script>", "<script{}>".format(attr))
+                   for script in scripts)
 
 
 def decompress_body(body, encoding):
@@ -1008,22 +1241,28 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
                 'try{{history.replaceState(null,"",{path})}}catch(e){{}}'
                 '</script>'
             ).format(nonce=nonce_attr, path=json.dumps(target_path))
-            # Inject the path fix into <head> BEFORE any other scripts
-            # so the SPA router sees the correct pathname.
+            # The API routing patch and the cookie bridge have to be in
+            # place before the page's first script runs: the page reads
+            # its cookie while it initialises, and it may capture
+            # ``fetch`` at that moment too.
+            runtime = build_runtime_scripts(
+                nonce, target_origin_of(request_url), proxy_origin,
+                cookie_jar_string(target_origin_of(request_url)))
+            head_scripts = path_fix + runtime
+            # Inject the head scripts BEFORE any other scripts
+            # so the SPA router sees the correct pathname and the
+            # runtime patches are in place before the page's own code.
             lowered = text.lower()
             head_end = lowered.find("</head>")
             first_script = lowered.find("<script")
             if first_script != -1 and (head_end == -1 or first_script < head_end):
-                text = text[:first_script] + path_fix + text[first_script:]
+                text = text[:first_script] + head_scripts + text[first_script:]
             elif head_end != -1:
-                text = text[:head_end] + path_fix + text[head_end:]
+                text = text[:head_end] + head_scripts + text[head_end:]
             else:
-                text = path_fix + text
+                text = head_scripts + text
             # Inject the proof marker just before </body>.
-            target_parts = urlsplit(request_url)
-            target_origin = "{}://{}".format(
-                target_parts.scheme, target_parts.netloc)
-            script = build_injection_script(nonce, target_origin)
+            script = build_injection_script(nonce)
             lowered = text.lower()
             index = lowered.rfind("</body>")
             if index == -1:
@@ -1442,6 +1681,17 @@ class Handler(object):
                        ("Proxy fetch failed: {}\n".format(exc)).encode("utf-8"))
             return
 
+        # Record the upstream's cookies before the page is built, so the
+        # cookie bridge hands the page the session it has just been given.
+        set_cookies = [value for name, value in upstream_headers
+                       if name.lower() == "set-cookie"]
+        if set_cookies:
+            origin = target_origin_of(url)
+            jar = cookie_jar_store(origin, set_cookies)
+            # Names only -- a cookie value is a credential.
+            log("COOKIE_STORED origin={} names={}".format(
+                origin, ",".join(sorted(jar))))
+
         status, out_headers, out_body = transform_response(
             status, upstream_headers, upstream_body, url, self.proxy_origin()
         )
@@ -1488,6 +1738,20 @@ class Handler(object):
             params[unquote(key)] = unquote(value)
 
         if path == "/health":
+            self._send(200, "text/plain; charset=utf-8", b"ok\n")
+            return
+        if path == "/proxy-cookie":
+            # The cookie bridge in the page calls this when the page writes
+            # a cookie, so the proxy can hold it and send it upstream.
+            origin = params.get("target") or ""
+            raw = (request.body or b"").decode("utf-8", "replace").strip()
+            if not origin or "=" not in raw:
+                self._send(400, "text/plain; charset=utf-8", b"Bad request\n")
+                return
+            jar = cookie_jar_store(origin, [raw])
+            # Names only -- a cookie value is a credential.
+            log("COOKIE_WRITTEN origin={} names={}".format(
+                origin, ",".join(sorted(jar))))
             self._send(200, "text/plain; charset=utf-8", b"ok\n")
             return
         if path == "/proxy-status":
