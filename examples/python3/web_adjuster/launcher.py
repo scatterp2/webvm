@@ -1447,7 +1447,15 @@ def parse_request(sock, initial=b""):
 # Responses are written in chunks of this size.  A single large write to a
 # CheerpX socket can be truncated: the server logs SEND_OK but the browser
 # sees a broken body and reports "Failed to fetch".
+#
+# The chunk size and the pause between chunks are tunable at runtime
+# (see /proxy-tune).  They matter because CheerpX's socket does not apply
+# backpressure: it accepts bytes into a fixed buffer and drops whatever
+# does not fit, so a response that is larger than that buffer is
+# truncated in transit however it is written.  Writing in small pieces
+# with a pause in between gives the buffer time to drain.
 SEND_CHUNK = 16384
+SEND_DELAY = 0.0
 
 STATUS_TEXT = {    200: "OK", 204: "No Content", 206: "Partial Content",
     301: "Moved Permanently", 302: "Found", 303: "See Other",
@@ -1511,6 +1519,11 @@ def send_response(sock, status, headers, body, close=True, client=None):
                 if not written:
                     break
                 sent += written
+                if SEND_DELAY and sent < len(payload):
+                    # Give the socket's buffer time to drain towards the
+                    # client.  Without this the tail of a large response
+                    # is dropped on the floor.
+                    time.sleep(SEND_DELAY)
         finally:
             timer.cancel()
         log("SEND_OK status={} bytes={}".format(status, len(payload)))
@@ -1901,6 +1914,29 @@ class Handler(object):
         if path == "/proxy-log":
             self._send(200, "text/plain; charset=utf-8",
                        log_buffer_text().encode("utf-8"))
+            return
+        if path == "/proxy-tune":
+            # A diagnostic knob: how the response is written to the
+            # socket.  CheerpX's socket drops what does not fit its
+            # buffer, so the chunk size and the pause between chunks
+            # decide whether a large response survives the trip.
+            global SEND_CHUNK, SEND_DELAY
+            chunk = params.get("chunk")
+            delay = params.get("delay")
+            if chunk:
+                try:
+                    SEND_CHUNK = max(512, min(262144, int(chunk)))
+                except ValueError:
+                    pass
+            if delay:
+                try:
+                    SEND_DELAY = max(0.0, min(0.5, float(delay)))
+                except ValueError:
+                    pass
+            log("PROXY_TUNE chunk={} delay={}".format(SEND_CHUNK, SEND_DELAY))
+            self._send(200, "text/plain; charset=utf-8",
+                       "chunk={} delay={}\n".format(
+                           SEND_CHUNK, SEND_DELAY).encode("utf-8"))
             return
         if request.method == "OPTIONS":
             # CORS preflight for the WebVM page's cross-origin fetch.
