@@ -331,33 +331,96 @@ access working, and `http://` on an `http://` page is not mixed content.
 
 ### Goal 5: Make the proxied page actually *show* (IN PROGRESS)
 
-**Status:** The HTTPS proxy with a real LE cert is working. The proxy
-panel uses a `credentialless` iframe that navigates directly to the TLS
-proxy on `:28443`. Static assets are loaded from Kaggle's CDN via
-`_direct_url()` rewriting and through 302 redirects. Bot-detection
-headers are stripped and replaced with browser-like headers.
+**Status:** The HTTPS proxy with a real LE cert works. The panel renders
+the proxied page in a `credentialless` iframe that navigates directly to
+the TLS proxy on `:28443`. **`example.com` renders completely**, and
+Kaggle's SPA now reaches its own back end: the anti-forgery failure is
+gone and the calls come back with real payloads (99 KB of homepage data).
 
-**`example.com` renders perfectly in the panel** (verified visually: the
-book icon, the English text and all the translations). Kaggle's own SPA
-loads too — its CSS, its JavaScript and its images all arrive — but
-Kaggle answers the app's data call with a **reCAPTCHA enterprise
-challenge**, so the frame shows Kaggle's own crash page
-("Something went wrong and this page crashed!").
-
-**The remaining issues:**
+Six separate defects stood between the proxy and a working page. Each
+was found by measurement rather than by reading the code, and each one
+produced a symptom that looked like something else.
 
 | Part | Status |
 |---|---|
-| HTML delivered with correct title | **works** — "Kaggle: The World's AI Proving Ground" |
-| Proof script injection | **works** — `WEBVM_ADJUSTER_INJECTED` banner visible |
-| LE cert on `:28443` (no mixed content) | **works** — `TLS_PROXY_STARTED port=28443 cert=LE`, and the chain validates from an ordinary client: `https://webvm-proxy.tailf987e.ts.net:28443/health` → `200 ok` |
-| `credentialless` iframe for COEP | **works** — the frame renders the page, not a blank frame |
-| Static assets (JS, CSS, images) | **works** — `_direct_url()` rewrites them to absolute Kaggle URLs, and the catch-all 302-redirects them to the CDN; they arrive with `200` |
-| `history.replaceState` routing injection | **works** — verified byte-for-byte in the served HTML, injected before the first script and carrying the page's nonce: `<script nonce="…">try{history.replaceState(null,"","/")}catch(e){}</script>` |
-| The page's own API calls | **works** — the injected script patches `fetch` and `XMLHttpRequest.open` so absolute calls to the original site are rewritten to `/proxy/<encoded-url>` |
-| **`example.com` in the panel** | **works** — it renders completely |
-| **Kaggle's own data call** | **BROKEN** — Kaggle answers with a **reCAPTCHA enterprise challenge** (`https://www.google.com/recaptcha/enterprise/anchor` shows up in the network log), so the app renders its crash page. This is Kaggle's bot detection, not the proxy |
-| Fonts | **known limitation** — the stylesheet is rewritten to an absolute Kaggle CDN URL, so the font inside it resolves against the CDN and is fetched in CORS mode; Kaggle's CDN sends no `Access-Control-Allow-Origin` for fonts, so that one font fails with `ERR_FAILED`. Making it work means proxying the CSS **and** rewriting its `url(...)` references to the proxy, which risks CheerpX dropping the CSS transfer. Cosmetic only — the page still renders. Fonts are no longer CDN-redirected when they do come through the proxy. |
+| HTML delivered with correct title | **works** - "Kaggle: The World's AI Proving Ground" |
+| Proof script injection | **works** - `WEBVM_ADJUSTER_INJECTED` banner visible |
+| LE cert on `:28443` (no mixed content) | **works** - the chain validates from an ordinary client: `https://webvm-proxy.tailf987e.ts.net:28443/health` -> `200 ok` |
+| `credentialless` iframe for COEP | **works** - the frame renders the page, not a blank frame |
+| Static assets (JS, CSS, images) | **works** - `_direct_url()` rewrites them to absolute Kaggle URLs, and the catch-all 302-redirects them to the CDN; they arrive with `200` |
+| `history.replaceState` routing injection | **works** - verified byte-for-byte in the served HTML, injected before the first script and carrying the page's nonce |
+| The page's own API calls | **works** - the injected script patches `fetch` and `XMLHttpRequest.open`, and the calls reach Kaggle through the proxy and return real data |
+| The anti-forgery token | **works** - the proxy holds the upstream's cookies and hands them to the page, so Kaggle's `XSRF-TOKEN` is found |
+| **Kaggle's reCAPTCHA challenge** | **gone** - the proxy used to forge `sec-fetch-mode: navigate` on every request and drop the client hints; forwarding the browser's real values fixed it |
+| **Large responses** | **works** - the socket write is paced (see below) |
+| Fonts | **known limitation** - the stylesheet is rewritten to an absolute Kaggle CDN URL, so the font inside it resolves against the CDN and is fetched in CORS mode; Kaggle's CDN sends no `Access-Control-Allow-Origin` for fonts, so that one font fails with `ERR_FAILED`. Making it work means proxying the CSS **and** rewriting its `url(...)` references to the proxy. Cosmetic only - the page still renders. |
+
+#### The six defects, and how each was found
+
+**1. The client could not see any cookie.** A `credentialless` iframe has
+an ephemeral storage context: it neither sends cookies nor accepts them,
+and `document.cookie` is always empty inside it. Kaggle's client reads
+the token straight out of a cookie:
+
+```js
+var e = cookie.get("XSRF-TOKEN") || env.XSRF_COOKIE;
+if (!e) throw Error("An anti-forgery token could not be found.");
+```
+
+so it threw *before it ever sent a request* - which is why no API call
+ever appeared in the proxy's log. The proxy now holds the upstream
+session itself: it records the `Set-Cookie` headers it receives, replays
+them upstream, and gives the page a read/write view of the same jar
+through an injected cookie bridge.
+
+**2. Only the first injected script carried the CSP nonce.** A page's CSP
+often lists a nonce *and* `'unsafe-inline'`, and the `'unsafe-inline'` is
+ignored once a nonce is present - so an injected script without the
+nonce is silently blocked and never runs. The routing patch and the
+cookie bridge were both being blocked this way. Every injected script
+now carries the nonce.
+
+**3. The behavioural scripts ran too late.** They were injected before
+`</body>`, which is after the page's own JavaScript has already run and
+read its (empty) cookie. They are injected into `<head>` before the
+first script now.
+
+**4. The proxy forged the request headers.** It stripped the browser's
+`Sec-Fetch-*` and `Sec-CH-UA-*` headers and then forced
+`sec-fetch-mode: navigate` / `sec-fetch-dest: document` onto *every*
+upstream request, including the site's API calls. No browser ever sends
+`navigate` for an XHR, and omitting the client hints is itself a signal.
+The browser's real values are forwarded now, with `Sec-Fetch-Site`
+rewritten so the frame is not advertised. This is what removed the
+reCAPTCHA challenge: the proxy went from serving *"Checking your
+browser - reCAPTCHA"* (21598 bytes) to the real Kaggle page (8866 bytes).
+
+**5. Every response closed its connection.** The browser fires a page's
+API calls in parallel, and with `Connection: close` on every response it
+had to open a fresh connection for each - a fresh TLS handshake each
+time - and the calls it had queued on the connections it already had
+were dropped when the proxy closed them out from under it. Those calls
+failed with `ERR_EMPTY_RESPONSE`, which the page reported as "Failed to
+fetch". The proxy log showed 22 handshakes for 16 requests, 6 of those
+connections idle and timed out. Keep-alive is implemented now.
+
+**6. A large response was truncated in transit.** CheerpX's socket
+accepts bytes into a fixed buffer and drops the rest instead of applying
+backpressure, so a response larger than that buffer arrives short
+however it is written: the proxy logged `SEND_OK` for all 101252 bytes
+and the browser received 48058 and reported
+`net::ERR_SSL_PROTOCOL_ERROR`. Reproduced without the browser by
+fetching an 82978 byte file: 48058 bytes arrived and the client saw
+`SSLError [SSL: RECORD_LAYER_FAILURE]`. The write is now paced - 8192
+bytes every 20 ms - which was measured to be the rate the VM can carry:
+
+| chunk | pause | result |
+|---|---|---|
+| 4096 | 0 | truncated by 25250 bytes |
+| 4096 | 5 ms | truncated by 12962 bytes |
+| 4096 | 10 ms | **intact** |
+| 2048 | 5 ms | **intact** |
+| 8192 | 20 ms | **intact** |
 
 #### What was done (commits, most recent first)
 
@@ -846,6 +909,23 @@ The Kaggle API dataset/kernel RX/TX loop can transport files and command results
    upstream fetches go through a semaphore of **one**. A limit of four was
    not enough. The response cache absorbs the repeats that the serialised
    fetches would otherwise make slow.
+9. **A socket write drops what does not fit its buffer.** CheerpX's
+   socket accepts bytes into a fixed buffer and discards the rest
+   instead of applying backpressure, so a response larger than that
+   buffer arrives short however it is written - `sendall()` returns the
+   full count and `SEND_OK` is logged, but the peer receives a partial
+   body and a broken TLS stream (`net::ERR_SSL_PROTOCOL_ERROR`,
+   `SSLError [SSL: RECORD_LAYER_FAILURE]`). The write has to be paced:
+   8192 bytes every 20 ms was measured to be the rate the VM can carry,
+   and the client socket's `select()`-based timeout makes it worse, not
+   better, because Python implements a socket timeout with `select()`.
+10. **The VM's clock is not a safe cache-buster.** `?t=<time>` was
+   meant to make each runtime fetch a fresh URL, but the clock can
+   repeat between boots - then every boot asks for the same URL and the
+   CDN serves the copy it cached for the first one. The VM silently ran
+   the *previous* commit's `launcher.py` and a fix pushed just before
+   the reset never took effect. The cache-buster is random now, and the
+   launcher is fetched from a second CDN when the first one fails.
 
 ## How the WebVM reset is triggered and verified
 
