@@ -1454,8 +1454,13 @@ def parse_request(sock, initial=b""):
 # does not fit, so a response that is larger than that buffer is
 # truncated in transit however it is written.  Writing in small pieces
 # with a pause in between gives the buffer time to drain.
-SEND_CHUNK = 16384
-SEND_DELAY = 0.0
+#
+# Measured on the WebVM: the transfer only survives when the write rate
+# stays at or below about 410 KB/s (8192 bytes every 20 ms).  At twice
+# that rate the tail of the response is dropped and the client sees a
+# broken TLS stream.
+SEND_CHUNK = 8192
+SEND_DELAY = 0.02
 
 STATUS_TEXT = {    200: "OK", 204: "No Content", 206: "Partial Content",
     301: "Moved Permanently", 302: "Found", 303: "See Other",
