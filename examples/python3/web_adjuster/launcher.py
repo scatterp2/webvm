@@ -885,24 +885,88 @@ def _watchdog(sock, timeout):
     return timer
 
 
+def _server_handshake(ssl_context, client, timeout, peer="?"):
+    """Complete a server-side TLS handshake, with a deadline.
+
+    The handshake runs in a helper thread: under CheerpX it can hang,
+    and a thread parked in the handshake keeps the VM from running the
+    work it still has.  The socket is closed if the handshake misses
+    the deadline.
+    """
+    state = {}
+
+    def _work():
+        try:
+            state["sock"] = ssl_context.wrap_socket(client, server_side=True)
+        except Exception as exc:
+            state["error"] = exc
+
+    worker = threading.Thread(target=_work, daemon=True,
+                              name="tls-handshake")
+    worker.start()
+    worker.join(timeout)
+    if "sock" not in state:
+        log("TLS_HANDSHAKE_TIMEOUT peer={} timeout={}s".format(peer, timeout))
+        _close_quietly(client)
+        raise OSError("TLS handshake timed out")
+    if "error" in state:
+        raise state["error"]
+    return state["sock"]
+
+
 def _open_upstream(scheme, host, port, timeout):
-    """Open a socket to the upstream and do the TLS handshake if needed."""
+    """Open a socket to the upstream and do the TLS handshake if needed.
+
+    The connect and the TLS handshake run in a helper thread and are
+    waited for with a deadline.
+
+    Under CheerpX a TLS handshake can hang: one to
+    storage.googleapis.com never finished, and the thread parked in it
+    held the upstream semaphore - whose limit is one - so every later
+    request queued behind it and never ran.  That is the wedge: the
+    proxy kept answering /health while every page that needed an
+    upstream fetch hung.  The watchdog cannot rescue it, because a
+    thread parked in the handshake does not let the watchdog run.
+
+    A handshake that misses the deadline is abandoned.  The thread
+    closes its socket if it ever comes back.
+    """
     import socket as _socket
 
-    raw = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    raw.settimeout(None)          # blocking: select() is unavailable
-    timer = _watchdog(raw, timeout)
-    try:
-        raw.connect((host, port))
-        log("UPSTREAM_PHASE url_connect host={} port={} ok".format(host, port))
-        if scheme == "https":
-            raw = _ssl_context().wrap_socket(raw, server_hostname=host)
-            log("UPSTREAM_PHASE tls_done host={} port={}".format(host, port))
-    except Exception:
-        timer.cancel()
-        _close_quietly(raw)
-        raise
-    return raw, timer
+    state = {}
+
+    def _work():
+        raw = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        raw.settimeout(None)          # blocking: select() is unavailable
+        try:
+            raw.connect((host, port))
+            log("UPSTREAM_PHASE url_connect host={} port={} ok".format(host, port))
+            if scheme == "https":
+                raw = _ssl_context().wrap_socket(raw, server_hostname=host)
+                log("UPSTREAM_PHASE tls_done host={} port={}".format(host, port))
+            if state.get("abandoned"):
+                _close_quietly(raw)
+                return
+            state["sock"] = raw
+        except Exception as exc:
+            state["error"] = exc
+            _close_quietly(raw)
+
+    worker = threading.Thread(target=_work, daemon=True,
+                              name="upstream-open")
+    worker.start()
+    worker.join(timeout)
+    if "sock" not in state:
+        state["abandoned"] = True
+        if "error" in state:
+            raise state["error"]
+        log("UPSTREAM_OPEN_TIMEOUT host={} port={} timeout={}s".format(
+            host, port, timeout))
+        raise OSError("upstream connect/handshake timed out")
+    if "error" in state:
+        raise state["error"]
+    # The watchdog covers the request phase from here on.
+    return state["sock"], _watchdog(state["sock"], timeout)
 
 
 def build_upstream_headers(url, method, headers, target_origin=None):
@@ -2102,8 +2166,12 @@ class WrapperServer(object):
         try:
             if self.ssl_context is not None:
                 # The handshake happens in this thread so that one slow
-                # client cannot block the accept loop.
-                client = self.ssl_context.wrap_socket(client, server_side=True)
+                # client cannot block the accept loop -- but a handshake
+                # that never finishes would tie the thread up for ever,
+                # and under CheerpX it would keep the VM from running
+                # other work.  It gets a deadline.
+                client = _server_handshake(self.ssl_context, client,
+                                           CLIENT_READ_TIMEOUT, addr[0])
                 log("TLS_HANDSHAKE_OK peer={} ms={}".format(
                     addr[0], int((time.time() - started) * 1000)))
             handler = self.handler_class(client, addr, self)
