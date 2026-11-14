@@ -19,6 +19,22 @@ import sys
 
 PI_IMPL_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/pi_impl.py"
 
+
+def cache_buster():
+    """A value that changes on every call, even when the clock does not.
+
+    The cache-buster has to be unpredictable rather than clock-based: the
+    VM's clock can repeat between boots, and then "?t=<time>" is the same
+    URL every time -- so the CDN serves the copy it cached for the first
+    boot and the VM silently runs the code from an older commit.  That is
+    exactly what happened: a reset ran the previous commit's launcher.py
+    and the fix that was pushed just before it never took effect.
+    """
+    try:
+        return os.urandom(8).hex()
+    except Exception:
+        return "{}".format(time.time_ns())
+
 def start_proxy():
     """Start the HTTP proxy.
 
@@ -44,7 +60,7 @@ def load_pi_impl():
     for attempt in range(1, 4):
         try:
             request = Request(
-                PI_IMPL_URL + "?t=" + str(time.time_ns()),
+                PI_IMPL_URL + "?t=" + cache_buster(),
                 headers={
                     "Cache-Control": "no-cache",
                     "User-Agent": "webvm-kaggle-submitter/1.0",

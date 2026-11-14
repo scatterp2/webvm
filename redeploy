@@ -72,3 +72,4 @@ Goal 5: fallback to on-disk launcher.py when GitHub fetch fails; direct CDN load
 Goal 5: skip CORS fetch in proxy panel; navigate iframe directly
 Goal 5: add credentialless to proxy iframe for COEP compatibility
 serialise tls handshakes and drop the aborted health probe
+Fix the runtime cache-buster so a reset cannot run a stale commit.

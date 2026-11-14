@@ -287,7 +287,7 @@ def fetch_runtime_source():
     for attempt in range(1, 11):
         try:
             request = Request(
-                RUNTIME_URL + "?t=" + str(int(time.time() * 1000)),
+                RUNTIME_URL + "?t=" + cache_buster(),
                 headers={
                     "Cache-Control": "no-cache",
                     "User-Agent": "webvm-qwen-experiment-submitter/1.0",
@@ -955,7 +955,7 @@ def run_io_loop_proof():
         for attempt in range(1, 11):
             try:
                 request = Request(
-                    base + filename + "?t=" + str(int(time.time() * 1000)),
+                    base + filename + "?t=" + cache_buster(),
                     headers={"Cache-Control": "no-cache", "User-Agent": "webvm-kaggle-io-loop/1.0"},
                 )
                 with urlopen(request, timeout=25) as response:
@@ -1342,6 +1342,29 @@ def _kill_stale_launcher():
 
 LAUNCHER_URL = "https://raw.githubusercontent.com/scatterp2/webvm/main/examples/python3/web_adjuster/launcher.py"
 
+# A second mirror, on a different CDN.  If the first one is unreachable
+# or rate-limited, the launcher still comes from the current commit
+# rather than from the stale copy in the disk image.
+LAUNCHER_URL_MIRROR = ("https://cdn.jsdelivr.net/gh/scatterp2/webvm@main/"
+                       "examples/python3/web_adjuster/launcher.py")
+
+
+def cache_buster():
+    """A value that changes on every call, even when the clock does not.
+
+    The cache-buster has to be unpredictable rather than clock-based: the
+    VM's clock can repeat between boots, and then "?t=<time>" is the same
+    URL every time -- so the CDN serves the copy it cached for the first
+    boot and the VM silently runs the code from an older commit.  That is
+    exactly what happened: a reset ran the previous commit's launcher.py
+    and the fix pushed just before it never took effect.
+    """
+    try:
+        import os
+        return os.urandom(8).hex()
+    except Exception:
+        return "{}".format(time.time_ns())
+
 
 WRAPPER_PORT_INPROC = 28082
 
@@ -1581,17 +1604,21 @@ def start_web_adjuster_sidecar():
     from urllib.error import HTTPError, URLError
 
     # Fetch launcher.py from GitHub main
-    try:
-        req = Request(
-            LAUNCHER_URL + "?t=" + str(int(time.time() * 1000)),
-            headers={"Cache-Control": "no-cache", "User-Agent": "webvm-launcher/1.0"},
-        )
-        with urlopen(req, timeout=20) as resp:
-            launcher_source = resp.read().decode("utf-8")
-        print("LAUNCHER_FETCHED source=main characters={}".format(len(launcher_source)), flush=True)
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        print("LAUNCHER_FETCH_FAILED error={}: {}".format(
-            type(exc).__name__, exc), flush=True)
+    launcher_source = None
+    for base_url in (LAUNCHER_URL, LAUNCHER_URL_MIRROR):
+        try:
+            req = Request(
+                base_url + "?t=" + cache_buster(),
+                headers={"Cache-Control": "no-cache", "User-Agent": "webvm-launcher/1.0"},
+            )
+            with urlopen(req, timeout=20) as resp:
+                launcher_source = resp.read().decode("utf-8")
+            print("LAUNCHER_FETCHED source=main characters={}".format(len(launcher_source)), flush=True)
+            break
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            print("LAUNCHER_FETCH_FAILED url={} error={}: {}".format(
+                base_url, type(exc).__name__, exc), flush=True)
+    if launcher_source is None:
         fallback_path = Path(__file__).resolve().parent / "web_adjuster" / "launcher.py"
         if fallback_path.is_file():
             try:
@@ -1702,7 +1729,7 @@ def _start_tls_wrapper(launcher_ns):
         destination = target_dir / name
         try:
             req = Request(
-                TLS_BASE_URL + name + "?t=" + str(int(time.time() * 1000)),
+                TLS_BASE_URL + name + "?t=" + cache_buster(),
                 headers={"Cache-Control": "no-cache",
                          "User-Agent": "webvm-tls/1.0"},
             )
@@ -1907,7 +1934,7 @@ def main():
         from urllib.error import HTTPError, URLError
         try:
             req = Request(
-                telnet_url + "?t=" + str(int(time.time() * 1000)),
+                telnet_url + "?t=" + cache_buster(),
                 headers={"Cache-Control": "no-cache", "User-Agent": "webvm-telnet/1.0"},
             )
             with urlopen(req, timeout=20) as resp:
