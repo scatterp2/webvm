@@ -39,6 +39,7 @@ Header handling on proxied responses:
 """
 from __future__ import annotations
 
+import collections
 import json
 import re
 import socket
@@ -143,14 +144,17 @@ _API_ROUTING_SCRIPT = (
     "return '/proxy/'+encodeURIComponent(u);"
     "}catch(e){return u;}}"
     "var f=window.fetch;"
+    # The native fetch has to be called with the window as its receiver.
+    # Calling it with an undefined "this" (which is what a module gets)
+    # makes it throw "TypeError: Failed to fetch".
     "window.fetch=function(i,o){try{"
     "if(typeof i==='string')i=P(i);"
     "else if(i&&i.url)i=new Request(P(i.url),i);"
     "}catch(e){}"
-    "return f.call(this,i,o);};"
+    "return f.call(window,i,o);};"
     "var x=XMLHttpRequest.prototype.open;"
     "XMLHttpRequest.prototype.open=function(m,u){try{u=P(u);}catch(e){}"
-    "return x.call(this,m,u);};"
+    "return x.call(this||window,m,u);};"
     "}catch(e){}})();"
     "</script>"
 )
@@ -203,6 +207,9 @@ _state = {
     "requests": 0,
     "upstream_errors": 0,
 }
+
+# A ring buffer of recent log lines, for /proxy-log.
+_LOG_BUFFER = collections.deque(maxlen=1000)
 
 # --------------------------------------------------------------------------
 # Cookie jar
@@ -310,6 +317,18 @@ def target_origin_of(url):
 
 def log(message: str) -> None:
     print("[WEB_ADJUSTER] " + message, flush=True)
+    _LOG_BUFFER.append(message)
+
+
+def log_buffer_text(limit=400):
+    """The last few log lines, for diagnostics.
+
+    The WebVM's terminal is a small scrolling window, so the interesting
+    lines are often gone by the time something goes wrong.  This keeps a
+    ring buffer so /proxy-log can hand them over.
+    """
+    lines = list(_LOG_BUFFER)[-limit:]
+    return "\n".join(lines) + "\n"
 
 
 def set_state(**kwargs) -> None:
@@ -1794,6 +1813,10 @@ class Handler(object):
             payload["forward_port"] = ADJUSTER_PORT
             self._send_json(200, payload)
             return
+        if path == "/proxy-log":
+            self._send(200, "text/plain; charset=utf-8",
+                       log_buffer_text().encode("utf-8"))
+            return
         if request.method == "OPTIONS":
             # CORS preflight for the WebVM page's cross-origin fetch.
             self._send(204, "text/plain; charset=utf-8", b"", extra=[
@@ -1949,16 +1972,19 @@ class WrapperServer(object):
             ).start()
 
     def _handle_client(self, client, addr):
+        started = time.time()
         try:
             if self.ssl_context is not None:
                 # The handshake happens in this thread so that one slow
                 # client cannot block the accept loop.
                 client = self.ssl_context.wrap_socket(client, server_side=True)
+                log("TLS_HANDSHAKE_OK peer={} ms={}".format(
+                    addr[0], int((time.time() - started) * 1000)))
             handler = self.handler_class(client, addr, self)
             handler.handle()
         except Exception as exc:
-            log("CONNECTION_ERROR error={}: {}".format(
-                type(exc).__name__, str(exc)[:200]))
+            log("CONNECTION_ERROR peer={} error={}: {}".format(
+                addr[0], type(exc).__name__, str(exc)[:200]))
         finally:
             try:
                 client.close()
