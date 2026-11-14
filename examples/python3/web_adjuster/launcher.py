@@ -1333,10 +1333,21 @@ class HttpError(Exception):
 # turns that from a permanent hang into a failed connection.
 CLIENT_READ_TIMEOUT = 15
 CLIENT_WRITE_TIMEOUT = 30
+# How long a keep-alive connection waits for the next request.  It has to
+# outlast the browser's own queueing: the page fires its API calls in
+# parallel, and the ones that wait for a free connection are the ones
+# that must not be dropped.
+KEEPALIVE_TIMEOUT = 45
 
 
-def recv_until(sock, terminator, limit=65536):
-    data = b""
+def recv_until(sock, terminator, limit=65536, initial=b""):
+    """Read until ``terminator`` appears.  Returns (data, leftover).
+
+    The leftover matters on a keep-alive connection: one read can pick up
+    the end of the headers, the body and the start of the next request,
+    and those bytes must not be thrown away.
+    """
+    data = initial
     while terminator not in data:
         if len(data) > limit:
             raise HttpError("header section too large")
@@ -1347,11 +1358,16 @@ def recv_until(sock, terminator, limit=65536):
         if not chunk:
             break
         data += chunk
-    return data
+    if terminator in data:
+        head, _, rest = data.partition(terminator)
+        return head + terminator, rest
+    return data, b""
 
 
-def recv_exactly(sock, count):
-    data = b""
+def recv_exactly(sock, count, initial=b""):
+    """Read exactly ``count`` bytes.  Returns (data, leftover)."""
+    data = initial[:count]
+    rest = initial[count:]
     while len(data) < count:
         try:
             chunk = sock.recv(min(65536, count - len(data)))
@@ -1360,7 +1376,7 @@ def recv_exactly(sock, count):
         if not chunk:
             break
         data += chunk
-    return data
+    return data, rest
 
 
 class Request(object):
@@ -1378,8 +1394,9 @@ class Request(object):
         return default
 
 
-def parse_request(sock):
-    raw = recv_until(sock, b"\r\n\r\n")
+def parse_request(sock, initial=b""):
+    """Parse one request.  Returns (request, leftover_bytes)."""
+    raw, leftover = recv_until(sock, b"\r\n\r\n", initial=initial)
     if not raw:
         raise HttpError("empty request")
     head, _, rest = raw.partition(b"\r\n\r\n")
@@ -1418,8 +1435,13 @@ def parse_request(sock):
         except ValueError:
             length = 0
         if length > 0:
-            body = recv_exactly(sock, min(length, MAX_BODY))
-    return Request(method, target, version, headers, body)
+            body, leftover = recv_exactly(sock, min(length, MAX_BODY),
+                                         initial=leftover + rest)
+        else:
+            leftover += rest
+    else:
+        leftover += rest
+    return Request(method, target, version, headers, body), leftover
 
 
 # Responses are written in chunks of this size.  A single large write to a
@@ -1485,12 +1507,13 @@ def send_response(sock, status, headers, body, close=True, client=None):
         # Let the client read the response before the socket goes away.
         # Closing straight after a large write truncates it: the browser
         # then reports "Failed to fetch" even though the server logged
-        # SEND_OK.
-        try:
-            sock.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
-        time.sleep(0.4)
+        # SEND_OK.  A keep-alive connection stays open instead.
+        if close:
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            time.sleep(0.4)
         return True
     except OSError as exc:
         log("SEND_FAILED status={} bytes={} client={} error={}: {}".format(
@@ -1692,6 +1715,29 @@ class Handler(object):
         scheme = "https" if getattr(self.server, "is_tls", False) else "http"
         return "{}://{}".format(scheme, host)
 
+    def keep_alive(self):
+        """Whether this connection may carry another request.
+
+        HTTP/1.1 keeps the connection open unless the client says
+        otherwise.  Honouring that matters here: the browser fires a
+        page's API calls in parallel, and if every response closes the
+        connection the browser has to open a fresh one for each -- which
+        means a fresh TLS handshake each time (expensive in the VM) and a
+        queue of requests waiting on connections the server then closes
+        out from under them.  The page's calls failed with
+        ERR_EMPTY_RESPONSE for exactly that reason.
+        """
+        request = self.parsed
+        if request is None:
+            return False
+        token = (request.header("connection") or "").lower()
+        if "close" in token:
+            return False
+        if (request.version or "HTTP/1.1").upper() == "HTTP/1.0" \
+                and "keep-alive" not in token:
+            return False
+        return True
+
     def _send(self, status, content_type, body, extra=None):
         headers = [
             ("Content-Type", content_type),
@@ -1706,6 +1752,7 @@ class Handler(object):
         if extra:
             headers.extend(extra)
         send_response(self.request, status, headers, body,
+                      close=not self.keep_alive(),
                       client=self.client_label())
 
     def _send_json(self, status, payload):
@@ -1749,24 +1796,45 @@ class Handler(object):
         )
         log("PROXIED status={} url={} bytes={}".format(status, url, len(out_body)))
         send_response(self.request, status, out_headers, out_body,
+                      close=not self.keep_alive(),
                       client=self.client_label())
 
     # -- dispatch --------------------------------------------------------
     def handle(self):
-        try:
-            request = parse_request(self.request)
-        except HttpError as exc:
-            log("BAD_REQUEST error={}".format(exc))
-            return
-        except OSError as exc:
-            log("READ_FAILED error={}: {}".format(type(exc).__name__, exc))
-            return
-        self.parsed = request
+        # A keep-alive connection carries one request after another.
+        leftover = b""
+        first = True
+        while True:
+            try:
+                if first:
+                    first = False
+                else:
+                    try:
+                        self.request.settimeout(KEEPALIVE_TIMEOUT)
+                    except OSError:
+                        pass
+                request, leftover = parse_request(self.request, leftover)
+            except HttpError as exc:
+                log("BAD_REQUEST error={}".format(exc))
+                return
+            except OSError as exc:
+                log("READ_FAILED error={}: {}".format(type(exc).__name__, exc))
+                return
+            self.parsed = request
 
-        try:
-            self.dispatch(request)
-        except Exception as exc:
-            log("HANDLER_ERROR error={}: {}".format(type(exc).__name__, str(exc)[:300]))
+            try:
+                self.dispatch(request)
+            except Exception as exc:
+                log("HANDLER_ERROR error={}: {}".format(
+                    type(exc).__name__, str(exc)[:300]))
+                return
+
+            if not self.keep_alive():
+                return
+            # The next request has to arrive before the socket times out.
+            # The timeout is what stops an idle connection from holding a
+            # thread (and, under CheerpX, the whole VM) indefinitely.
+            log("KEEP_ALIVE waiting for the next request")
 
     def dispatch(self, request):
         target = request.target
