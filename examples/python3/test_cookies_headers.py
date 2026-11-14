@@ -52,8 +52,8 @@ script = launcher.build_runtime_scripts(
     "NONCE", "https://www.kaggle.com", "https://proxy.example:28443",
     launcher.cookie_jar_string("https://www.kaggle.com"))
 print("    script tags:", script.count("<script"))
-check(script.count("<script") == 2, "two scripts (routing patch + cookie bridge)")
-check(script.count('nonce="NONCE"') == 2, "both scripts carry the CSP nonce")
+check(script.count("<script") == 3, "three scripts (routing patch + cookie bridge + exec)")
+check(script.count('nonce="NONCE"') == 3, "all three scripts carry the CSP nonce")
 check("XSRF-TOKEN=abc123" in script, "the bridge hands the page the token")
 check("/proxy-cookie?target=" in script, "the bridge has somewhere to write")
 check("XMLHttpRequest.prototype.open" in script, "the routing patch is present")

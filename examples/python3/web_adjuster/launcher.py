@@ -124,6 +124,128 @@ _COOKIE_BRIDGE_SCRIPT = (
     "</script>"
 )
 
+# --------------------------------------------------------------------------
+# Action channel
+# --------------------------------------------------------------------------
+#
+# The proxied page runs in a cross-origin iframe, so the page that embeds
+# it cannot script it.  The injected script is the only way in, so it
+# polls the proxy for an action and runs it.  That gives whoever can
+# reach the proxy a way to drive the page -- click a button, fill a
+# field, read what the page says -- without a browser in the loop.
+#
+# The vocabulary is deliberately narrow, and it is implemented inside the
+# injected script rather than by evaluating whatever the caller sends:
+# the proxy is reachable over the tailnet, and "click this element" is a
+# much smaller thing to hand out than "run this code".
+
+_ACTIONS = {}
+_ACTIONS_LOCK = threading.Lock()
+
+
+def _action_slot(origin):
+    with _ACTIONS_LOCK:
+        return _ACTIONS.setdefault(origin, {"pending": [], "result": ""})
+
+
+def _action_push(origin, action):
+    with _ACTIONS_LOCK:
+        slot = _ACTIONS.setdefault(origin, {"pending": [], "result": ""})
+        slot["pending"].append(action)
+        log("ACTION_QUEUED origin={} action={}".format(origin, action[:120]))
+
+
+def _action_pop(origin):
+    with _ACTIONS_LOCK:
+        slot = _ACTIONS.setdefault(origin, {"pending": [], "result": ""})
+        if not slot["pending"]:
+            return ""
+        return slot["pending"].pop(0)
+
+
+def _action_result(origin, result):
+    with _ACTIONS_LOCK:
+        slot = _ACTIONS.setdefault(origin, {"pending": [], "result": ""})
+        slot["result"] = result
+    log("ACTION_RESULT origin={} result={}".format(origin, result[:200]))
+
+
+def _action_result_get(origin):
+    with _ACTIONS_LOCK:
+        slot = _ACTIONS.setdefault(origin, {"pending": [], "result": ""})
+        return slot["result"]
+
+
+def build_exec_script(target_origin):
+    """The script that lets the proxy drive the page it serves.
+
+    It polls the proxy for an action, runs it and posts the result
+    back.  The actions are a fixed vocabulary -- click, type, snapshot,
+    text, url, scroll -- so no caller-supplied code is ever evaluated.
+    """
+    if not target_origin:
+        return ""
+    target = json.dumps(target_origin)
+    return (
+        "<script>(function(){try{"
+        "var T=" + target + ";"
+        "var NEXT='/proxy-exec/next?target='+encodeURIComponent(T);"
+        "var RESULT='/proxy-exec/result?target='+encodeURIComponent(T);"
+        "function find(a){"
+        "if(a.selector){try{var e=document.querySelector(a.selector);"
+        "if(e)return e;}catch(x){}}"
+        "if(a.text){"
+        "var all=document.querySelectorAll("
+        "'button,a,input,textarea,select,[role=button],[role=link]');"
+        "for(var i=0;i<all.length;i++){"
+        "var t=(all[i].innerText||all[i].value||"
+        "all[i].getAttribute('aria-label')||'').trim();"
+        "if(t===a.text||t.indexOf(a.text)>=0)return all[i];}}"
+        "return null;}"
+        "function act(a){try{"
+        "if(a.type==='click'){"
+        "var e=find(a);if(!e)return 'NOT_FOUND';"
+        "try{e.scrollIntoView();}catch(x){}"
+        "e.click();return 'CLICKED';}"
+        "if(a.type==='type'){"
+        "var e=find(a);if(!e)return 'NOT_FOUND';"
+        "try{e.focus();}catch(x){}"
+        "e.value=a.text||'';"
+        "try{e.dispatchEvent(new Event('input',{bubbles:true}));}catch(x){}"
+        "try{e.dispatchEvent(new Event('change',{bubbles:true}));}catch(x){}"
+        "return 'TYPED';}"
+        "if(a.type==='snapshot'){"
+        "var out=[];"
+        "var all=document.querySelectorAll("
+        "'button,a,input,textarea,[role=button],[role=link]');"
+        "for(var i=0;i<all.length&&i<50;i++){"
+        "var el=all[i];"
+        "var t=(el.innerText||el.value||"
+        "el.getAttribute('aria-label')||'').trim().replace(/\\s+/g,' ').slice(0,60);"
+        "out.push(el.tagName+' | '+(el.id||'')+' | '+t);}"
+        "return out.join('\\n');}"
+        "if(a.type==='text')return (document.body.innerText||'').trim().slice(0,4000);"
+        "if(a.type==='url')return location.href;"
+        "if(a.type==='scroll'){window.scrollTo(0,a.y||0);return 'SCROLLED';}"
+        "return 'UNKNOWN_ACTION';}catch(e){return 'ERR '+String(e);}}"
+        "function post(r){try{"
+        "fetch(RESULT,{method:'POST',headers:{'Content-Type':'text/plain'},body:r});"
+        "}catch(e){}}"
+        "function poll(){"
+        "fetch(NEXT).then(function(r){return r.ok?r.text():'';})"
+        ".then(function(t){"
+        "if(t){var res='';try{var a=JSON.parse(t);res=act(a);}catch(e){res='BAD_JSON';}"
+        "post(JSON.stringify({action:t,result:res}));}})"
+        ".catch(function(){})"
+        ".then(function(){setTimeout(poll,700);});}"
+        "function start(){setTimeout(poll,300);}"
+        "if(document.readyState==='complete')start();"
+        "else window.addEventListener('load',start);"
+        "}catch(e){}})();"
+        "</script>"
+    )
+
+
 # Routes the page's own API calls back through the proxy.
 #
 # The document is served from the proxy's origin, but the page's JavaScript
@@ -1222,6 +1344,9 @@ def build_runtime_scripts(nonce=None, target_origin=None, proxy_origin=None,
         scripts.append(_COOKIE_BRIDGE_SCRIPT.replace(
             "__COOKIE_STRING__", json.dumps(cookies or "")
         ).replace("__COOKIE_ENDPOINT__", endpoint))
+    exec_script = build_exec_script(target_origin)
+    if exec_script:
+        scripts.append(exec_script)
     if not scripts:
         return ""
     attr = ' nonce="{}"'.format(nonce) if nonce else ""
@@ -1983,6 +2108,36 @@ class Handler(object):
         if path == "/proxy-log":
             self._send(200, "text/plain; charset=utf-8",
                        log_buffer_text().encode("utf-8"))
+            return
+        if path == "/proxy-exec/next":
+            # The page polls this for an action to run.
+            origin = params.get("target") or ""
+            action = _action_pop(origin)
+            if not action:
+                self._send(204, "text/plain; charset=utf-8", b"")
+                return
+            self._send(200, "application/json; charset=utf-8",
+                       action.encode("utf-8"))
+            return
+        if path == "/proxy-exec/result":
+            origin = params.get("target") or ""
+            if request.method == "POST":
+                _action_result(origin, (request.body or b"").decode(
+                    "utf-8", "replace"))
+                self._send(200, "text/plain; charset=utf-8", b"ok\n")
+                return
+            self._send(200, "application/json; charset=utf-8",
+                       _action_result_get(origin).encode("utf-8"))
+            return
+        if path == "/proxy-exec":
+            # Queue an action for the page to run.
+            origin = params.get("target") or ""
+            body = (request.body or b"").decode("utf-8", "replace").strip()
+            if not origin or not body:
+                self._send(400, "text/plain; charset=utf-8", b"Bad request\n")
+                return
+            _action_push(origin, body)
+            self._send(200, "text/plain; charset=utf-8", b"queued\n")
             return
         if path == "/proxy-tune":
             # A diagnostic knob: how the response is written to the
