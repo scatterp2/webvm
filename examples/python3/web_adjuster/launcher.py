@@ -1491,18 +1491,28 @@ def send_response(sock, status, headers, body, close=True, client=None):
         # though the server logged SEND_OK.  The self-contained document is
         # a few hundred kilobytes, so this matters.
         #
-        # The write is bounded too: a client that stops reading (the
-        # browser replacing a frame mid-load) would otherwise park this
-        # thread in sendall() and stall the whole VM.
+        # The write must not have a socket timeout on it.  Python
+        # implements a socket timeout with select(), CheerpX does not
+        # implement select() properly, and the write comes out truncated:
+        # the browser receives a broken TLS stream and reports
+        # ERR_SSL_PROTOCOL_ERROR on a response the proxy logged as sent
+        # in full.  A watchdog bounds the write instead -- the same
+        # mechanism the upstream fetch uses.
         try:
-            sock.settimeout(CLIENT_WRITE_TIMEOUT)
+            sock.settimeout(None)
         except OSError:
             pass
-        sent = 0
-        while sent < len(payload):
-            chunk = payload[sent:sent + SEND_CHUNK]
-            sock.sendall(chunk)
-            sent += len(chunk)
+        timer = _watchdog(sock, CLIENT_WRITE_TIMEOUT)
+        try:
+            sent = 0
+            while sent < len(payload):
+                chunk = payload[sent:sent + SEND_CHUNK]
+                written = sock.send(chunk)
+                if not written:
+                    break
+                sent += written
+        finally:
+            timer.cancel()
         log("SEND_OK status={} bytes={}".format(status, len(payload)))
         # Let the client read the response before the socket goes away.
         # Closing straight after a large write truncates it: the browser
@@ -1805,15 +1815,22 @@ class Handler(object):
         leftover = b""
         first = True
         while True:
+            timeout = CLIENT_READ_TIMEOUT if first else KEEPALIVE_TIMEOUT
+            first = False
             try:
-                if first:
-                    first = False
-                else:
+                if timeout != CLIENT_READ_TIMEOUT:
                     try:
-                        self.request.settimeout(KEEPALIVE_TIMEOUT)
+                        self.request.settimeout(timeout)
                     except OSError:
                         pass
-                request, leftover = parse_request(self.request, leftover)
+                # The socket timeout is not reliable here (Python implements
+                # it with select(), which CheerpX does not implement), so
+                # the watchdog is what actually bounds the wait.
+                timer = _watchdog(self.request, timeout)
+                try:
+                    request, leftover = parse_request(self.request, leftover)
+                finally:
+                    timer.cancel()
             except HttpError as exc:
                 log("BAD_REQUEST error={}".format(exc))
                 return
