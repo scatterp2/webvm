@@ -32,17 +32,39 @@ jobs:
               "GPU_PREFLIGHT_BEGIN",
               "GPU_PREFLIGHT_PASSED",
               "GPU_PREFLIGHT_CLASSIFICATION",
+              "GPU_DEVICE_NODES",
+              "GPU_PROC_DRIVER_EXISTS",
               "TORCH_DIAGNOSTIC",
+              "TORCH_COMPILED_CUDA",
+              "TORCH_CUDA_AVAILABLE",
+              "TORCH_CUDA_DEVICE_COUNT",
+              "TORCH_BUILD_CONFIG",
               "KAGGLE_DIAGNOSTIC_FILE",
+              "GPU_CHECK",
+              "KERNEL_SUBMITTED",
+              "STATUS_POLL",
+              "OUTPUT_DOWNLOADED",
+              "OUTPUT_VALIDATION_PASSED",
+              "RUN_COMPLETE",
+              "RUN_STARTED",
+              "RUN_FINISHED",
+              "RUN_FAILED",
+              "KERNEL_VERSION",
+              "FEEDBACK_UPLOAD_FAILED",
+              "FEEDBACK_UPLOAD_OK",
+              "FEEDBACK_DISABLED",
               "GPU_DIAGNOSTIC_DEFERRED",
               "WEB_ADJUSTER_ONLY_MODE",
               "Kaggle code disabled for proxy testing",
               "KAGGLE_DIAGNOSTICS_BEGIN",
           )
           SAFE_EVIDENCE = re.compile(
-              r"GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|TORCH_DIAGNOSTIC|"
-              r"KAGGLE_DIAGNOSTIC_FILE|nvidia-smi|/dev/nvidia|"
+              r"GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|GPU_DEVICE_NODES|GPU_PROC_DRIVER_EXISTS|GPU_ENV|"
+              r"TORCH_DIAGNOSTIC(?:_FAILED)?|TORCH_COMPILED_CUDA|TORCH_CUDA_AVAILABLE|TORCH_CUDA_DEVICE_COUNT|TORCH_BUILD_CONFIG|"
+              r"GPU_DEVICE|GPU_CHECK|KAGGLE_DIAGNOSTIC_FILE|nvidia-smi|/dev/nvidia|/proc/driver/nvidia|"
               r"cuda\.is_available|torch\.version\.cuda|CUDA availability|CUDA build|"
+              r"KERNEL_SUBMITTED|STATUS_POLL|OUTPUT_DOWNLOADED|OUTPUT_VALIDATION_PASSED|RUN_COMPLETE|KERNEL_VERSION|KERNEL_ID|kernel[_ -]?version|version[_ -]?number|"
+              r"RUN_STARTED|RUN_FINISHED|RUN_FAILED|DEPENDENCIES_FAILED|INFERENCE_FAILED|FEEDBACK_UPLOAD_(?:FAILED|OK)|FEEDBACK_DISABLED|"
               r"GPU_DIAGNOSTIC_DEFERRED|WEB_ADJUSTER_ONLY_MODE|Kaggle code disabled for proxy testing|"
               r"KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|"
               r"Traceback|RuntimeError|ImportError|ModuleNotFoundError|FileNotFoundError|"
