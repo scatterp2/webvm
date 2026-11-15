@@ -993,6 +993,13 @@ def _close_quietly(sock):
         pass
 
 
+class _NullTimer(object):
+    """Stand-in for a watchdog that could not be started."""
+
+    def cancel(self):
+        pass
+
+
 def _watchdog(sock, timeout):
     """Close a socket after `timeout` seconds.
 
@@ -1000,15 +1007,71 @@ def _watchdog(sock, timeout):
     implements socket timeouts with select().  A timeout therefore never
     fires here and the read blocks forever.  A watchdog thread that closes
     the socket is the only reliable way to bound a network operation.
+
+    Starting the timer is allowed to fail.  Under CheerpX the emulated
+    clock occasionally makes the timer machinery raise OverflowError
+    ("timestamp too large to convert to C _PyTime_t"); a watchdog is a
+    safety net, not a requirement, so a failure here must never take the
+    response down with it.
     """
     def _kill():
         log("WATCHDOG_FIRED timeout={}s".format(timeout))
         _close_quietly(sock)
 
-    timer = threading.Timer(timeout, _kill)
-    timer.daemon = True
-    timer.start()
-    return timer
+    try:
+        timer = threading.Timer(timeout, _kill)
+        timer.daemon = True
+        timer.start()
+        return timer
+    except Exception as exc:
+        log("WATCHDOG_UNAVAILABLE timeout={}s error={}: {}".format(
+            timeout, type(exc).__name__, str(exc)[:120]))
+        return _NullTimer()
+
+
+def _sleep(seconds):
+    """time.sleep() that cannot raise on a broken emulated clock.
+
+    CheerpX's clock has been seen to hand back values the C time
+    conversion rejects, which turns a pause inside the send loop into
+    OverflowError and kills the response half-written.
+    """
+    if not seconds or seconds <= 0:
+        return
+    try:
+        time.sleep(seconds)
+    except (OverflowError, OSError, ValueError) as exc:
+        log("SLEEP_FAILED seconds={} error={}: {}".format(
+            seconds, type(exc).__name__, str(exc)[:80]))
+
+
+# The rate limit is global, not per response.  A browser opens six
+# connections to one origin and fires the page's requests over all of them
+# at once: pacing each response separately would let six of them run at the
+# cliff rate together, which is exactly the burst that loses bytes.  Every
+# handler reserves a slice of one shared timeline instead.
+_RATE_LOCK = threading.Lock()
+_RATE_NEXT = [0.0]
+
+
+def _pace(rate, nbytes):
+    """Wait until the shared budget has room for ``nbytes`` more.
+
+    ``rate`` is bytes per second for the whole proxy.  The reservation is
+    made one chunk at a time so a big response cannot monopolise the
+    timeline and starve the small ones behind it.
+    """
+    if rate <= 0 or nbytes <= 0:
+        return
+    now = time.time()
+    with _RATE_LOCK:
+        start = _RATE_NEXT[0]
+        if start < now:
+            start = now
+        _RATE_NEXT[0] = start + (nbytes / float(rate))
+    wait = start - time.time()
+    if wait > 0:
+        _sleep(wait)
 
 
 def _server_handshake(ssl_context, client, timeout, peer="?"):
@@ -1303,7 +1366,7 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
             log("UPSTREAM_RETRY attempt={}/{} url={} error={}: {}".format(
                 attempt, attempts, url, type(exc).__name__, str(exc)[:120]))
             if attempt < attempts:
-                time.sleep(min(2 * attempt, 6))
+                _sleep(min(2 * attempt, 6))
         finally:
             if acquired:
                 _UPSTREAM_SEMAPHORE.release()
@@ -1690,13 +1753,24 @@ def parse_request(sock, initial=b""):
 # with a pause in between gives the buffer time to drain.
 #
 # Measured on the WebVM: the transfer only survives when the write rate
-# stays below about 410 KB/s.  That number is a cliff, not a safe
-# operating point -- at 8192 bytes / 20 ms (409.6 KB/s) a 99 KB response
-# still failed intermittently.  The default below is half that rate, and
-# response bodies are gzipped on the way out (see send_response), so the
-# bytes on the wire are a fraction of what the upstream returned.
+# stays well under 200 KB/s.  That number is a cliff, not a safe operating
+# point -- the bytes that do not fit are lost silently, and the wedged
+# connection then takes the whole VM off the network for a minute.
+# Response bodies are also gzipped on the way out (see send_response), so
+# the bytes on the wire are a fraction of what the upstream returned.
+#
+# Measured on the WebVM (2026-11-15, /proxy-sendtest, 101248-byte body):
+#   4096 / 20 ms  -> 88-90 KB delivered, then the connection dies; over TLS
+#                     the peer reports BAD_RECORD_MAC; the whole VM stops
+#                     answering for 60-80 s afterwards
+#   4096 / 50 ms  -> 101248 bytes, checksum matches, 1.9 s
+#   1024 / 100 ms -> 101248 bytes, checksum matches, 31 s
+#   16/32/64 KB at 4096/20 ms -> intact
+# So 204 KB/s is above the cliff and 82 KB/s is below it.  The rate is not
+# the only lever: bodies are gzipped on the way out (see send_response),
+# which is what keeps a 400 KB page inside the safe window.
 SEND_CHUNK = 4096
-SEND_DELAY = 0.02
+SEND_DELAY = 0.05
 # Pause before retrying a socket that is not writable yet.
 SEND_STALL_SLEEP = 0.005
 
@@ -1780,6 +1854,11 @@ def send_response(sock, status, headers, body, close=True, client=None,
 
     step = SEND_CHUNK if chunk is None else max(512, int(chunk))
     pause = SEND_DELAY if delay is None else max(0.0, float(delay))
+    # /proxy-sendtest overrides the pacing to measure the path; those
+    # requests bypass the shared budget.  Everything the browser asks for
+    # goes through it.
+    explicit = chunk is not None or delay is not None
+    rate = 0.0 if explicit or not pause else step / float(pause)
 
     # A checksum of the bytes as they go on the wire.  If the client
     # hashes what it received and the two differ, the transfer path --
@@ -1843,41 +1922,45 @@ def send_response(sock, status, headers, body, close=True, client=None,
                     # buffer again.
                     part = payload[sent:sent + step]
                     part_start = sent
+                if rate:
+                    # Shared budget: the aggregate write rate of every
+                    # connection stays under the cliff.
+                    _pace(rate, len(part))
                 try:
                     written = sock.send(part)
                 except (BlockingIOError, InterruptedError):
                     stalls += 1
-                    time.sleep(SEND_STALL_SLEEP)
+                    _sleep(SEND_STALL_SLEEP)
                     continue
                 except ssl.SSLWantWriteError:
                     stalls += 1
-                    time.sleep(SEND_STALL_SLEEP)
+                    _sleep(SEND_STALL_SLEEP)
                     continue
                 except ssl.SSLWantReadError:
                     # A renegotiation wants to read; give it a moment.
                     stalls += 1
-                    time.sleep(SEND_STALL_SLEEP)
+                    _sleep(SEND_STALL_SLEEP)
                     continue
                 if written <= 0:
                     stalls += 1
-                    time.sleep(SEND_STALL_SLEEP)
+                    _sleep(SEND_STALL_SLEEP)
                     continue
                 calls += 1
                 sent += written
-                if pause and sent < len(payload):
+                if pause and explicit and sent < len(payload):
                     # Give the socket's buffer time to drain towards the
                     # client.  Without this the tail of a large response
                     # is dropped on the floor.
-                    time.sleep(pause)
+                    _sleep(pause)
         finally:
             timer.cancel()
             try:
                 sock.setblocking(True)
             except OSError:
                 pass
-    except OSError as exc:
-        log("SEND_FAILED status={} bytes={} client={} error={}: {}".format(
-            status, len(payload), client, type(exc).__name__, exc))
+    except Exception as exc:
+        log("SEND_FAILED status={} bytes={} client={} sent={} error={}: {}".format(
+            status, len(payload), client, sent, type(exc).__name__, exc))
         return False
     elapsed = int((time.time() - started) * 1000)
     if sent < len(payload):
@@ -2223,6 +2306,11 @@ class Handler(object):
             except Exception as exc:
                 log("HANDLER_ERROR error={}: {}".format(
                     type(exc).__name__, str(exc)[:300]))
+                # The message alone rarely says where it came from; the
+                # last frames are what make the log actionable.
+                import traceback
+                for frame in traceback.format_exc().splitlines()[-4:]:
+                    log("HANDLER_TRACE {}".format(frame.strip()[:220]))
                 return
 
             if not self.keep_alive():
@@ -2330,9 +2418,12 @@ class Handler(object):
                 except ValueError:
                     pass
             log("PROXY_TUNE chunk={} delay={}".format(SEND_CHUNK, SEND_DELAY))
+            with _RATE_LOCK:
+                _RATE_NEXT[0] = 0.0
+            rate = (SEND_CHUNK / float(SEND_DELAY)) if SEND_DELAY else 0.0
             self._send(200, "text/plain; charset=utf-8",
-                       "chunk={} delay={} gzip_min={}\n".format(
-                           SEND_CHUNK, SEND_DELAY, GZIP_MIN_BYTES).encode("utf-8"))
+                       "chunk={} delay={} gzip_min={} rate={:.0f}B/s shared\n".format(
+                           SEND_CHUNK, SEND_DELAY, GZIP_MIN_BYTES, rate).encode("utf-8"))
             return
         if path == "/proxy-sendtest":
             # Send a body of known size and content so a client can check
