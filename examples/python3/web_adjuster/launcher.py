@@ -1033,16 +1033,27 @@ def _sleep(seconds):
     """time.sleep() that cannot raise on a broken emulated clock.
 
     CheerpX's clock has been seen to hand back values the C time
-    conversion rejects, which turns a pause inside the send loop into
-    OverflowError and kills the response half-written.
+    conversion rejects: ``time.sleep(0.24)`` raises
+
+        OverflowError: timestamp too large to convert to C _PyTime_t
+
+    while ``time.sleep(0.05)`` in the same second is fine.  Long pauses are
+    therefore split into short ones, and a pause that still fails is
+    logged and skipped rather than allowed to kill a half-written
+    response.
     """
     if not seconds or seconds <= 0:
         return
-    try:
-        time.sleep(seconds)
-    except (OverflowError, OSError, ValueError) as exc:
-        log("SLEEP_FAILED seconds={} error={}: {}".format(
-            seconds, type(exc).__name__, str(exc)[:80]))
+    remaining = float(seconds)
+    while remaining > 0:
+        step = remaining if remaining < 0.05 else 0.05
+        try:
+            time.sleep(step)
+        except (OverflowError, OSError, ValueError) as exc:
+            log("SLEEP_FAILED seconds={} error={}: {}".format(
+                round(step, 4), type(exc).__name__, str(exc)[:80]))
+            return
+        remaining -= step
 
 
 # The rate limit is global, not per response.  A browser opens six
@@ -1072,6 +1083,44 @@ def _pace(rate, nbytes):
     wait = start - time.time()
     if wait > 0:
         _sleep(wait)
+
+
+def _loopback_fetch(nbytes, port=None, timeout=90):
+    """Ask this proxy for a body of ``nbytes`` over 127.0.0.1 and count it.
+
+    Loopback traffic never crosses the Tailscale bridge, so this separates
+    the two halves of the path: if the whole body arrives here but the
+    same request from outside the guest comes up short, the bytes are
+    being lost between the guest and its peer, not in the writer.
+    """
+    sock = socket.socket()
+    got = 0
+    status = ""
+    err = None
+    if port is None:
+        port = WRAPPER_PORT_INPROC
+    timer = _watchdog(sock, timeout)
+    try:
+        sock.connect(("127.0.0.1", port))
+        sock.sendall((
+            "GET /proxy-sendtest?bytes={} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n".format(nbytes)
+        ).encode("ascii"))
+        buf = b""
+        while True:
+            part = sock.recv(65536)
+            if not part:
+                break
+            buf += part
+        head, _, body = buf.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0].decode("iso-8859-1", "replace")
+        got = len(body)
+    except Exception as exc:
+        err = "{}: {}".format(type(exc).__name__, str(exc)[:120])
+    finally:
+        timer.cancel()
+        _close_quietly(sock)
+    return got, status, err
 
 
 def _server_handshake(ssl_context, client, timeout, peer="?"):
@@ -2424,6 +2473,24 @@ class Handler(object):
             self._send(200, "text/plain; charset=utf-8",
                        "chunk={} delay={} gzip_min={} rate={:.0f}B/s shared\n".format(
                            SEND_CHUNK, SEND_DELAY, GZIP_MIN_BYTES, rate).encode("utf-8"))
+            return
+        if path == "/proxy-loopback":
+            # Measure the writer without the network in the way.
+            try:
+                nbytes = int(params.get("bytes") or 101248)
+            except ValueError:
+                nbytes = 101248
+            nbytes = max(16, min(4 * 1024 * 1024, nbytes))
+            port = None
+            try:
+                port = self.server.address[1]
+            except Exception:
+                port = None
+            got, status, err = _loopback_fetch(nbytes, port=port)
+            log("LOOPBACK requested={} got={} error={}".format(
+                nbytes, got, err or "-"))
+            self._send_json(200, {"requested": nbytes, "got": got,
+                                  "status": status, "error": err})
             return
         if path == "/proxy-sendtest":
             # Send a body of known size and content so a client can check
