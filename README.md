@@ -15,9 +15,18 @@
 
 ### The one thing to try next
 
-Kaggle's page is showing. What is left is polish and the two known
-limitations:
+The proxy serves Kaggle's homepage in the panel again, and the write path
+that used to lose the page's 99 KB data call is fixed and covered by
+tests. What is left:
 
+- **Verify on screen after the rebuild.** The image has to be rebuilt
+  (touch `redeploy`) for the page-level changes; the proxy itself
+  (`launcher.py`) is fetched from `main` at boot, so a page reload picks
+  it up without a rebuild.
+- **A real wedge is now self-healing, but not preventable.** The write
+  path no longer parks threads, and `/proxy-sendtest` can prove a body
+  arrived whole. If a wedge happens anyway the page reloads itself after
+  60 s of failed `/health` probes.
 - **Fonts.** The stylesheet is rewritten to an absolute Kaggle CDN URL,
   so the font inside it is fetched from the CDN in CORS mode and
   Kaggle's CDN sends no `Access-Control-Allow-Origin` for fonts. Making
@@ -30,10 +39,11 @@ limitations:
 
 The diagnostics that made this tractable are kept in the repo:
 `/proxy-log` (the proxy's own log ring buffer), `/proxy-tune` (the
-socket write settings), `check_transfer_integrity.py` (is a response
-arriving whole?), `sweep_send_settings.py` (find write settings that
-survive), and `wedge_probe.py` (does the VM stay healthy while the
-browser loads a page through it?).
+socket write settings), `/proxy-sendtest` (is the write path intact?),
+`check_transfer_integrity.py` (is a response arriving whole?),
+`sweep_send_settings.py` (find write settings that survive), and
+`wedge_probe.py` (does the VM stay healthy while the browser loads a
+page through it?).
 
 ### How the proxy panel works today
 
@@ -49,6 +59,12 @@ which either redirects (`.js`) or proxies them.
 
 ### Things that will bite you next
 
+- **A hidden tab is a frozen VM.** Chrome throttles a hidden or minimised
+  tab, and CheerpX runs the guest on the page's event loop. If the tab is
+  not visible the proxy stops answering, `/health` times out, and it looks
+  exactly like a wedge. Bring the tab back before concluding anything
+  about the proxy; the page's own wedge detector ignores hidden tabs for
+  this reason.
 - **Bump `?v=` when you change `serviceWorker.js`.** `src/app.html` loads
   `serviceWorker.js?v=9`. The browser caches a worker for a long time and
   `unregister()` does not release control until the page reloads, so a
@@ -470,6 +486,80 @@ bytes every 20 ms - which was measured to be the rate the VM can carry:
 
 6. **Earlier commits** — LE cert generation (tag-swap trick), proxy panel
    UI, bridge popup (now superseded by direct iframe navigation).
+
+#### The write path (the "Failed to fetch" that kept coming back)
+
+Kaggle's homepage data call (`GetLoggedOutHomepageData`) returns 99,692
+bytes of JSON. It failed intermittently with `TypeError: Failed to fetch`
+inside the page, and each episode was followed by the VM going quiet:
+`/health` stopped answering while Tailscale still showed the node online.
+
+Both symptoms trace to one function, `send_response`, and to the fact
+that CheerpX's socket has no working deadline, no backpressure and a
+limited buffer.
+
+What was wrong:
+
+1. **A blocking `send()` never returns.** Python implements a socket
+   timeout with `select()`, and CheerpX does not implement `select()`
+   usefully, so a send has no deadline at all. When the browser aborted a
+   response mid-flight, the handler thread stayed parked inside `send()`
+   for ever. `close()` from another thread does not wake it. A few of
+   those and the VM's cooperative scheduler has nothing left to run --
+   which is why `/health` went dead while the tailnet stayed up. The
+   proxy never crashed; it just stopped being scheduled.
+2. **The write rate was set at the cliff, not below it.** 8192 bytes every
+   20 ms is 409.6 KB/s, and the measured cliff is about 410 KB/s. "Works
+   when swept, fails in practice" is exactly what operating on the
+   boundary looks like.
+3. **99 KB of JSON was travelling uncompressed**, in both directions, on
+   a path that can only take a few hundred KB/s.
+4. **`close=True` shut the socket 0.4 s after the last write**, which can
+   discard unacknowledged data and truncate the body.
+
+What it does now:
+
+- The write loop is **non-blocking with an absolute deadline**. `send()`
+  raising `EAGAIN` is a retry, not a lost byte, and the loop always
+  reaches its deadline. `test_send_path.py` [1] writes 8 MB into a socket
+  whose peer never reads and proves the call returns after the deadline
+  instead of parking.
+- **Bodies are gzipped on the way out** (when the client accepts it), and
+  the upstream request now asks for `gzip, deflate`. HTML and CSS are
+  decompressed, rewritten, injected and recompressed; everything else
+  (API JSON, scripts, images) is forwarded as the compressed bytes the
+  upstream sent. The 99 KB JSON answer becomes about 13 KB in each
+  direction -- eight times fewer bytes to lose, and no decompression or
+  recompression in the VM for the one response that kept failing.
+  Measured on `example.com`: 4626 bytes of injected HTML go out as 2109.
+- **Pacing halved** to 4096 bytes / 20 ms (204 KB/s), i.e. half the
+  measured cliff.
+- **`close=True` now shuts the write side down and reads until the peer
+  closes** instead of sleeping and closing over unacknowledged data.
+- **Every response carries `X-Wire-Sha1`**, a checksum of the bytes on the
+  wire, and the log line records `calls`, `stalls` and `ms`. `SEND_OK` is
+  only logged when the whole payload went out; a short write logs
+  `SEND_SHORT` / `SEND_TIMEOUT`. A client can therefore tell "the proxy
+  did not write it" from "the path lost it".
+- **`/proxy-sendtest?bytes=&chunk=&delay=`** sends a body of known size and
+  content, with `X-Body-Sha1`, so the write path can be measured end to
+  end without a browser.
+- **Handler threads are capped** (`MAX_CLIENTS`, 48). Unbounded threads are
+  what turn one stuck connection into an unresponsive VM.
+
+#### The VM only runs while its tab is visible
+
+CheerpX drives the guest from the page's event loop. A hidden or
+minimised tab is throttled by Chrome, so the VM stops making progress and
+the proxy stops answering -- indistinguishable from a wedge, but reloading
+is not the fix and loses a good boot. The page's wedge detector therefore
+does nothing while `document.hidden` is true.
+
+The page also now **detects a real wedge**: while the proxy panel is open
+it probes `/health` on the proxy origin every 10 s (no-cors, 6 s abort),
+and after six consecutive failures -- and only if the proxy had answered
+at least once in this page's life -- it reloads, which boots a fresh VM.
+A 3-minute `sessionStorage` backoff stops a reload loop.
 
 #### Remaining work
 

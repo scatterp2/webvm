@@ -266,6 +266,13 @@
 
 	async function wedgeTick()
 	{
+		// CheerpX runs on the page's event loop, so a hidden or minimised
+		// tab has its timers throttled and the VM stops making progress:
+		// /health would fail for a reason that reloading cannot fix, and
+		// reloading would throw away a perfectly good boot.  Only judge the
+		// proxy while the page is actually visible.
+		if(document.hidden)
+			return;
 		if(!proxyPanelOpen || !$currentIpStore)
 			return;
 		const url = wedgeProbeUrl();
