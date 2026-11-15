@@ -104,9 +104,9 @@ def main():
     status, headers, body = raw_get(forward_port, "/")
     print("[5] forward proxy / (relative target) -> {}".format(status))
 
-    # The browser sends "Accept-Encoding: gzip, deflate, br". The proxy must
-    # not hand back a compressed body, otherwise the HTML rewriting and the
-    # script injection would corrupt it.
+    # The browser sends "Accept-Encoding: gzip, deflate, br".  HTML is
+    # rewritten and injected, then compressed again on the way out, so the
+    # body has to be unpacked before it is inspected.
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(40)
     s.connect(("127.0.0.1", wrapper_port))
@@ -131,6 +131,12 @@ def main():
         head.split(b"\r\n")[0].decode("utf-8", "replace")))
     print("    content-encoding header present: {}".format(
         b"content-encoding" in head.lower()))
+    wire_bytes = len(body)
+    if b"content-encoding: gzip" in head.lower():
+        import gzip
+        body = gzip.decompress(body)
+    print("    wire body / decoded body         : {} / {}".format(
+        wire_bytes, len(body)))
     print("    body is readable text            : {}".format(
         b"Example Domain" in body))
     print("    marker injected                  : {}".format(

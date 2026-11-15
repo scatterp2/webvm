@@ -112,64 +112,6 @@
 				checkResetFlag();
 				window.setInterval(checkResetFlag, 15000);
 				window.addEventListener('pageshow', checkResetFlag);
-
-				// ---- Wedge detection ----
-				// Under CheerpX the VM's scheduler can stall when a thread
-				// blocks in a socket call, so the proxy stops answering
-				// *everything* -- even /health.  There is no way to unblock
-				// it from JavaScript; the only recovery is a fresh VM.
-				// Detect that condition and reload automatically.
-				//
-				// The proxy's /health endpoint is cheap and returns 200 ok
-				// when the VM is alive.  If it fails (timeout, connection
-				// refused, network error) several times in a row, the VM is
-				// wedged and we reload the page, which boots a fresh VM.
-				//
-				// The check is deliberately tolerant: a single failure is
-				// ignored, and a reload only happens after several consecutive
-				// failures so that a transient network blip does not restart
-				// the VM.
-				const WEDGE_FAIL_LIMIT = 3;
-				let wedgeFailures = 0;
-				let wedgeReloading = false;
-				async function checkWedge() {
-					if (wedgeReloading) return;
-					// The VM's IP is printed in the terminal at boot; we
-					// learn it from the global __webvmProxyIp if the page
-					// set it, otherwise we poll the health endpoint through
-					// the proxy's own origin (same origin as the iframe).
-					const ip = (window.__webvmProxyIp || '').trim();
-					const url = ip
-						? 'http://' + ip + ':28082/health'
-						: null;
-					if (!url) return;
-					try {
-						const ctrl = new AbortController();
-						const timer = setTimeout(() => ctrl.abort(), 5000);
-						const r = await fetch(url, {
-							cache: 'no-store',
-							credentials: 'omit',
-							signal: ctrl.signal
-						});
-						clearTimeout(timer);
-						if (r.ok) {
-							wedgeFailures = 0;
-							return;
-						}
-						wedgeFailures++;
-					} catch (e) {
-						wedgeFailures++;
-					}
-					if (wedgeFailures >= WEDGE_FAIL_LIMIT) {
-						wedgeReloading = true;
-						console.warn('[WebVM wedge] ' + wedgeFailures + ' consecutive health failures; reloading to boot a fresh VM.');
-						// Bump a marker so the reset logic does not treat
-						// this as a user action.
-						try { localStorage.setItem('webvm-wedge-reload', String(Date.now())); } catch (e) {}
-						window.location.reload();
-					}
-				}
-				window.setInterval(checkWedge, 10000);
 			})();
 		</script>
 		%sveltekit.head%

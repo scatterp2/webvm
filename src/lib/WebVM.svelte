@@ -241,6 +241,70 @@
 		}
 	}
 
+	// --- Wedge detection -------------------------------------------------
+	// Under CheerpX the VM's scheduler can stall when a thread parks in a
+	// socket call, and the proxy then stops answering *everything* -- even
+	// /health.  Nothing in JavaScript can unblock that thread; the only
+	// recovery is a fresh VM.  So: probe /health while the proxy panel is
+	// open, and reload the page (which boots a new VM) after several
+	// consecutive failures.
+	//
+	// The probe goes to the same origin the iframe uses, so it measures
+	// the path that actually broke rather than a different one.
+	const WEDGE_FAIL_LIMIT = 6;
+	const WEDGE_PROBE_MS = 10000;
+	var wedgeFailures = 0;
+	var wedgeEverUp = false;
+	var wedgeTimer = null;
+
+	function wedgeProbeUrl()
+	{
+		const bases = proxyBases();
+		const base = bases.https[0] || "";
+		return base ? (base + "/health") : "";
+	}
+
+	async function wedgeTick()
+	{
+		if(!proxyPanelOpen || !$currentIpStore)
+			return;
+		const url = wedgeProbeUrl();
+		if(!url)
+			return;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), 6000);
+			await fetch(url + "?t=" + Date.now(),
+				{mode: "no-cors", cache: "no-store", signal: ctrl.signal});
+			clearTimeout(timer);
+			wedgeFailures = 0;
+			wedgeEverUp = true;
+		} catch(e) {
+			wedgeFailures += 1;
+			proxyStatus = "The WebVM proxy has stopped answering ("
+				+ wedgeFailures + "/" + WEDGE_FAIL_LIMIT + ").";
+			// Only call it a wedge if the proxy had been answering before.
+			// A boot that has not finished yet also fails the probe, and
+			// reloading then would just restart the boot.
+			if(wedgeEverUp && wedgeFailures >= WEDGE_FAIL_LIMIT)
+				recoverFromWedge();
+		}
+	}
+
+	function recoverFromWedge()
+	{
+		// Guard against a reload loop: if a reload did not help, do not
+		// try again for a while.
+		const last = Number(window.sessionStorage.getItem("webvm-wedge-reload-at") || "0");
+		if(Date.now() - last < 180000) {
+			proxyStatus = "The WebVM proxy is wedged. Automatic reload is backing off.";
+			return;
+		}
+		try { window.sessionStorage.setItem("webvm-wedge-reload-at", String(Date.now())); } catch(e) {}
+		console.warn("[WebVM wedge] reloading to boot a fresh VM");
+		window.location.reload();
+	}
+
 	function writeData(buf, vt)
 	{
 		if(vt != 1)
@@ -603,9 +667,12 @@
 			pendingResetGeneration = String(window.__webvmPendingResetGeneration);
 		}
 		void initTerminal();
+		wedgeTimer = window.setInterval(wedgeTick, WEDGE_PROBE_MS);
 		return () => {
 			window.removeEventListener('webvm-reset-request', handleGenerationReset);
 			window.removeEventListener('message', handleProxyMessage);
+			if(wedgeTimer)
+				window.clearInterval(wedgeTimer);
 		};
 	});
 

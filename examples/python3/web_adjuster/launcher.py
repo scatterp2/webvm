@@ -40,6 +40,7 @@ Header handling on proxied responses:
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import re
 import socket
@@ -703,7 +704,9 @@ def inline_subresources(text, base_url, limit=INLINE_MAX_RESOURCES,
             break
         try:
             status, headers, body = upstream_fetch(
-                absolute, headers={"Accept": "*/*", "User-Agent": "webvm-inline/1.0"}
+                absolute,
+                headers={"Accept": "*/*", "User-Agent": "webvm-inline/1.0"},
+                accept_encoding="identity",
             )
         except Exception as exc:
             log("INLINE_FAILED url={} error={}: {}".format(
@@ -736,7 +739,8 @@ def build_self_contained(url, host_header):
         url, headers={"Accept": "text/html,application/xhtml+xml,*/*",
                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
                                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                     "Chrome/124.0 Safari/537.36"}
+                                     "Chrome/124.0 Safari/537.36"},
+        accept_encoding="identity",
     )
     content_type = ""
     for name, value in headers:
@@ -1091,7 +1095,8 @@ def _open_upstream(scheme, host, port, timeout):
     return state["sock"], _watchdog(state["sock"], timeout)
 
 
-def build_upstream_headers(url, method, headers, target_origin=None):
+def build_upstream_headers(url, method, headers, target_origin=None,
+                           accept_encoding=None):
     """The headers to send upstream for ``url``.
 
     The request has to look like a request the browser would make
@@ -1100,6 +1105,16 @@ def build_upstream_headers(url, method, headers, target_origin=None):
     """
     if not target_origin:
         target_origin = target_origin_of(url)
+    if not accept_encoding:
+        # Ask for gzip.  HTML and CSS are decompressed so they can be
+        # rewritten and injected, then compressed again on the way out;
+        # everything else (API JSON, scripts, images) is forwarded as the
+        # compressed bytes the upstream sent.  Both directions of the
+        # CheerpX network path are the bottleneck here, and gzip cuts the
+        # bytes by roughly 8x for JSON.  Brotli is deliberately not
+        # offered: there is no brotli decoder in this interpreter, so the
+        # body could not be rewritten if it arrived.
+        accept_encoding = "gzip, deflate"
     outgoing = {}
     for name, value in (headers or {}).items():
         lower = name.lower()
@@ -1110,10 +1125,14 @@ def build_upstream_headers(url, method, headers, target_origin=None):
         if lower in PROXY_REVEAL_HEADERS:
             continue
         outgoing[name] = value
-    # Always ask for an uncompressed body.  The proxy has to rewrite the HTML
-    # and inject a script, which is impossible on a gzip/brotli stream — and
-    # the browser sends "Accept-Encoding: gzip, deflate, br" by default.
-    outgoing["Accept-Encoding"] = "identity"
+    # Ask for gzip.  HTML and CSS are decompressed so they can be rewritten
+    # and injected, then compressed again on the way out; everything else
+    # (API JSON, scripts, images) is forwarded as the compressed bytes the
+    # upstream sent.  Both directions of the CheerpX network path are the
+    # bottleneck here, and gzip cuts the bytes by roughly 8x for JSON.
+    # Brotli is deliberately not offered: there is no brotli decoder in
+    # this interpreter, so the body could not be rewritten if it arrived.
+    outgoing["Accept-Encoding"] = accept_encoding
     outgoing.setdefault("User-Agent",
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -1176,7 +1195,7 @@ def build_upstream_headers(url, method, headers, target_origin=None):
 
 
 def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
-                   attempts=3):
+                   attempts=3, accept_encoding=None):
     """Fetch an absolute http/https URL.  Returns (status, headers, body).
 
     The WebVM resolves DNS through the browser, and the browser's network
@@ -1201,7 +1220,8 @@ def upstream_fetch(url, method="GET", headers=None, body=None, timeout=30,
     if not target_origin:
         raise ValueError("no host in {}".format(url))
 
-    outgoing = build_upstream_headers(url, method, headers, target_origin)
+    outgoing = build_upstream_headers(url, method, headers, target_origin,
+                                      accept_encoding=accept_encoding)
 
     # HTML can contain a session-bound anti-forgery token without a
     # Set-Cookie response header. A URL-only cache key could replay that
@@ -1354,21 +1374,33 @@ def build_runtime_scripts(nonce=None, target_origin=None, proxy_origin=None,
                    for script in scripts)
 
 
-def decompress_body(body, encoding):
+def _inflate(body, wbits, limit):
+    """Decompress at most ``limit`` bytes; raise if there is more."""
+    import zlib
+    engine = zlib.decompressobj(wbits)
+    out = engine.decompress(body, limit)
+    if engine.unconsumed_tail:
+        raise ValueError("decompressed body exceeds {} bytes".format(limit))
+    out += engine.flush()
+    return out
+
+
+def decompress_body(body, encoding, limit=None):
     """Best-effort decompression.  Returns (body, still_compressed)."""
     if not body or not encoding:
         return body, False
+    if limit is None:
+        limit = MAX_BODY * 2
     enc = encoding.strip().lower()
     try:
         if enc == "gzip" or enc == "x-gzip":
-            import gzip
-            return gzip.decompress(body), False
+            return _inflate(body, 16 + 15, limit), False
         if enc == "deflate":
             import zlib
             try:
-                return zlib.decompress(body), False
+                return _inflate(body, zlib.MAX_WBITS, limit), False
             except zlib.error:
-                return zlib.decompress(body, -zlib.MAX_WBITS), False
+                return _inflate(body, -zlib.MAX_WBITS, limit), False
     except Exception:
         # Leave the body alone; the caller keeps the Content-Encoding header
         # so the browser can still decode it.
@@ -1386,14 +1418,22 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
             content_type = value.lower()
         elif name.lower() == "content-encoding":
             content_encoding = value
+    still_encoded = bool(content_encoding)
     if content_encoding:
-        body, still_compressed = decompress_body(body, content_encoding)
-        if still_compressed:
-            # Cannot rewrite a compressed body; hand it through untouched.
-            return status, list(headers), body
+        # Only markup is rewritten.  For everything else -- API JSON,
+        # scripts, images -- the compressed bytes are handed through
+        # untouched: nothing is decompressed, nothing is recompressed, and
+        # the response stays the size the upstream actually put on the
+        # wire.  That is the difference between pushing 99 KB of JSON
+        # through the CheerpX transfer path and pushing 13 KB.
+        rewritable = ("text/html" in content_type
+                      or "text/css" in content_type
+                      or not content_type)
+        if rewritable:
+            body, still_encoded = decompress_body(body, content_encoding)
 
-    is_html = "text/html" in content_type or (
-        not content_type and body[:200].lstrip()[:1] == b"<")
+    is_html = not still_encoded and ("text/html" in content_type or (
+        not content_type and body[:200].lstrip()[:1] == b"<"))
 
     out_headers = []
     for name, value in headers:
@@ -1405,7 +1445,12 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
         if lower == "content-length":
             continue
         if lower == "content-encoding":
-            # The body was decompressed above, so the header must go too.
+            if not still_encoded:
+                # The body was decompressed above, so the header must go.
+                continue
+            # The body is still compressed: keep the header so the
+            # browser can decode it, and leave the bytes alone.
+            out_headers.append((name, value))
             continue
         if lower == "set-cookie":
             value = sanitize_set_cookie(value)
@@ -1432,7 +1477,7 @@ def transform_response(status, headers, body, request_url, proxy_origin=None):
     # embeddable by a COEP: require-corp document.
     out_headers.append(("Cross-Origin-Resource-Policy", "cross-origin"))
 
-    is_css = "text/css" in content_type
+    is_css = not still_encoded and "text/css" in content_type
 
     if is_html and body:
         try:
@@ -1645,11 +1690,22 @@ def parse_request(sock, initial=b""):
 # with a pause in between gives the buffer time to drain.
 #
 # Measured on the WebVM: the transfer only survives when the write rate
-# stays at or below about 410 KB/s (8192 bytes every 20 ms).  At twice
-# that rate the tail of the response is dropped and the client sees a
-# broken TLS stream.
-SEND_CHUNK = 8192
+# stays below about 410 KB/s.  That number is a cliff, not a safe
+# operating point -- at 8192 bytes / 20 ms (409.6 KB/s) a 99 KB response
+# still failed intermittently.  The default below is half that rate, and
+# response bodies are gzipped on the way out (see send_response), so the
+# bytes on the wire are a fraction of what the upstream returned.
+SEND_CHUNK = 4096
 SEND_DELAY = 0.02
+# Pause before retrying a socket that is not writable yet.
+SEND_STALL_SLEEP = 0.005
+
+# Bodies at least this large are gzipped when the client asked for it.
+# Compressing on the way out is the cheapest fix available for the wedged
+# transfer path: Kaggle's homepage JSON is ~99 KB plain and ~13 KB gzipped,
+# so there are eight times fewer bytes to lose.
+GZIP_MIN_BYTES = 512
+
 
 STATUS_TEXT = {    200: "OK", 204: "No Content", 206: "Partial Content",
     301: "Moved Permanently", 302: "Found", 303: "See Other",
@@ -1662,9 +1718,74 @@ STATUS_TEXT = {    200: "OK", 204: "No Content", 206: "Partial Content",
 }
 
 
-def send_response(sock, status, headers, body, close=True, client=None):
-    """Write a complete HTTP response.  Never raises on a dead client."""
+def _gzip_bytes(payload):
+    """gzip ``payload``, or None when that would not be a meaningful win."""
+    try:
+        import gzip
+        packed = gzip.compress(payload, 6, mtime=0)
+    except Exception as exc:
+        log("GZIP_FAILED error={}: {}".format(type(exc).__name__, exc))
+        return None
+    if len(packed) >= len(payload) - (len(payload) // 20):
+        return None
+    return packed
+
+
+def _drain_until_eof(sock, timeout):
+    """Read until the peer closes, after the write side was shut down.
+
+    close() on a socket that still has unacknowledged bytes in its send
+    buffer throws them away, which truncates the response.  Shutting the
+    write side down first queues the FIN behind the data; reading until
+    the peer closes proves it arrived.
+    """
+    timer = _watchdog(sock, timeout)
+    try:
+        while True:
+            if not sock.recv(4096):
+                break
+    except OSError:
+        pass
+    finally:
+        timer.cancel()
+
+
+def send_response(sock, status, headers, body, close=True, client=None,
+                  accept_encoding="", chunk=None, delay=None):
+    """Write a complete HTTP response.  Never raises on a dead client.
+
+    ``accept_encoding`` is the request's Accept-Encoding header; when it
+    allows gzip, sizeable bodies are compressed before they go on the
+    wire.  ``chunk``/``delay`` override the pacing for a single response
+    (used by /proxy-sendtest).
+    """
     reason = STATUS_TEXT.get(status, "OK")
+    body = body or b""
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    headers = list(headers)
+    lowered = set(name.lower() for name, _ in headers)
+    if (status not in (204, 304) and len(body) >= GZIP_MIN_BYTES
+            and "gzip" in (accept_encoding or "").lower()
+            and "content-encoding" not in lowered
+            and "content-range" not in lowered):
+        packed = _gzip_bytes(body)
+        if packed is not None:
+            log("RESPONSE_GZIP raw={} gzip={}".format(len(body), len(packed)))
+            body = packed
+            headers = [(n, v) for n, v in headers
+                       if n.lower() not in ("content-length", "vary")]
+            headers.append(("Content-Encoding", "gzip"))
+            headers.append(("Vary", "Accept-Encoding"))
+
+    step = SEND_CHUNK if chunk is None else max(512, int(chunk))
+    pause = SEND_DELAY if delay is None else max(0.0, float(delay))
+
+    # A checksum of the bytes as they go on the wire.  If the client
+    # hashes what it received and the two differ, the transfer path --
+    # not the proxy -- is what lost the data.
+    wire_sha = hashlib.sha1(body).hexdigest()[:16]
+
     head = ["HTTP/1.1 {} {}".format(status, reason)]
     has_length = False
     for name, value in headers:
@@ -1673,6 +1794,7 @@ def send_response(sock, status, headers, body, close=True, client=None):
         head.append("{}: {}".format(name, value))
     if not has_length:
         head.append("Content-Length: {}".format(len(body)))
+    head.append("X-Wire-Sha1: {}".format(wire_sha))
     head.append("Cache-Control: no-store")
     if close:
         head.append("Connection: close")
@@ -1684,58 +1806,100 @@ def send_response(sock, status, headers, body, close=True, client=None):
                     "Content-Length: 40\r\nConnection: close\r\n\r\n"
                     "header encoding failed\r\n").encode("ascii")
         body = b""
-    payload = raw_head + (body or b"")
-    log("SEND_START status={} bytes={} client={}".format(
-        status, len(payload), client))
+    payload = raw_head + body
+    log("SEND_START status={} bytes={} client={} sha={}".format(
+        status, len(payload), client, wire_sha))
+    started = time.time()
+    sent = 0
+    calls = 0
+    stalls = 0
+    deadline = started + CLIENT_WRITE_TIMEOUT
     try:
-        # Send in chunks.  A single large write to a CheerpX socket can be
-        # truncated, and the browser then reports "Failed to fetch" even
-        # though the server logged SEND_OK.  The self-contained document is
-        # a few hundred kilobytes, so this matters.
-        #
-        # The write must not have a socket timeout on it.  Python
-        # implements a socket timeout with select(), CheerpX does not
-        # implement select() properly, and the write comes out truncated:
-        # the browser receives a broken TLS stream and reports
-        # ERR_SSL_PROTOCOL_ERROR on a response the proxy logged as sent
-        # in full.  A watchdog bounds the write instead -- the same
-        # mechanism the upstream fetch uses.
+        # The write has to be non-blocking.  A blocking send to a client
+        # that has stopped reading parks the thread inside send() for
+        # ever: CheerpX implements no socket deadline, and closing the
+        # socket from another thread does not wake a parked write.  Enough
+        # parked threads and the whole VM stops scheduling.  A
+        # non-blocking send returns EAGAIN instead of parking, so the
+        # loop below always reaches its deadline.
         try:
-            sock.settimeout(None)
+            sock.setblocking(False)
         except OSError:
             pass
+        # The watchdog stays as the last line of defence for a socket
+        # that blocks anyway (CheerpX may ignore the non-blocking flag).
         timer = _watchdog(sock, CLIENT_WRITE_TIMEOUT)
         try:
-            sent = 0
+            part_start = -1
+            part = b""
             while sent < len(payload):
-                chunk = payload[sent:sent + SEND_CHUNK]
-                written = sock.send(chunk)
-                if not written:
+                if time.time() > deadline:
+                    log("SEND_TIMEOUT sent={} of={} calls={} stalls={}".format(
+                        sent, len(payload), calls, stalls))
                     break
+                if part_start != sent:
+                    # Keep the slice identical across retries: after a
+                    # WANT_WRITE, SSL_write has to be handed the same
+                    # buffer again.
+                    part = payload[sent:sent + step]
+                    part_start = sent
+                try:
+                    written = sock.send(part)
+                except (BlockingIOError, InterruptedError):
+                    stalls += 1
+                    time.sleep(SEND_STALL_SLEEP)
+                    continue
+                except ssl.SSLWantWriteError:
+                    stalls += 1
+                    time.sleep(SEND_STALL_SLEEP)
+                    continue
+                except ssl.SSLWantReadError:
+                    # A renegotiation wants to read; give it a moment.
+                    stalls += 1
+                    time.sleep(SEND_STALL_SLEEP)
+                    continue
+                if written <= 0:
+                    stalls += 1
+                    time.sleep(SEND_STALL_SLEEP)
+                    continue
+                calls += 1
                 sent += written
-                if SEND_DELAY and sent < len(payload):
+                if pause and sent < len(payload):
                     # Give the socket's buffer time to drain towards the
                     # client.  Without this the tail of a large response
                     # is dropped on the floor.
-                    time.sleep(SEND_DELAY)
+                    time.sleep(pause)
         finally:
             timer.cancel()
-        log("SEND_OK status={} bytes={}".format(status, len(payload)))
-        # Let the client read the response before the socket goes away.
-        # Closing straight after a large write truncates it: the browser
-        # then reports "Failed to fetch" even though the server logged
-        # SEND_OK.  A keep-alive connection stays open instead.
-        if close:
             try:
-                sock.shutdown(socket.SHUT_WR)
+                sock.setblocking(True)
             except OSError:
                 pass
-            time.sleep(0.4)
-        return True
     except OSError as exc:
         log("SEND_FAILED status={} bytes={} client={} error={}: {}".format(
             status, len(payload), client, type(exc).__name__, exc))
         return False
+    elapsed = int((time.time() - started) * 1000)
+    if sent < len(payload):
+        log("SEND_SHORT status={} sent={} of={} calls={} stalls={} ms={}".format(
+            status, sent, len(payload), calls, stalls, elapsed))
+        return False
+    log("SEND_OK status={} bytes={} calls={} stalls={} ms={}".format(
+        status, len(payload), calls, stalls, elapsed))
+    # Let the client read the response before the socket goes away.
+    # Closing straight after a large write truncates it: the browser
+    # then reports "Failed to fetch" even though the server logged
+    # SEND_OK.  A keep-alive connection stays open instead.
+    if close:
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        # Bigger responses take longer to reach the client; give the peer
+        # time to finish reading before the descriptor is closed.
+        _drain_until_eof(sock, max(1.0, min(5.0, len(payload) / 100000.0)))
+    return True
+
 
 
 # --------------------------------------------------------------------------
@@ -1955,6 +2119,12 @@ class Handler(object):
             return False
         return True
 
+    def accept_encoding(self):
+        """The client's Accept-Encoding, so responses can be compressed."""
+        if self.parsed is None:
+            return ""
+        return self.parsed.header("accept-encoding") or ""
+
     def _send(self, status, content_type, body, extra=None):
         headers = [
             ("Content-Type", content_type),
@@ -1970,7 +2140,8 @@ class Handler(object):
             headers.extend(extra)
         send_response(self.request, status, headers, body,
                       close=not self.keep_alive(),
-                      client=self.client_label())
+                      client=self.client_label(),
+                      accept_encoding=self.accept_encoding())
 
     def _send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
@@ -2014,7 +2185,8 @@ class Handler(object):
         log("PROXIED status={} url={} bytes={}".format(status, url, len(out_body)))
         send_response(self.request, status, out_headers, out_body,
                       close=not self.keep_alive(),
-                      client=self.client_label())
+                      client=self.client_label(),
+                      accept_encoding=self.accept_encoding())
 
     # -- dispatch --------------------------------------------------------
     def handle(self):
@@ -2159,8 +2331,36 @@ class Handler(object):
                     pass
             log("PROXY_TUNE chunk={} delay={}".format(SEND_CHUNK, SEND_DELAY))
             self._send(200, "text/plain; charset=utf-8",
-                       "chunk={} delay={}\n".format(
-                           SEND_CHUNK, SEND_DELAY).encode("utf-8"))
+                       "chunk={} delay={} gzip_min={}\n".format(
+                           SEND_CHUNK, SEND_DELAY, GZIP_MIN_BYTES).encode("utf-8"))
+            return
+        if path == "/proxy-sendtest":
+            # Send a body of known size and content so a client can check
+            # that it arrived whole.  This is the measurement that decides
+            # whether a transfer failure is the proxy or the path.
+            try:
+                nbytes = int(params.get("bytes") or 101248)
+            except ValueError:
+                nbytes = 101248
+            nbytes = max(16, min(4 * 1024 * 1024, nbytes))
+            try:
+                chunk_arg = int(params["chunk"]) if params.get("chunk") else None
+            except ValueError:
+                chunk_arg = None
+            try:
+                delay_arg = (float(params["delay"])
+                             if params.get("delay") else None)
+            except ValueError:
+                delay_arg = None
+            body = (b"0123456789abcdef" * (nbytes // 16 + 1))[:nbytes]
+            send_response(self.request, 200, [
+                ("Content-Type", "application/octet-stream"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cross-Origin-Resource-Policy", "cross-origin"),
+                ("X-Body-Sha1", hashlib.sha1(body).hexdigest()[:16]),
+            ], body, close=not self.keep_alive(),
+                client=self.client_label(), accept_encoding="",
+                chunk=chunk_arg, delay=delay_arg)
             return
         if request.method == "OPTIONS":
             # CORS preflight for the WebVM page's cross-origin fetch.
@@ -2268,6 +2468,14 @@ class Handler(object):
 # Server
 # --------------------------------------------------------------------------
 
+# Upper bound on handler threads across all listeners.  CheerpX schedules
+# threads cooperatively, so a pile of parked handler threads is what turns
+# one stuck connection into an unresponsive VM.
+MAX_CLIENTS = 48
+_ACTIVE_CLIENTS = 0
+_CLIENT_LOCK = threading.Lock()
+
+
 class WrapperServer(object):
     """Raw-socket HTTP server.
 
@@ -2293,12 +2501,28 @@ class WrapperServer(object):
         self.socket.listen(16)
 
     def serve_forever(self, poll_interval=0.5):
+        global _ACTIVE_CLIENTS
         while self._running:
             try:
                 client, addr = self.socket.accept()
             except OSError:
                 if not self._running:
                     break
+                continue
+            with _CLIENT_LOCK:
+                if _ACTIVE_CLIENTS >= MAX_CLIENTS:
+                    refuse = True
+                else:
+                    _ACTIVE_CLIENTS += 1
+                    refuse = False
+            if refuse:
+                # A safety valve, not a normal path: unbounded handler
+                # threads are what turn one stuck connection into a wedged
+                # VM.  Dropping the newest connection keeps the proxy
+                # responsive for the ones already running.
+                log("CLIENT_LIMIT active={} peer={}".format(
+                    _ACTIVE_CLIENTS, addr[0]))
+                _close_quietly(client)
                 continue
             try:
                 client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -2317,6 +2541,7 @@ class WrapperServer(object):
             ).start()
 
     def _handle_client(self, client, addr):
+        global _ACTIVE_CLIENTS
         started = time.time()
         try:
             if self.ssl_context is not None:
@@ -2335,6 +2560,8 @@ class WrapperServer(object):
             log("CONNECTION_ERROR peer={} error={}: {}".format(
                 addr[0], type(exc).__name__, str(exc)[:200]))
         finally:
+            with _CLIENT_LOCK:
+                _ACTIVE_CLIENTS = max(0, _ACTIVE_CLIENTS - 1)
             try:
                 client.close()
             except OSError:
