@@ -62,16 +62,45 @@ jobs:
                       except (subprocess.SubprocessError, OSError) as exc:
                           print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
                           continue
-                      if (TAG in body and
-                              re.search(r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED|PI_IMPL_FETCHED|TCP_LINK_START_SKIPPED|PI_TCP_LINK_|WEBVM_TCP_LINK|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|AUTH_KEY_MISSING|TAILSCALE|WEBVM_TERMINAL_SELFTEST_SKIPPED|IO_LOOP_CONTROLLER|LOOP_PROOF|RX_RESOURCE_PUBLISHED|KERNEL_SUBMITTED|TCP_LINK_STARTUP_STATUS)', body, re.I)
-                              and SEEN.get(pid) != body):
-                          SEEN[pid] = body
-                          print(f"\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
-                          print(body[-18000:], flush=True)
-                          print("===== END_FEEDBACK_MATCH =====\n", flush=True)
-                          matches += 1
-                      else:
-                          print(f"[{stamp()}] RAW_NOT_READY id={pid}; will retry", flush=True)
+                      if TAG not in body:
+                          print(f"[{stamp()}] RAW_TAG_NOT_FOUND id={pid} bytes={len(body)}; will retry", flush=True)
+                          continue
+                      if SEEN.get(pid) == body:
+                          continue
+
+                      diagnostic = re.compile(
+                          r'(TCP_LINK_CROSS_MACHINE_DELIVERY|TCP_LINK_REMOTE_CONNECTIVITY|TCP_LINK_REMOTE_PROBE_WAIT|'
+                          r'WEBVM_TERMINAL_SERVER_DIAGNOSTIC|PI_WRAPPER_STARTED|PI_IMPL_FETCHED|TCP_LINK_START_SKIPPED|'
+                          r'PI_TCP_LINK_|WEBVM_TCP_LINK|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|'
+                          r'GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|GPU_DEVICE_NODES|GPU_PROC_DRIVER_EXISTS|'
+                          r'TORCH_COMPILED_CUDA|TORCH_CUDA_AVAILABLE|TORCH_CUDA_DEVICE_COUNT|TORCH_BUILD_CONFIG|'
+                          r'nvidia-smi|/dev/nvidia|/proc/driver/nvidia|KERNEL_SUBMITTED|STATUS_POLL|KERNEL_VERSION|'
+                          r'RUN_COMPLETE|RUN_STARTED|RUN_FINISHED|RUN_FAILED|FEEDBACK_UPLOAD_(?:FAILED|OK)|'
+                          r'WEB_ADJUSTER_ONLY_MODE|Kaggle code disabled for proxy testing|GPU_DIAGNOSTIC_DEFERRED|'
+                          r'KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|'
+                          r'IO_LOOP_CONTROLLER|LOOP_PROOF|RX_RESOURCE_PUBLISHED|TCP_LINK_STARTUP_STATUS|'
+                          r'Traceback|RuntimeError|ImportError|ModuleNotFoundError|FileNotFoundError|OSError|'
+                          r'Could not resolve|Name or service not known|DNS.*(?:fail|error|timeout)|'
+                          r'(?:fail|error|timeout).*DNS|(?:network|publish|upload).*(?:fail|error|timeout)|'
+                          r'(?:fail|error|timeout).*(?:network|publish|upload))',
+                          re.I,
+                      )
+                      sensitive = re.compile(r'(token|password|secret|credential|authorization|api[_-]?key)', re.I)
+                      evidence = [
+                          line.strip() for line in body.splitlines()
+                          if line.strip() and len(line.strip()) <= 2000
+                          and diagnostic.search(line) and not sensitive.search(line)
+                      ]
+                      SEEN[pid] = body
+                      if not evidence:
+                          print(f"[{stamp()}] RAW_FETCHED_NO_RELEVANT_MARKERS id={pid} bytes={len(body)}", flush=True)
+                          continue
+
+                      print(f"\\n===== FEEDBACK_MATCH id={pid} =====", flush=True)
+                      for line in evidence[:100]:
+                          print("DIAGNOSTIC " + line[:700], flush=True)
+                      print("===== END_FEEDBACK_MATCH =====\\n", flush=True)
+                      matches += 1
                   print(f"[{stamp()}] POLL_OK listed={len(ids)} new_matches={matches} seen={len(SEEN)}", flush=True)
               except (subprocess.SubprocessError, OSError, ValueError) as exc:
                   print(f"[{stamp()}] SEARCH_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
