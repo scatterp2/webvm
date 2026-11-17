@@ -44,6 +44,14 @@ jobs:
               )
               return result.stdout
 
+          def describe_error(exc):
+              if isinstance(exc, subprocess.CalledProcessError):
+                  detail = (exc.stderr or "").strip().replace("\r", " ").replace("\n", " ")
+                  return f"{type(exc).__name__} rc={exc.returncode} stderr={detail[:240] or 'empty'}"
+              if isinstance(exc, subprocess.TimeoutExpired):
+                  return f"{type(exc).__name__} timeout={exc.timeout}"
+              return f"{type(exc).__name__}: {str(exc)[:240]}"
+
           print(f"[{stamp()}] FEEDBACK_MONITOR_STARTED tag={TAG}", flush=True)
           print(f"[{stamp()}] Polling pste search page for up to {WINDOW_SECONDS}s", flush=True)
 
@@ -60,7 +68,7 @@ jobs:
                           # previously seen IDs and print only when the body changes.
                           body = fetch_text(RAW_BASE + pid, max_time=4)
                       except (subprocess.SubprocessError, OSError) as exc:
-                          print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} error={type(exc).__name__}: {exc}", flush=True)
+                          print(f"[{stamp()}] RAW_FETCH_FAILED id={pid} {describe_error(exc)}", flush=True)
                           continue
                       if TAG not in body:
                           print(f"[{stamp()}] RAW_TAG_NOT_FOUND id={pid} bytes={len(body)}; will retry", flush=True)
@@ -103,7 +111,7 @@ jobs:
                       matches += 1
                   print(f"[{stamp()}] POLL_OK listed={len(ids)} new_matches={matches} seen={len(SEEN)}", flush=True)
               except (subprocess.SubprocessError, OSError, ValueError) as exc:
-                  print(f"[{stamp()}] SEARCH_FETCH_FAILED error={type(exc).__name__}: {exc}", flush=True)
+                  print(f"[{stamp()}] SEARCH_FETCH_FAILED {describe_error(exc)}", flush=True)
               time.sleep(15)
 
           print(f"[{stamp()}] FEEDBACK_MONITOR_FINISHED seen={len(SEEN)}", flush=True)
