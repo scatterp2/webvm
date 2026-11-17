@@ -97,6 +97,14 @@ jobs:
               )
               return result.stdout
 
+          def describe_error(exc):
+              if isinstance(exc, subprocess.CalledProcessError):
+                  detail = (exc.stderr or "").strip().replace("\r", " ").replace("\n", " ")
+                  return f"{type(exc).__name__} rc={exc.returncode} stderr={detail[:240] or 'empty'}"
+              if isinstance(exc, subprocess.TimeoutExpired):
+                  return f"{type(exc).__name__} timeout={exc.timeout}"
+              return f"{type(exc).__name__}: {str(exc)[:240]}"
+
           print(f"[{stamp()}] GPU_FEEDBACK_MONITOR_STARTED tags=GPU,WEBVM", flush=True)
           print(f"[{stamp()}] Polling pste.us for up to {WINDOW_SECONDS}s; raw paste bodies are never echoed wholesale", flush=True)
 
@@ -114,7 +122,7 @@ jobs:
                       )))
                       listed[label] = len(ids)
                   except (subprocess.SubprocessError, OSError, ValueError) as exc:
-                      print(f"[{stamp()}] SEARCH_FETCH_FAILED tag={label} error={type(exc).__name__}", flush=True)
+                      print(f"[{stamp()}] SEARCH_FETCH_FAILED tag={label} {describe_error(exc)}", flush=True)
                       continue
 
                   for pid in (ids[:51] if label == "GPU" else ids[:5]):
@@ -124,7 +132,7 @@ jobs:
                       try:
                           body = fetch_text(RAW_BASE + pid, max_time=4)
                       except (subprocess.SubprocessError, OSError) as exc:
-                          print(f"[{stamp()}] RAW_FETCH_FAILED tag={label} id={pid} error={type(exc).__name__}", flush=True)
+                          print(f"[{stamp()}] RAW_FETCH_FAILED tag={label} id={pid} {describe_error(exc)}", flush=True)
                           continue
 
                       if tag not in body:
