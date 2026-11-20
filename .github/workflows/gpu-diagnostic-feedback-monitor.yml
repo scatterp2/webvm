@@ -42,6 +42,10 @@ jobs:
               "KAGGLE_DIAGNOSTIC_FILE",
               "GPU_CHECK",
               "KERNEL_SUBMITTED",
+              "EXECUTION_STATUS",
+              "KERNEL_STATUS",
+              "KAGGLE_KERNEL_STATUS",
+              "KERNEL_ID",
               "STATUS_POLL",
               "OUTPUT_DOWNLOADED",
               "OUTPUT_VALIDATION_PASSED",
@@ -63,7 +67,7 @@ jobs:
               r"TORCH_DIAGNOSTIC(?:_FAILED)?|TORCH_COMPILED_CUDA|TORCH_CUDA_AVAILABLE|TORCH_CUDA_DEVICE_COUNT|TORCH_BUILD_CONFIG|"
               r"GPU_DEVICE|GPU_CHECK|KAGGLE_DIAGNOSTIC_FILE|nvidia-smi|/dev/nvidia|/proc/driver/nvidia|"
               r"cuda\.is_available|torch\.version\.cuda|CUDA availability|CUDA build|"
-              r"KERNEL_SUBMITTED|STATUS_POLL|OUTPUT_DOWNLOADED|OUTPUT_VALIDATION_PASSED|RUN_COMPLETE|KERNEL_VERSION|KERNEL_ID|kernel[_ -]?version|version[_ -]?number|"
+              r"KERNEL_SUBMITTED|EXECUTION_STATUS|KERNEL_STATUS|KAGGLE_KERNEL_STATUS|STATUS_POLL|OUTPUT_DOWNLOADED|OUTPUT_VALIDATION_PASSED|RUN_COMPLETE|KERNEL_VERSION|KERNEL_ID|kernel[_ -]?version|version[_ -]?number|"
               r"RUN_STARTED|RUN_FINISHED|RUN_FAILED|DEPENDENCIES_FAILED|INFERENCE_FAILED|FEEDBACK_UPLOAD_(?:FAILED|OK)|FEEDBACK_DISABLED|"
               r"GPU_DIAGNOSTIC_DEFERRED|WEB_ADJUSTER_ONLY_MODE|Kaggle code disabled for proxy testing|"
               r"KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|"

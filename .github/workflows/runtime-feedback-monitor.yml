@@ -82,7 +82,7 @@ jobs:
                           r'PI_TCP_LINK_|WEBVM_TCP_LINK|SOCKS5_SELF_TEST|HTTP_CONNECT_SELF_TEST|'
                           r'GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|GPU_DEVICE_NODES|GPU_PROC_DRIVER_EXISTS|'
                           r'TORCH_COMPILED_CUDA|TORCH_CUDA_AVAILABLE|TORCH_CUDA_DEVICE_COUNT|TORCH_BUILD_CONFIG|'
-                          r'nvidia-smi|/dev/nvidia|/proc/driver/nvidia|KERNEL_SUBMITTED|STATUS_POLL|KERNEL_VERSION|'
+                          r'nvidia-smi|/dev/nvidia|/proc/driver/nvidia|KERNEL_SUBMITTED|EXECUTION_STATUS|KERNEL_STATUS|KAGGLE_KERNEL_STATUS|KERNEL_ID|STATUS_POLL|KERNEL_VERSION|'
                           r'RUN_COMPLETE|RUN_STARTED|RUN_FINISHED|RUN_FAILED|FEEDBACK_UPLOAD_(?:FAILED|OK)|'
                           r'WEB_ADJUSTER_ONLY_MODE|Kaggle code disabled for proxy testing|GPU_DIAGNOSTIC_DEFERRED|'
                           r'KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|'
