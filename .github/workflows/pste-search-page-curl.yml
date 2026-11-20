@@ -37,8 +37,7 @@ jobs:
           curl --location --silent --show-error --fail-with-body \
             --connect-timeout 20 --max-time 90 \
             --user-agent 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' \
-            --dump-header pste-fetch/response-headers.txt \
-            --output pste-fetch/response-body.html "$URL"
+              --output pste-fetch/response-body.html "$URL"
           printf 'SEARCH_URL=%s\n' "$URL"
           printf '\n===== SEARCH RESULTS (matching paste IDs and titles) =====\n'
           python3 - <<'PY' | tee pste-fetch/results.txt
@@ -61,30 +60,67 @@ jobs:
           links = re.findall(r'<a href="/([A-Za-z0-9_-]+)" class="paste-title"', html)
           Path("pste-fetch/ids.txt").write_text("\n".join(dict.fromkeys(links)) + ("\n" if links else ""), encoding="utf-8")
           PY
-      - name: Fetch each matching raw paste and print diagnostic stages
+      - name: Fetch each matching raw paste and print only safe diagnostic evidence
         shell: bash
         run: |
           set -u
           while IFS= read -r PASTE_ID; do
             [ -n "$PASTE_ID" ] || continue
-            printf '\n===== RAW PASTE %s =====\n' "$PASTE_ID"
+            RAW_FILE="$(mktemp)"
+            printf '\n===== FILTERED RAW PASTE %s =====\n' "$PASTE_ID"
             set +e
             curl --location --silent --show-error --fail-with-body \
               --connect-timeout 20 --max-time 60 \
-              --output "pste-fetch/raw/$PASTE_ID.txt" "https://pste.us/raw/$PASTE_ID"
+              --output "$RAW_FILE" "https://pste.us/raw/$PASTE_ID"
             RC=$?
             set -e
             if [ "$RC" -ne 0 ]; then
               printf 'RAW_FETCH_FAILED id=%s curl_exit=%s\n' "$PASTE_ID" "$RC"
+              rm -f "$RAW_FILE"
               continue
             fi
-            cat "pste-fetch/raw/$PASTE_ID.txt"
+            python3 - "$PASTE_ID" "$RAW_FILE" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          paste_id, raw_path = sys.argv[1:3]
+          body = Path(raw_path).read_text(encoding="utf-8", errors="replace")
+          safe_evidence = re.compile(
+              r"GPU_PREFLIGHT_(?:BEGIN|PASSED|CLASSIFICATION)|GPU_DEVICE_NODES|GPU_PROC_DRIVER_EXISTS|"
+              r"TORCH_DIAGNOSTIC(?:_FAILED)?|TORCH_COMPILED_CUDA|TORCH_CUDA_AVAILABLE|TORCH_CUDA_DEVICE_COUNT|TORCH_BUILD_CONFIG|"
+              r"nvidia-smi|/dev/nvidia|/proc/driver/nvidia|KERNEL_SUBMITTED|STATUS_POLL|OUTPUT_DOWNLOADED|"
+              r"OUTPUT_VALIDATION_PASSED|RUN_COMPLETE|RUN_STARTED|RUN_FINISHED|RUN_FAILED|KERNEL_VERSION|KERNEL_ID|"
+              r"FEEDBACK_UPLOAD_(?:FAILED|OK)|FEEDBACK_DISABLED|GPU_DIAGNOSTIC_DEFERRED|WEB_ADJUSTER_ONLY_MODE|"
+              r"Kaggle code disabled for proxy testing|KAGGLE_DIAGNOSTICS_(?:BEGIN|END)|TAILSCALE_IP_NOT_FOUND|"
+              r"Traceback|RuntimeError|ImportError|ModuleNotFoundError|FileNotFoundError|OSError|"
+              r"Could not resolve|Name or service not known|DNS|network|publish|upload",
+              re.IGNORECASE,
+          )
+          sensitive = re.compile(
+              r"\b(?:token|password|secret|credential|authorization|api[_-]?key)\b|"
+              r"bearer\s+\S+|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+              r"sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}",
+              re.IGNORECASE,
+          )
+          lines = [
+              line.strip() for line in body.splitlines()
+              if line.strip() and len(line.strip()) <= 2000
+              and safe_evidence.search(line) and not sensitive.search(line)
+          ]
+          print(f"RAW_DIAGNOSTIC_SUMMARY id={paste_id} bytes={len(body)} safe_lines={len(lines)}")
+          for line in lines[:100]:
+              print("DIAGNOSTIC " + line[:700])
+          PY
+            rm -f "$RAW_FILE"
           done < pste-fetch/ids.txt
-      - name: Save complete search and raw logs
+      - name: Save search metadata only; never upload raw paste bodies
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pste-all-matching-feedback-logs
-          path: pste-fetch/
+          path: |
+            pste-fetch/results.txt
+            pste-fetch/ids.txt
           if-no-files-found: warn
           retention-days: 7
